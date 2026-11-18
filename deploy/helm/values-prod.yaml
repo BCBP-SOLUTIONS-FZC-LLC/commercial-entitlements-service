@@ -1,0 +1,14 @@
+replicaCount: 3
+
+resources:
+  requests:
+    cpu: "200m"
+    memory: "256Mi"
+  limits:
+    cpu: "1000m"
+    memory: "1Gi"
+
+env:
+  APP_ENV: prod
+  RUN_MIGRATIONS: "false"
+  DOCS_ENABLED: "false"

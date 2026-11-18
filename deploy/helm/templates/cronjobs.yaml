@@ -1,0 +1,44 @@
+{{- range $name, $cj := .Values.cronjobs }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "commercial-entitlements.fullname" $ }}-{{ $name }}
+  labels:
+    {{- include "commercial-entitlements.labels" $ | nindent 4 }}
+    cronjob: {{ $name }}
+spec:
+  schedule: {{ $cj.schedule | quote }}
+  suspend: {{ $cj.suspend | default false }}
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: {{ include "commercial-entitlements.serviceAccountName" $ }}
+          restartPolicy: OnFailure
+          containers:
+            - name: reconciler
+              image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag | default $.Chart.AppVersion }}"
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              command: ["/app/reconciler"]
+              args: ["--job={{ $cj.job }}"]
+              envFrom:
+                - configMapRef:
+                    name: {{ include "commercial-entitlements.fullname" $ }}-config
+                - secretRef:
+                    name: {{ $.Values.secretRef }}
+              env:
+                - name: RECONCILER_JOB
+                  value: {{ $cj.job | quote }}
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "256Mi"
+{{- end }}

@@ -1,0 +1,49 @@
+# https://golangci-lint.run/docs/configuration/
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - exhaustive
+    - forbidigo
+    - nilerr
+    - noctx
+    - revive
+    - unconvert
+    - unparam
+
+  settings:
+    revive:
+      rules:
+        - name: var-naming
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: 'pgxpool\.(New|NewWithConfig|Connect)$'
+          msg: "construct pools only via pgcommon.NewPool (internal/adapter/outbound/postgres/db.go) — never pgxpool directly"
+        - pattern: 'pgx\.Connect(Config)?$'
+          msg: "construct connections only via pgcommon.NewPool — never a bare pgx.Connect"
+        - pattern: 'sql\.Open$'
+          msg: "this service uses pgx/pgcommon, not database/sql"
+
+issues:
+  exclude-rules:
+    - path: '_test\.go'
+      linters:
+        - revive
+        - unparam
+        - noctx
+    - path: '^cmd/'
+      linters:
+        - revive
+    - path: '.*_test\.go'
+      linters:
+        - unparam
+        - noctx

@@ -1,0 +1,15 @@
+apiVersion: v2
+name: commercial-entitlements
+description: Commercial Entitlements Service — per-tenant entitlement management
+type: application
+version: 0.1.0-phase0
+appVersion: "0.1.0"
+kubeVersion: ">=1.28.0"
+keywords:
+  - commercial
+  - entitlements
+  - billing
+  - quota
+maintainers:
+  - name: BCBP Solutions
+    email: platform@bcbpsolutions.com

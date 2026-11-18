@@ -1,0 +1,95 @@
+asyncapi: "3.0.0"
+
+info:
+  title: Commercial Entitlements Service — Event Contracts
+  version: "1.0.0"
+  description: |
+    Publishes `tenant_entitlements_changed` whenever a tenant's effective
+    entitlement set is recomputed. Downstream services (quota enforcer, billing,
+    tenant portal) subscribe to react to plan changes, overrides, addon balance
+    updates and trial transitions.
+  contact:
+    name: BCBP Solutions Platform Team
+    email: platform@bcbpsolutions.com
+
+servers:
+  production:
+    host: "sns.ap-south-1.amazonaws.com"
+    protocol: "sns"
+    description: "AWS SNS entitlements topic"
+
+channels:
+  tenantEntitlements:
+    address: "arn:aws:sns:{region}:{account}:iam-entitlements-events"
+    description: "SNS topic for all entitlement change events."
+    bindings:
+      sns:
+        policy:
+          statements: []
+
+operations:
+  publishTenantEntitlementsChanged:
+    action: send
+    channel:
+      $ref: "#/channels/tenantEntitlements"
+    summary: "Publish when a tenant's effective entitlement set changes."
+    description: |
+      Emitted after every successful Recompute: plan-based, trial, override,
+      and addon-balance changes all produce this event.
+    messages:
+      - $ref: "#/components/messages/TenantEntitlementsChanged"
+
+components:
+  messages:
+    TenantEntitlementsChanged:
+      name: TenantEntitlementsChanged
+      title: Tenant Entitlements Changed
+      summary: "A tenant's effective entitlement set has been recomputed."
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/TenantEntitlementsChangedPayload"
+
+  schemas:
+    TenantEntitlementsChangedPayload:
+      type: object
+      required:
+        - tenant_id
+        - version
+        - cause
+        - computed_at
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          description: "UUID of the tenant whose entitlements were recomputed."
+        version:
+          type: integer
+          minimum: 1
+          description: "Monotonically increasing snapshot version number."
+        cause:
+          type: string
+          enum:
+            - plan_change
+            - override_change
+            - addon_change
+            - trial_change
+            - catalog_refresh
+            - billing_event
+            - manual_recompute
+            - tenant_lifecycle
+            - shortfall_resolution
+          description: "What triggered this recomputation."
+        changed_keys:
+          type: array
+          items:
+            type: string
+          description: "Limit keys whose values changed in this version."
+        previous_version:
+          type: integer
+          minimum: 0
+          description: "The snapshot version before this recomputation."
+        computed_at:
+          type: string
+          format: date-time
+          description: "Wall-clock time the recomputation completed (UTC)."
+      additionalProperties: false

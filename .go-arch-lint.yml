@@ -1,0 +1,104 @@
+# go-arch-lint rules for commercial-entitlements.
+# Component boundaries: core (domain + port + service) may not import adapters.
+# Adapters may import core. Adapters must not import each other.
+version: 1
+
+workdir: .
+
+allow:
+  depOnly: true
+
+components:
+  core_domain:
+    in: internal/core/domain/**
+  core_port:
+    in: internal/core/port/**
+  core_service:
+    in: internal/core/service/**
+  adapters_inbound_http:
+    in: internal/adapter/inbound/http/**
+  adapters_inbound_consumer:
+    in: internal/adapter/inbound/consumer/**
+  adapters_inbound_sqspipeline:
+    in: internal/adapter/inbound/sqspipeline/**
+  adapters_outbound_postgres:
+    in: internal/adapter/outbound/postgres/**
+  adapters_outbound_valkey:
+    in: internal/adapter/outbound/valkey/**
+  adapters_outbound_eventbus:
+    in: internal/adapter/outbound/eventbus/**
+  adapters_outbound_metrics:
+    in: internal/adapter/outbound/metrics/**
+  adapters_outbound_auditrecorder:
+    in: internal/adapter/outbound/auditrecorder/**
+  adapters_outbound_iamclient:
+    in: internal/adapter/outbound/iamclient/**
+  adapters_temporal:
+    in: internal/adapter/temporal/**
+  cmd:
+    in: cmd/**
+
+deps:
+  core_domain:
+    canUse: []
+  core_port:
+    canUse:
+      - core_domain
+  core_service:
+    canUse:
+      - core_domain
+      - core_port
+  adapters_inbound_http:
+    canUse:
+      - core_domain
+      - core_port
+  adapters_inbound_consumer:
+    canUse:
+      - core_domain
+      - core_port
+      - adapters_outbound_metrics
+  adapters_inbound_sqspipeline:
+    canUse:
+      - core_port
+  adapters_outbound_postgres:
+    canUse:
+      - core_domain
+      - core_port
+  adapters_outbound_valkey:
+    canUse:
+      - core_domain
+      - core_port
+  adapters_outbound_eventbus:
+    canUse:
+      - core_domain
+      - core_port
+  adapters_outbound_metrics:
+    canUse:
+      - core_domain
+  adapters_outbound_auditrecorder:
+    canUse:
+      - core_port
+  adapters_outbound_iamclient:
+    canUse:
+      - core_domain
+      - core_port
+  adapters_temporal:
+    canUse:
+      - core_domain
+      - core_port
+      - core_service
+  cmd:
+    canUse:
+      - core_domain
+      - core_port
+      - core_service
+      - adapters_inbound_http
+      - adapters_inbound_consumer
+      - adapters_inbound_sqspipeline
+      - adapters_outbound_postgres
+      - adapters_outbound_valkey
+      - adapters_outbound_eventbus
+      - adapters_outbound_metrics
+      - adapters_outbound_auditrecorder
+      - adapters_outbound_iamclient
+      - adapters_temporal

@@ -21,6 +21,9 @@ type EffectiveSetResponse struct {
 	TrialProfile *string                       `json:"trial_profile,omitempty"`
 	Cause        string                        `json:"cause"`
 	ComputedAt   time.Time                     `json:"computed_at"`
+	// AddonEligible signals whether the tenant may purchase quota add-on packs.
+	// Billing reads this for the BIL-ADD-1 finite-quota check (BL-OQ-3).
+	AddonEligible bool `json:"addon_eligible"`
 }
 
 type LimitValueResponse struct {
@@ -33,23 +36,24 @@ func effectiveSetToResponse(es *domain.EffectiveSet) EffectiveSetResponse {
 		limits[string(k)] = LimitValueResponse{Value: v.Value}
 	}
 	return EffectiveSetResponse{
-		TenantID:     es.TenantID,
-		Version:      es.Version,
-		PlanCode:     es.PlanCode,
-		State:        string(es.State),
-		FeatureFlags: es.FeatureFlags,
-		ModelTier:    es.ModelTier,
-		Limits:       limits,
-		TrialProfile: es.TrialProfile,
-		Cause:        string(es.Cause),
-		ComputedAt:   es.ComputedAt,
+		TenantID:      es.TenantID,
+		Version:       es.Version,
+		PlanCode:      es.PlanCode,
+		State:         string(es.State),
+		FeatureFlags:  es.FeatureFlags,
+		ModelTier:     es.ModelTier,
+		Limits:        limits,
+		TrialProfile:  es.TrialProfile,
+		Cause:         string(es.Cause),
+		ComputedAt:    es.ComputedAt,
+		AddonEligible: es.AddonEligible,
 	}
 }
 
 // ── Override ──────────────────────────────────────────────────────────────
 
 type SetOverrideBody struct {
-	Value     *int64     `json:"value"`                           // null = unlimited
+	Value     *int64     `json:"value"` // null = unlimited
 	Reason    string     `json:"reason" binding:"required"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
@@ -70,15 +74,15 @@ type OverrideResponse struct {
 }
 
 type OverrideHistoryResponse struct {
-	ID        int64      `json:"id"`
-	TenantID  uuid.UUID  `json:"tenant_id"`
-	LimitKey  string     `json:"limit_key"`
-	OldValue  *int64     `json:"old_value"`
-	NewValue  *int64     `json:"new_value"`
-	Action    string     `json:"action"`
-	Reason    string     `json:"reason"`
-	ActorID   uuid.UUID  `json:"actor_id"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID        int64     `json:"id"`
+	TenantID  uuid.UUID `json:"tenant_id"`
+	LimitKey  string    `json:"limit_key"`
+	OldValue  *int64    `json:"old_value"`
+	NewValue  *int64    `json:"new_value"`
+	Action    string    `json:"action"`
+	Reason    string    `json:"reason"`
+	ActorID   uuid.UUID `json:"actor_id"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 func overrideToResponse(o *domain.Override) OverrideResponse {
@@ -159,13 +163,13 @@ type RecordDrawdownBody struct {
 }
 
 type DrawdownResponse struct {
-	ID             uuid.UUID `json:"id"`
-	TenantID       uuid.UUID `json:"tenant_id"`
-	LimitKey       string    `json:"limit_key"`
-	TokensConsumed int64     `json:"tokens_consumed"`
-	PeriodStart    time.Time `json:"period_start"`
+	ID             uuid.UUID  `json:"id"`
+	TenantID       uuid.UUID  `json:"tenant_id"`
+	LimitKey       string     `json:"limit_key"`
+	TokensConsumed int64      `json:"tokens_consumed"`
+	PeriodStart    time.Time  `json:"period_start"`
 	RequestID      *uuid.UUID `json:"request_id,omitempty"`
-	RecordedAt     time.Time `json:"recorded_at"`
+	RecordedAt     time.Time  `json:"recorded_at"`
 }
 
 func drawdownToResponse(d *domain.QuotaAddonDrawdown) DrawdownResponse {
@@ -289,15 +293,15 @@ func trialOverrideToResponse(o *domain.TrialEntitlementOverride) TrialOverrideRe
 // ── Plan ──────────────────────────────────────────────────────────────────
 
 type PlanResponse struct {
-	Code                    string            `json:"code"`
-	DisplayName             string            `json:"display_name"`
-	ModelTier               string            `json:"model_tier"`
-	LLMTokenQuotaMonthly    *int64            `json:"llm_token_quota_monthly"`
-	APIRequestBudgetMonthly *int64            `json:"api_request_budget_monthly"`
-	APIRateLimitRPS         int               `json:"api_rate_limit_rps"`
-	WorkflowTemplateLimit   *int              `json:"workflow_template_limit"`
-	TenderLimit             *int              `json:"tender_limit"`
-	RecordVersion           int64             `json:"record_version"`
+	Code                    string `json:"code"`
+	DisplayName             string `json:"display_name"`
+	ModelTier               string `json:"model_tier"`
+	LLMTokenQuotaMonthly    *int64 `json:"llm_token_quota_monthly"`
+	APIRequestBudgetMonthly *int64 `json:"api_request_budget_monthly"`
+	APIRateLimitRPS         int    `json:"api_rate_limit_rps"`
+	WorkflowTemplateLimit   *int   `json:"workflow_template_limit"`
+	TenderLimit             *int   `json:"tender_limit"`
+	RecordVersion           int64  `json:"record_version"`
 }
 
 func planToResponse(p *domain.Plan) PlanResponse {

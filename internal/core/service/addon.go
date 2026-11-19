@@ -91,6 +91,23 @@ func (s *AddonService) AddAddon(ctx context.Context, req port.AddAddonRequest) (
 		if err := s.addons.Insert(txCtx, a); err != nil {
 			return fmt.Errorf("insert addon: %w", err)
 		}
+		if pub, ok := port.EventPublisherFromContext(txCtx); ok {
+			ev := domain.NewTenantEvent(domain.EventTypeTenantQuotaAddOnChanged, req.TenantID,
+				domain.TenantQuotaAddOnChangedPayload{
+					TenantID:    req.TenantID,
+					AddonID:     a.ID,
+					LimitKey:    string(req.LimitKey),
+					TotalTokens: req.TotalTokens,
+					Reason:      req.Reason,
+					Action:      "granted",
+					PurchasedAt: a.CreatedAt,
+					ExpiresAt:   req.ExpiresAt,
+				},
+			)
+			if err := pub.Enqueue(txCtx, ev); err != nil {
+				return fmt.Errorf("enqueue addon event: %w", err)
+			}
+		}
 		final = a
 		return nil
 	})
@@ -129,7 +146,27 @@ func (s *AddonService) RemoveAddon(ctx context.Context, req port.RemoveAddonRequ
 	a.UpdatedAt = now
 
 	txErr := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-		return s.addons.Update(txCtx, a)
+		if err := s.addons.Update(txCtx, a); err != nil {
+			return err
+		}
+		if pub, ok := port.EventPublisherFromContext(txCtx); ok {
+			ev := domain.NewTenantEvent(domain.EventTypeTenantQuotaAddOnChanged, a.TenantID,
+				domain.TenantQuotaAddOnChangedPayload{
+					TenantID:    a.TenantID,
+					AddonID:     a.ID,
+					LimitKey:    string(a.LimitKey),
+					TotalTokens: a.TotalTokens,
+					Reason:      req.Reason,
+					Action:      "revoked",
+					PurchasedAt: a.CreatedAt,
+					ExpiresAt:   a.ExpiresAt,
+				},
+			)
+			if err := pub.Enqueue(txCtx, ev); err != nil {
+				return fmt.Errorf("enqueue addon event: %w", err)
+			}
+		}
+		return nil
 	})
 	if txErr != nil {
 		return txErr
@@ -253,15 +290,15 @@ func (s *AddonService) RecordDrawdown(ctx context.Context, req port.RecordDrawdo
 func (s *AddonService) buildShortfall(ctx context.Context, drawdownID, tenantID uuid.UUID, limitKey domain.LimitKey, requested, drawn, shortfallTokens int64) (*domain.QuotaAddonShortfall, error) {
 	now := time.Now().UTC()
 	sf := &domain.QuotaAddonShortfall{
-		ID:          uuid.New(),
-		TenantID:    tenantID,
-		DrawdownID:  drawdownID,
-		LimitKey:    limitKey,
-		Requested:   requested,
-		Available:   drawn,
-		Shortfall:   shortfallTokens,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:         uuid.New(),
+		TenantID:   tenantID,
+		DrawdownID: drawdownID,
+		LimitKey:   limitKey,
+		Requested:  requested,
+		Available:  drawn,
+		Shortfall:  shortfallTokens,
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 
 	// ENT-D11: auto-accept if shortfall is small relative to request.
@@ -367,7 +404,27 @@ func (s *AddonService) ExpireAddons(ctx context.Context) (int, error) {
 		a.RecordVersion++
 		a.UpdatedAt = now
 		txErr := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-			return s.addons.Update(txCtx, a)
+			if err := s.addons.Update(txCtx, a); err != nil {
+				return err
+			}
+			if pub, ok := port.EventPublisherFromContext(txCtx); ok {
+				ev := domain.NewTenantEvent(domain.EventTypeTenantQuotaAddOnChanged, a.TenantID,
+					domain.TenantQuotaAddOnChangedPayload{
+						TenantID:    a.TenantID,
+						AddonID:     a.ID,
+						LimitKey:    string(a.LimitKey),
+						TotalTokens: a.TotalTokens,
+						Reason:      "expired",
+						Action:      "expired",
+						PurchasedAt: a.CreatedAt,
+						ExpiresAt:   a.ExpiresAt,
+					},
+				)
+				if err := pub.Enqueue(txCtx, ev); err != nil {
+					return fmt.Errorf("enqueue addon event: %w", err)
+				}
+			}
+			return nil
 		})
 		if txErr != nil {
 			s.logger().Warn("expire addon failed",

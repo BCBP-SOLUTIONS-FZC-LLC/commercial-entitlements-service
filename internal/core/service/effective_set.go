@@ -25,15 +25,15 @@ import (
 // ENT-INV-6: Recompute is idempotent — if the computed set is byte-identical
 // to the latest snapshot the write and event emission are skipped.
 type EffectiveSetService struct {
-	snapshots  port.SnapshotRepository
-	overrides  port.OverrideRepository
-	addons     port.AddonRepository
-	trials     port.TrialRepository
-	catalog    port.CatalogService
-	iamClient  port.IAMClient
-	cache      port.Cache
-	txRunner   port.TxRunner
-	log        port.Logger
+	snapshots port.SnapshotRepository
+	overrides port.OverrideRepository
+	addons    port.AddonRepository
+	trials    port.TrialRepository
+	catalog   port.CatalogService
+	iamClient port.IAMClient
+	cache     port.Cache
+	txRunner  port.TxRunner
+	log       port.Logger
 }
 
 // Ensure EffectiveSetService implements port.EffectiveSetService at compile time.
@@ -193,15 +193,16 @@ func (s *EffectiveSetService) Recompute(ctx context.Context, tenantID uuid.UUID,
 	// Build computed EffectiveSet.
 	computedAt := time.Now().UTC()
 	es := &domain.EffectiveSet{
-		TenantID:     tenantID,
-		PlanCode:     sub.PlanCode,
-		State:        state,
-		FeatureFlags: plan.FeatureFlags(),
-		ModelTier:    plan.ModelTier,
-		Limits:       limits,
-		TrialProfile: trialProfile,
-		Cause:        cause,
-		ComputedAt:   computedAt,
+		TenantID:      tenantID,
+		PlanCode:      sub.PlanCode,
+		State:         state,
+		FeatureFlags:  plan.FeatureFlags(),
+		ModelTier:     plan.ModelTier,
+		Limits:        limits,
+		TrialProfile:  trialProfile,
+		Cause:         cause,
+		ComputedAt:    computedAt,
+		AddonEligible: computeAddonEligible(state, limits),
 	}
 
 	// ENT-INV-6 no-op guard: compare against latest snapshot.
@@ -299,17 +300,36 @@ func effectiveSetUnchanged(es *domain.EffectiveSet, snap *domain.EntitlementSnap
 
 func snapToEffectiveSet(snap *domain.EntitlementSnapshot) *domain.EffectiveSet {
 	return &domain.EffectiveSet{
-		TenantID:     snap.TenantID,
-		Version:      snap.Version,
-		PlanCode:     snap.Plan,
-		State:        snap.State,
-		FeatureFlags: snap.FeatureFlags,
-		ModelTier:    snap.ModelTier,
-		Limits:       snap.Limits,
-		TrialProfile: snap.TrialProfile,
-		Cause:        snap.Cause,
-		ComputedAt:   snap.ComputedAt,
+		TenantID:      snap.TenantID,
+		Version:       snap.Version,
+		PlanCode:      snap.Plan,
+		State:         snap.State,
+		FeatureFlags:  snap.FeatureFlags,
+		ModelTier:     snap.ModelTier,
+		Limits:        snap.Limits,
+		TrialProfile:  snap.TrialProfile,
+		Cause:         snap.Cause,
+		ComputedAt:    snap.ComputedAt,
+		AddonEligible: computeAddonEligible(snap.State, snap.Limits),
 	}
+}
+
+// computeAddonEligible returns true when the tenant may purchase quota add-on
+// packs: the subscription must be active (not trial/suspended/etc.) and at
+// least one addable limit key must be finite (BL-OQ-3).
+func computeAddonEligible(state domain.EntitlementState, limits map[domain.LimitKey]domain.LimitValue) bool {
+	if state != domain.EntitlementStateActive {
+		return false
+	}
+	for _, key := range []domain.LimitKey{
+		domain.LimitKeyLLMTokenQuotaMonthly,
+		domain.LimitKeyAPIRequestBudgetMonthly,
+	} {
+		if lv, ok := limits[key]; ok && !lv.IsUnlimited() {
+			return true
+		}
+	}
+	return false
 }
 
 func effectiveSetToSnap(es *domain.EffectiveSet) *domain.EntitlementSnapshot {

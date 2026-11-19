@@ -14,6 +14,11 @@ type UUID = uuid.UUID
 // every recomputation of a tenant's effective entitlement set.
 const EventTypeTenantEntitlementsChanged = "tenant_entitlements_changed"
 
+// EventTypeTenantQuotaAddOnChanged is emitted by Entitlements (and only by
+// Entitlements) when a quota add-on pack is granted, revoked, or expires.
+// Billing uses purchased_at as the 12-month expiry anchor (BL-OQ-4, BL-OQ-20).
+const EventTypeTenantQuotaAddOnChanged = "tenant_quota_add_on_changed"
+
 // TopicEntitlements is the SNS topic that carries entitlement events.
 const TopicEntitlements = "entitlements"
 
@@ -78,6 +83,21 @@ type TenantEntitlementsChangedPayload struct {
 	ChangedKeys     []string          `json:"changed_keys"`
 	PreviousVersion int64             `json:"previous_version"`
 	ComputedAt      time.Time         `json:"computed_at"`
+}
+
+// TenantQuotaAddOnChangedPayload is the event body for EventTypeTenantQuotaAddOnChanged.
+// Action is one of "granted" | "revoked" | "expired".
+// PurchasedAt is the wall-clock time the add-on was originally granted; Billing
+// uses it as the 12-month expiry basis regardless of when this event arrives (BL-OQ-4).
+type TenantQuotaAddOnChangedPayload struct {
+	TenantID    uuid.UUID  `json:"tenant_id"`
+	AddonID     uuid.UUID  `json:"addon_id"`
+	LimitKey    string     `json:"limit_key"`
+	TotalTokens int64      `json:"total_tokens"`
+	Reason      string     `json:"reason"`
+	Action      string     `json:"action"`
+	PurchasedAt time.Time  `json:"purchased_at"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 }
 
 // InboundBillingEvent represents a billing subscription event from upstream.

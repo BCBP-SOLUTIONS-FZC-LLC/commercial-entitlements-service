@@ -51,29 +51,33 @@ const (
 type EffectiveSetCause string
 
 const (
-	CausePlanChange            EffectiveSetCause = "plan_change"
-	CauseOverrideChange        EffectiveSetCause = "override_change"
-	CauseAddonChange           EffectiveSetCause = "addon_change"
-	CauseTrialChange           EffectiveSetCause = "trial_change"
-	CauseCatalogRefresh        EffectiveSetCause = "catalog_refresh"
-	CauseBillingEvent          EffectiveSetCause = "billing_event"
-	CauseManualRecompute       EffectiveSetCause = "manual_recompute"
-	CauseTenantLifecycle       EffectiveSetCause = "tenant_lifecycle"
-	CauseShortfallResolution   EffectiveSetCause = "shortfall_resolution"
+	CausePlanChange          EffectiveSetCause = "plan_change"
+	CauseOverrideChange      EffectiveSetCause = "override_change"
+	CauseAddonChange         EffectiveSetCause = "addon_change"
+	CauseTrialChange         EffectiveSetCause = "trial_change"
+	CauseCatalogRefresh      EffectiveSetCause = "catalog_refresh"
+	CauseBillingEvent        EffectiveSetCause = "billing_event"
+	CauseManualRecompute     EffectiveSetCause = "manual_recompute"
+	CauseTenantLifecycle     EffectiveSetCause = "tenant_lifecycle"
+	CauseShortfallResolution EffectiveSetCause = "shortfall_resolution"
 )
 
 // EffectiveSet is the computed, merged entitlement set for one tenant at a
 // point in time. It is derived by the EffectiveSetService from plan baseline,
 // trial-profile, trial overrides, operator overrides, and addon quota balance.
 type EffectiveSet struct {
-	TenantID        uuid.UUID                `json:"tenant_id"`
-	Version         int64                    `json:"version"`
-	PlanCode        string                   `json:"plan_code"`
-	State           EntitlementState         `json:"state"`
-	FeatureFlags    []string                 `json:"feature_flags"`
-	ModelTier       string                   `json:"model_tier"`
-	Limits          map[LimitKey]LimitValue  `json:"limits"`
-	TrialProfile    *string                  `json:"trial_profile,omitempty"`
-	Cause           EffectiveSetCause        `json:"cause"`
-	ComputedAt      time.Time                `json:"computed_at"`
+	TenantID     uuid.UUID               `json:"tenant_id"`
+	Version      int64                   `json:"version"`
+	PlanCode     string                  `json:"plan_code"`
+	State        EntitlementState        `json:"state"`
+	FeatureFlags []string                `json:"feature_flags"`
+	ModelTier    string                  `json:"model_tier"`
+	Limits       map[LimitKey]LimitValue `json:"limits"`
+	TrialProfile *string                 `json:"trial_profile,omitempty"`
+	Cause        EffectiveSetCause       `json:"cause"`
+	ComputedAt   time.Time               `json:"computed_at"`
+	// AddonEligible is true when the tenant's current state and plan allow
+	// purchasing quota add-on packs. Billing reads this field for the
+	// BIL-ADD-1 finite-quota eligibility check (BL-OQ-3).
+	AddonEligible bool `json:"addon_eligible"`
 }

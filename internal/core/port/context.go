@@ -3,23 +3,23 @@ package port
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 )
 
 // ── Transaction context ───────────────────────────────────────────────────────
 
-// txKey is the unexported context key for pgx.Tx.
+// txKey is the unexported context key for the active transaction.
 type txKey struct{}
 
-// WithTx stores the active pgx.Tx in ctx so repository helpers and
+// WithTx stores the active transaction in ctx so repository helpers and
 // EventPublisher.Enqueue join the same transaction.
-func WithTx(ctx context.Context, tx pgx.Tx) context.Context {
+func WithTx(ctx context.Context, tx pgcommon.Tx) context.Context {
 	return context.WithValue(ctx, txKey{}, tx)
 }
 
-// TxFromContext retrieves the active pgx.Tx set by WithTx, if any.
-func TxFromContext(ctx context.Context) (pgx.Tx, bool) {
-	tx, ok := ctx.Value(txKey{}).(pgx.Tx)
+// TxFromContext retrieves the active transaction set by WithTx, if any.
+func TxFromContext(ctx context.Context) (pgcommon.Tx, bool) {
+	tx, ok := ctx.Value(txKey{}).(pgcommon.Tx)
 	return tx, ok
 }
 

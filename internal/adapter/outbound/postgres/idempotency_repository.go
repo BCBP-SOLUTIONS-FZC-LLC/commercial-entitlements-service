@@ -4,10 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 )
 
 // IdempotencyRepository provides at-most-once delivery semantics for event
@@ -57,7 +55,7 @@ func (r *IdempotencyRepository) ProcessOnce(ctx context.Context, consumer, event
 func (r *IdempotencyRepository) Prune(ctx context.Context, olderThan time.Duration, batchLimit int) (int64, error) {
 	cutoff := time.Now().UTC().Add(-olderThan)
 	var deleted int64
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		// PostgreSQL does not support LIMIT on DELETE directly; use a CTE.
 		tag, err := tx.Exec(ctx, `
 			DELETE FROM processed_events

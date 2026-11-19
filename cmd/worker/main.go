@@ -11,6 +11,7 @@ import (
 	temporalclient "go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/inbound/sqspipeline"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/eventbus"
 	iamclientadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/iamclient"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/postgres"
@@ -38,7 +39,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "init logger: "+err.Error())
 		os.Exit(1)
 	}
-	log := &slogAdapter{rawLog}
 
 	cfg := gincommon.Config{
 		Logger:       rawLog,
@@ -61,10 +61,13 @@ func main() {
 	defer shutdownTracing()
 	defer func() { _ = gincommon.Shutdown(rawLog) }()
 
+	_ = gincommon.ObservabilityMiddlewares(cfg)
+	sqspipeline.InstallTracingHooks(cfg.ServiceName)
+
 	pgCfg, _ := pgcommon.ConfigFromEnv()
 	pgCfg.DSN = pgadapter.DSNFromEnv()
 	pgCfg.GUCProvider = pgcommon.GUCSetFromContext
-	pgCfg.Logger = pgadapter.NewLoggerAdapter(log)
+	pgCfg.Logger = pgadapter.NewLoggerAdapter(rawLog)
 	pgCfg.Tracer = gincommon.NewSpanTracer(cfg.ServiceName)
 	pool, err := pgcommon.NewPool(context.Background(), pgCfg)
 	if err != nil {
@@ -73,11 +76,11 @@ func main() {
 	}
 	defer pool.Close()
 
-	cache := valkeyadapter.New(envOr("VALKEY_URL", "localhost:6379")).WithLogger(log)
+	cache := valkeyadapter.New(envOr("VALKEY_URL", "localhost:6379")).WithLogger(rawLog)
 	defer cache.Close()
 
 	enqueueCodec, _ := eventbusadapter.NewValidatingCodec(eventbusadapter.NoopCodec{})
-	outboxPublisher := eventbusadapter.New(eventbusadapter.EventSource, enqueueCodec)
+	outboxPublisher := eventbusadapter.New(eventbusadapter.EventSource, enqueueCodec).WithLogger(rawLog)
 	txRunner := pgadapter.NewTxRunner(pool, outboxPublisher)
 
 	snapshotRepo := pgadapter.NewSnapshotRepository(pool)
@@ -86,8 +89,8 @@ func main() {
 	drawdownRepo := pgadapter.NewDrawdownRepository(pool)
 	shortfallRepo := pgadapter.NewShortfallRepository(pool)
 	trialRepo := pgadapter.NewTrialRepository(pool)
-	iamClient := iamclientadapter.New(log)
-	catalogSvc := service.NewCatalogService(iamClient, cache, nil)
+	iamClient := iamclientadapter.New(rawLog)
+	catalogSvc := service.NewCatalogService(iamClient, cache, nil).WithLogger(rawLog)
 	effectSvc := service.NewEffectiveSetService(snapshotRepo, overrideRepo, addonRepo, trialRepo, catalogSvc, iamClient, cache, txRunner)
 	overrideSvc := service.NewOverrideService(overrideRepo, effectSvc, txRunner)
 	addonSvc := service.NewAddonService(addonRepo, drawdownRepo, shortfallRepo, effectSvc, txRunner)
@@ -107,7 +110,7 @@ func main() {
 	w.RegisterWorkflow(temporaladapter.ExpiryFanoutWorkflow)
 	w.RegisterActivity(acts)
 
-	log.Info("temporal worker starting", map[string]interface{}{"queue": temporaladapter.TaskQueue})
+	rawLog.Info("temporal worker starting", map[string]any{"queue": temporaladapter.TaskQueue})
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		fmt.Fprintf(os.Stderr, "worker stopped: %v\n", err)
 		os.Exit(1)
@@ -120,18 +123,3 @@ func envOr(key, def string) string {
 	}
 	return def
 }
-
-// slogAdapter bridges the gincommon logger to port.Logger interface.
-type slogAdapter struct {
-	inner interface {
-		Info(msg string, args ...interface{})
-		Warn(msg string, args ...interface{})
-		Error(msg string, args ...interface{})
-		Debug(msg string, args ...interface{})
-	}
-}
-
-func (a *slogAdapter) Info(msg string, fields map[string]interface{})  { a.inner.Info(msg, fields) }
-func (a *slogAdapter) Warn(msg string, fields map[string]interface{})  { a.inner.Warn(msg, fields) }
-func (a *slogAdapter) Error(msg string, fields map[string]interface{}) { a.inner.Error(msg, fields) }
-func (a *slogAdapter) Debug(msg string, fields map[string]interface{}) { a.inner.Debug(msg, fields) }

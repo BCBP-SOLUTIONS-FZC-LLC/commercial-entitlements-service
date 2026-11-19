@@ -12,13 +12,13 @@ import (
 	"sync"
 	"time"
 
-	"go.opentelemetry.io/otel/trace"
-
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/cmd/reconciler/jobs"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/inbound/sqspipeline"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/eventbus"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/metrics"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/postgres"
+	valkeyadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/valkey"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/cmd/reconciler/jobs"
 
 	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
@@ -89,20 +89,7 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "init tracing: "+err.Error())
 		return 1
 	}
-	port.SetTraceExtractor(func(ctx context.Context) string {
-		sc := trace.SpanFromContext(ctx).SpanContext()
-		if !sc.IsValid() {
-			return ""
-		}
-		return sc.TraceID().String()
-	})
-	port.SetSpanContextExtractor(func(ctx context.Context) port.SpanContext {
-		sc := trace.SpanFromContext(ctx).SpanContext()
-		if !sc.IsValid() {
-			return port.SpanContext{}
-		}
-		return port.SpanContext{TraceID: sc.TraceID().String(), SpanID: sc.SpanID().String()}
-	})
+	sqspipeline.InstallTracingHooks(serviceName)
 	defer func() {
 		if err := gincommon.Shutdown(rawLog); err != nil {
 			log.Error("logger/tracer flush error", "error", err.Error())
@@ -200,6 +187,20 @@ func run() int {
 	shortfallRepo := pgadapter.NewShortfallRepository(pool)
 	idempotencyRepo := pgadapter.NewIdempotencyRepository(pool, outboxPublisher)
 
+	// Valkey cache — optional for most reconciler jobs but required for quota-reset.
+	var cache port.Cache
+	if valkeyURL := envOr("VALKEY_URL", ""); valkeyURL != "" {
+		c := valkeyadapter.New(valkeyURL).WithLogger(rawLog)
+		defer func() {
+			if err := c.Close(); err != nil {
+				log.Warn("valkey close error", "error", err.Error())
+			}
+		}()
+		cache = c
+	} else if jobName == "quota-reset" {
+		log.Warn("VALKEY_URL unset — quota-reset will skip cache operations")
+	}
+
 	jctx := &jobs.Context{
 		TxRunner:               txRunner,
 		Overrides:              overrideRepo,
@@ -207,6 +208,7 @@ func run() int {
 		Shortfalls:             shortfallRepo,
 		Inbox:                  idempotencyRepo,
 		OutboxRunner:           outboxRunner,
+		Cache:                  cache,
 		Logger:                 log,
 		BatchLimit:             envInt("RECONCILER_BATCH_LIMIT", 500),
 		OutboxRetentionDays:    envInt("OUTBOX_RETENTION_DAYS", 8),

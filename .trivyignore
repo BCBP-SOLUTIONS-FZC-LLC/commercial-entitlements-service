@@ -1,0 +1,37 @@
+# .trivyignore — CVE / advisory suppressions for commercial-entitlements.
+# Each entry must include an explanation and (where possible) an expiry date.
+# Remove entries once the upstream fix is available and the image is re-pinned.
+#
+# Format: <CVE-or-advisory-ID> [exp:YYYY-MM-DD]
+#         # comment explaining why it is suppressed and when to revisit
+
+# DLA-4792-1: tzdata new timezone database (2026b → 2026c).
+# This is a timezone data update, not a security vulnerability.
+# gcr.io/distroless/static-debian12:nonroot does not yet ship the fixed
+# package version (tzdata 2026c-0+deb12u1); no patched distroless image is
+# available upstream. Remove this entry once distroless ships tzdata 2026c.
+DLA-4792-1
+
+# DLA-4845-1: ca-certificates 20250419~deb12u1 → deb12u2.
+# Removes distrusted Comodo "AAA Certificate Services" and "emSign ECC Root CA - G3" roots.
+# Not exploitable: the Dockerfile's certs stage (debian:bookworm-slim, deb12u2) already
+# replaces distroless's /etc/ssl/certs/ca-certificates.crt. Trivy reports the finding
+# only because it reads distroless's dpkg status metadata.
+# Remove this entry and re-pin once distroless ships ca-certificates deb12u2.
+DLA-4845-1 exp:2026-11-21
+
+# DLA-4854-1: tzdata 2026b-0+deb12u1 → 2026e-0+deb12u1, timezone-database refresh.
+# Not exploitable: the service never loads a zone (no time.LoadLocation, no
+# time/tzdata, no time.Local use; all timestamps are UTC).
+# Blocked upstream: distroless does not yet ship tzdata >= 2026e.
+# Remove this entry and re-pin once distroless ships tzdata >= 2026e.
+DLA-4854-1 exp:2026-11-30
+
+# DLA-4867-1: tzdata 2026b → 2026f, same situation as DLA-4854-1 above.
+DLA-4867-1 exp:2026-11-30
+
+# GO-2026-5932: golang.org/x/crypto/openpgp is unmaintained and unsafe by design.
+# Not exploitable: no package under cmd/, internal/ imports x/crypto/openpgp.
+# The module arrives only via testcontainers-go (test dependency — not in production image).
+# Remove this entry and bump x/crypto once a tagged release carries the fix.
+GO-2026-5932 exp:2026-12-03

@@ -30,7 +30,6 @@ func main() {
 		os.Exit(1)
 	}
 	log := port.NewSlogStyleLogger(rawLog)
-	plainLog := &slogPortAdapter{log}
 
 	migrationDSN := pgadapter.MigrationDSNFromEnv()
 	if migrationDSN == "" {
@@ -41,25 +40,9 @@ func main() {
 	ctx := context.Background()
 	log.Info("starting schema migration", "dsn_set", true)
 
-	if err := pgadapter.MigrateSchema(ctx, migrationDSN, plainLog); err != nil {
+	if err := pgadapter.MigrateSchema(ctx, migrationDSN, rawLog); err != nil {
 		log.Error("migration failed", "error", err.Error())
 		os.Exit(1)
 	}
 	log.Info("migration completed successfully")
-}
-
-// slogPortAdapter bridges port.SlogStyleLogger to port.Logger.
-type slogPortAdapter struct{ s port.SlogStyleLogger }
-
-func (a *slogPortAdapter) Info(msg string, fields map[string]interface{}) {
-	a.s.Info(msg, "fields", fields)
-}
-func (a *slogPortAdapter) Warn(msg string, fields map[string]interface{}) {
-	a.s.Warn(msg, "fields", fields)
-}
-func (a *slogPortAdapter) Error(msg string, fields map[string]interface{}) {
-	a.s.Error(msg, "fields", fields)
-}
-func (a *slogPortAdapter) Debug(msg string, fields map[string]interface{}) {
-	a.s.Debug(msg, "fields", fields)
 }

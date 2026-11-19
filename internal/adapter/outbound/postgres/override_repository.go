@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 
@@ -28,7 +27,7 @@ var _ port.OverrideRepository = (*OverrideRepository)(nil)
 
 // Upsert inserts or updates an override for the given tenant+key.
 func (r *OverrideRepository) Upsert(ctx context.Context, o *domain.Override) error {
-	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	return withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO entitlement_overrides
 				(tenant_id, limit_key, value, reason, set_by, expires_at, record_version, created_at, updated_at)
@@ -50,7 +49,7 @@ func (r *OverrideRepository) Upsert(ctx context.Context, o *domain.Override) err
 
 // Delete removes an override for a tenant+key.
 func (r *OverrideRepository) Delete(ctx context.Context, tenantID uuid.UUID, key domain.LimitKey) error {
-	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	return withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		_, err := tx.Exec(ctx,
 			`DELETE FROM entitlement_overrides WHERE tenant_id=$1 AND limit_key=$2`,
 			tenantID, string(key))
@@ -62,7 +61,7 @@ func (r *OverrideRepository) Delete(ctx context.Context, tenantID uuid.UUID, key
 func (r *OverrideRepository) Get(ctx context.Context, tenantID uuid.UUID, key domain.LimitKey) (*domain.Override, error) {
 	var o domain.Override
 	var lk string
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		return tx.QueryRow(ctx, `
 			SELECT tenant_id, limit_key, value, reason, set_by, expires_at, record_version, created_at, updated_at
 			FROM entitlement_overrides
@@ -70,7 +69,7 @@ func (r *OverrideRepository) Get(ctx context.Context, tenantID uuid.UUID, key do
 			Scan(&o.TenantID, &lk, &o.Value, &o.Reason, &o.SetBy, &o.ExpiresAt, &o.RecordVersion, &o.CreatedAt, &o.UpdatedAt)
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, pgcommon.ErrNoRows) {
 			return nil, domain.ErrOverrideNotFound
 		}
 		return nil, wrapConnErr(err)
@@ -82,7 +81,7 @@ func (r *OverrideRepository) Get(ctx context.Context, tenantID uuid.UUID, key do
 // ListByTenant returns all overrides for a tenant, ordered by limit_key.
 func (r *OverrideRepository) ListByTenant(ctx context.Context, tenantID uuid.UUID) ([]domain.Override, error) {
 	var out []domain.Override
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT tenant_id, limit_key, value, reason, set_by, expires_at, record_version, created_at, updated_at
 			FROM entitlement_overrides
@@ -101,7 +100,7 @@ func (r *OverrideRepository) ListByTenant(ctx context.Context, tenantID uuid.UUI
 // ListExpired returns all overrides whose expires_at is in the past.
 func (r *OverrideRepository) ListExpired(ctx context.Context, before time.Time) ([]domain.Override, error) {
 	var out []domain.Override
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT tenant_id, limit_key, value, reason, set_by, expires_at, record_version, created_at, updated_at
 			FROM entitlement_overrides
@@ -118,7 +117,7 @@ func (r *OverrideRepository) ListExpired(ctx context.Context, before time.Time) 
 
 // InsertHistory records a mutation history entry.
 func (r *OverrideRepository) InsertHistory(ctx context.Context, h *domain.OverrideHistory) error {
-	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	return withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO entitlement_override_history
 				(tenant_id, limit_key, old_value, new_value, action, reason, actor_id, created_at)
@@ -133,7 +132,7 @@ func (r *OverrideRepository) InsertHistory(ctx context.Context, h *domain.Overri
 // ListHistory returns the audit trail for a tenant+key, newest first.
 func (r *OverrideRepository) ListHistory(ctx context.Context, tenantID uuid.UUID, key domain.LimitKey) ([]domain.OverrideHistory, error) {
 	var out []domain.OverrideHistory
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT id, tenant_id, limit_key, old_value, new_value, action, reason, actor_id, created_at
 			FROM entitlement_override_history
@@ -158,7 +157,7 @@ func (r *OverrideRepository) ListHistory(ctx context.Context, tenantID uuid.UUID
 	return out, err
 }
 
-func collectOverrides(rows pgx.Rows) ([]domain.Override, error) {
+func collectOverrides(rows pgcommon.Rows) ([]domain.Override, error) {
 	var out []domain.Override
 	for rows.Next() {
 		var o domain.Override

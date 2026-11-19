@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 
@@ -29,7 +28,7 @@ var _ port.ShortfallRepository = (*ShortfallRepository)(nil)
 
 // Insert creates a new shortfall record.
 func (r *ShortfallRepository) Insert(ctx context.Context, s *domain.QuotaAddonShortfall) error {
-	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	return withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO quota_addon_shortfalls
 				(id, tenant_id, drawdown_id, limit_key, requested, available,
@@ -47,7 +46,7 @@ func (r *ShortfallRepository) Insert(ctx context.Context, s *domain.QuotaAddonSh
 
 // Update applies mutations to an existing shortfall.
 func (r *ShortfallRepository) Update(ctx context.Context, s *domain.QuotaAddonShortfall) error {
-	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	return withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		tag, err := tx.Exec(ctx, `
 			UPDATE quota_addon_shortfalls
 			SET status          = $3, disposition = $4,
@@ -71,7 +70,7 @@ func (r *ShortfallRepository) Update(ctx context.Context, s *domain.QuotaAddonSh
 // GetByDrawdownID retrieves the shortfall raised for a specific drawdown.
 func (r *ShortfallRepository) GetByDrawdownID(ctx context.Context, drawdownID uuid.UUID) (*domain.QuotaAddonShortfall, error) {
 	var s domain.QuotaAddonShortfall
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		return scanShortfallRow(tx.QueryRow(ctx, shortfallSelect+` WHERE drawdown_id=$1`, drawdownID), &s)
 	})
 	if err != nil {
@@ -83,7 +82,7 @@ func (r *ShortfallRepository) GetByDrawdownID(ctx context.Context, drawdownID uu
 // GetByID retrieves a shortfall by primary key.
 func (r *ShortfallRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.QuotaAddonShortfall, error) {
 	var s domain.QuotaAddonShortfall
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		return scanShortfallRow(tx.QueryRow(ctx, shortfallSelect+` WHERE id=$1`, id), &s)
 	})
 	if err != nil {
@@ -110,7 +109,7 @@ func (r *ShortfallRepository) ListByTenant(ctx context.Context, tenantID uuid.UU
 	sb.WriteString(` ORDER BY created_at DESC`)
 
 	var out []domain.QuotaAddonShortfall
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		rows, err := tx.Query(ctx, sb.String(), args...)
 		if err != nil {
 			return err
@@ -132,7 +131,7 @@ func (r *ShortfallRepository) ListByTenant(ctx context.Context, tenantID uuid.UU
 // rolling window (used by ENT-D12 escalation policy).
 func (r *ShortfallRepository) CountRecentForTenant(ctx context.Context, tenantID uuid.UUID, windowDays int) (int, error) {
 	var count int
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		return tx.QueryRow(ctx, `
 			SELECT COUNT(*)
 			FROM quota_addon_shortfalls
@@ -164,7 +163,7 @@ func scanShortfallRow(row shortfallScanner, s *domain.QuotaAddonShortfall) error
 		&s.DispositionNote, &s.CreatedAt, &s.UpdatedAt, &s.ResolvedAt,
 	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, pgcommon.ErrNoRows) {
 			return domain.ErrShortfallNotFound
 		}
 		return err

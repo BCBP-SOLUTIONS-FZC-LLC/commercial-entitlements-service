@@ -116,6 +116,9 @@ type Cache interface {
 	SetQuotaCeiling(ctx context.Context, tenantID uuid.UUID, limitKey domain.LimitKey, ceiling *int64) error
 	// ENT-D13: usage counter reset at billing period rollover.
 	ResetUsageCounter(ctx context.Context, tenantID uuid.UUID, limitKey domain.LimitKey, period string) error
+	// DeleteUsageCounters deletes all quota:usage:*:{limitKey}:{period} keys via
+	// SCAN+DEL so the reconciler can flush stale counters without enumerating tenants.
+	DeleteUsageCounters(ctx context.Context, limitKey domain.LimitKey, period string) (int64, error)
 
 	GetPlan(ctx context.Context, planCode string) (*domain.Plan, error)
 	SetPlan(ctx context.Context, plan *domain.Plan) error

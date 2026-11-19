@@ -1,0 +1,184 @@
+name: Release
+
+"on":
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/bcbp-solutions-fzc-llc/commercial-entitlements
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  GOPRIVATE: github.com/BCBP-SOLUTIONS-FZC-LLC/*
+  GONOSUMDB: github.com/BCBP-SOLUTIONS-FZC-LLC/*
+
+jobs:
+  verify-tag:
+    name: verify tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify release tag matches HEAD
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: bash .github/scripts/verify-release-tag.sh
+
+      - name: Verify CHANGELOG entry
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: bash .github/scripts/verify-changelog-entry.sh
+
+  build-release-image:
+    name: build release image
+    runs-on: ubuntu-latest
+    needs: verify-tag
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tags:   ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare build
+        id: prep
+        env:
+          REGISTRY_REF: ${{ env.IMAGE_NAME }}:buildcache
+          CAN_PUSH: 'true'
+        run: bash .github/scripts/docker-build-prep.sh
+
+      - name: Build and push release image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: ${{ steps.prep.outputs.from }}
+          cache-to: ${{ steps.prep.outputs.to }}
+          secrets: |
+            go_private_token=${{ secrets.CI_REPO_READ_TOKEN }}
+          provenance: true
+          sbom: true
+
+  trivy-release:
+    name: Trivy scan (release)
+    runs-on: ubuntu-latest
+    needs: build-release-image
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}@${{ needs.build-release-image.outputs.image-digest }}
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH,UNKNOWN
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+
+  github-release:
+    name: GitHub release
+    runs-on: ubuntu-latest
+    needs: [build-release-image, trivy-release]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Configure private module access
+        run: git config --global url."https://x-access-token:${{ secrets.CI_REPO_READ_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Export SLSA provenance
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_DIGEST: ${{ needs.build-release-image.outputs.image-digest }}
+        run: bash .github/scripts/export-image-provenance.sh
+
+      - name: Extract SBOM
+        run: |
+          cosign download sbom \
+            "${{ env.IMAGE_NAME }}@${{ needs.build-release-image.outputs.image-digest }}" \
+            > sbom.cyclonedx.json || echo '{}' > sbom.cyclonedx.json
+
+      - name: Prepare release binaries
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: bash .github/scripts/prepare-release-binary.sh
+
+      - name: Extract release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_VERSION: ${{ github.ref_name }}
+          IMAGE_DIGEST: ${{ needs.build-release-image.outputs.image-digest }}
+        run: bash .github/scripts/extract-release-notes.sh
+
+      - name: Create GitHub release
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_DIGEST: ${{ needs.build-release-image.outputs.image-digest }}
+        run: bash .github/scripts/create-github-release.sh
+
+      - name: Stage event schemas on release
+        env:
+          GLUE_REGISTRY_ENTITLEMENTS_NAME: ${{ vars.GLUE_REGISTRY_ENTITLEMENTS_NAME }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
+        run: bash .github/scripts/stage-produced-event-schemas.sh

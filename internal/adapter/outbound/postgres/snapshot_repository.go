@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/google/uuid"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
@@ -42,7 +41,7 @@ func (r *SnapshotRepository) Upsert(ctx context.Context, snap *domain.Entitlemen
 		return fmt.Errorf("marshal feature_flags: %w", err)
 	}
 
-	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	return withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO entitlement_snapshots (
 				tenant_id, version, source_record_version, plan, state,
@@ -84,7 +83,7 @@ func (r *SnapshotRepository) GetLatest(ctx context.Context, tenantID uuid.UUID) 
 	var state, cause string
 	var computedAt time.Time
 
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		return tx.QueryRow(ctx, `
 			SELECT tenant_id, version, source_record_version, plan, state,
 			       feature_flags, model_tier, limits, trial_profile, cause, computed_at
@@ -105,7 +104,7 @@ func (r *SnapshotRepository) GetLatest(ctx context.Context, tenantID uuid.UUID) 
 			)
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, pgcommon.ErrNoRows) {
 			return nil, domain.ErrSnapshotNotFound
 		}
 		return nil, wrapConnErr(err)
@@ -129,7 +128,7 @@ func (r *SnapshotRepository) GetLatest(ctx context.Context, tenantID uuid.UUID) 
 // Used by the Temporal catalog fan-out workflow.
 func (r *SnapshotRepository) ListTenantIDsByPlan(ctx context.Context, planCode string) ([]uuid.UUID, error) {
 	var ids []uuid.UUID
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT tenant_id FROM entitlement_snapshots WHERE plan = $1`, planCode)
 		if err != nil {

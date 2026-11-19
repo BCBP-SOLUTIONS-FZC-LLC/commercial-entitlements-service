@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
@@ -30,14 +28,14 @@ func (r *CatalogCacheRepository) GetPlan(ctx context.Context, planCode string) (
 	var defJSON []byte
 	var plan domain.Plan
 
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		return tx.QueryRow(ctx, `
 			SELECT plan_code, display_name, record_version, definition
 			FROM plan_catalog_cache WHERE plan_code=$1`, planCode).
 			Scan(&plan.Code, &plan.DisplayName, &plan.RecordVersion, &defJSON)
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, pgcommon.ErrNoRows) {
 			return nil, domain.ErrPlanNotFound
 		}
 		return nil, wrapConnErr(err)
@@ -54,7 +52,7 @@ func (r *CatalogCacheRepository) SetPlan(ctx context.Context, plan *domain.Plan)
 	if err != nil {
 		return err
 	}
-	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	return withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO plan_catalog_cache (plan_code, display_name, record_version, definition, cached_at)
 			VALUES ($1,$2,$3,$4,now())
@@ -70,7 +68,7 @@ func (r *CatalogCacheRepository) SetPlan(ctx context.Context, plan *domain.Plan)
 
 // InvalidatePlan removes the plan from the cache (evict on catalog change).
 func (r *CatalogCacheRepository) InvalidatePlan(ctx context.Context, planCode string) error {
-	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	return withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		_, err := tx.Exec(ctx, `DELETE FROM plan_catalog_cache WHERE plan_code=$1`, planCode)
 		return err
 	})
@@ -79,7 +77,7 @@ func (r *CatalogCacheRepository) InvalidatePlan(ctx context.Context, planCode st
 // ListPlanCodes returns all plan codes currently in cache.
 func (r *CatalogCacheRepository) ListPlanCodes(ctx context.Context) ([]string, error) {
 	var out []string
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT plan_code FROM plan_catalog_cache ORDER BY plan_code`)
 		if err != nil {
 			return err

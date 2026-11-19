@@ -183,6 +183,33 @@ func (c *Cache) ResetUsageCounter(ctx context.Context, tenantID uuid.UUID, limit
 	return c.rdb.Set(ctx, key, 0, quotaCeilingTTL).Err()
 }
 
+// DeleteUsageCounters removes all quota:usage:*:{limitKey}:{period} keys via
+// SCAN+DEL, allowing the reconciler to flush stale counters without enumerating
+// all tenant IDs from Postgres. Returns the total number of keys deleted.
+func (c *Cache) DeleteUsageCounters(ctx context.Context, limitKey domain.LimitKey, period string) (int64, error) {
+	pattern := fmt.Sprintf("quota:usage:*:%s:%s", limitKey, period)
+	var totalDeleted int64
+	var cursor uint64
+	for {
+		keys, nextCursor, err := c.rdb.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return totalDeleted, err
+		}
+		if len(keys) > 0 {
+			deleted, err := c.rdb.Del(ctx, keys...).Result()
+			if err != nil {
+				return totalDeleted, err
+			}
+			totalDeleted += deleted
+		}
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+	return totalDeleted, nil
+}
+
 // ── Key builders ──────────────────────────────────────────────────────────
 
 func effectiveSetKey(tenantID uuid.UUID) string {

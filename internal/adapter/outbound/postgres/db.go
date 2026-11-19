@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
@@ -99,7 +98,7 @@ var writeRetryOpts = pgcommon.RetryOptions{
 // success; rolls back on error. Contended writes retry on deadlock /
 // serialization failure via pgcommon.RunInTxWithRetryOpts.
 func (r *TxRunner) RunInTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	return wrapConnErr(pgcommon.RunInTxWithRetryOpts(ctx, r.pool, pgx.TxOptions{}, writeRetryOpts, func(ctx context.Context, tx pgx.Tx) error {
+	return wrapConnErr(pgcommon.RunInTxWithRetryOpts(ctx, r.pool, pgcommon.TxOptions{}, writeRetryOpts, func(ctx context.Context, tx pgcommon.Tx) error {
 		txCtx := port.WithTx(ctx, tx)
 		if r.events != nil {
 			txCtx = port.WithEventPublisher(txCtx, r.events)
@@ -114,11 +113,11 @@ func (r *TxRunner) RunInTx(ctx context.Context, fn func(ctx context.Context) err
 // withPool runs fn inside a transaction, joining an existing one if present
 // in ctx. Used by repository helpers so reads outside a service tx still use
 // the pool via pgcommon.RunInTx.
-func withPool(ctx context.Context, pool *pgcommon.Pool, fn func(pgx.Tx) error) error {
+func withPool(ctx context.Context, pool *pgcommon.Pool, fn func(pgcommon.Tx) error) error {
 	if tx, ok := port.TxFromContext(ctx); ok {
 		return wrapConnErr(fn(tx))
 	}
-	return wrapConnErr(pgcommon.RunInTx(ctx, pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
+	return wrapConnErr(pgcommon.RunInTx(ctx, pool, pgcommon.TxOptions{}, func(ctx context.Context, tx pgcommon.Tx) error {
 		return fn(tx)
 	}))
 }

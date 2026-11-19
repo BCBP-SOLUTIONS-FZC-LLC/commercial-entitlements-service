@@ -18,6 +18,12 @@ coverage.*
 *.coverprofile
 profile.cov
 
+# .coverage/ holds per-suite profiles written by test-ci; track the directory
+# via .gitkeep but ignore the generated files.
+.coverage/*.out
+.coverage/*.raw
+.coverage/*.exitcode
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 

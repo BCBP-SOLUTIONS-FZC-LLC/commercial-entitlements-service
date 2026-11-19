@@ -21,20 +21,18 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/glue"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/gin-gonic/gin"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 	temporalclient "go.temporal.io/sdk/client"
 
+	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/inbound/consumer"
+	httpadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/inbound/http"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/inbound/sqspipeline"
 	auditrecorderadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/auditrecorder"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/eventbus"
+	iamclientadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/iamclient"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/metrics"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/postgres"
 	valkeyadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/valkey"
-	iamclientadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/iamclient"
 	temporaladapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/temporal"
-	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/inbound/consumer"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/inbound/sqspipeline"
-	httpadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/inbound/http"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/service"
 
@@ -87,44 +85,7 @@ func main() {
 		panic("init tracing: " + err.Error())
 	}
 
-	port.SetTraceExtractor(func(ctx context.Context) string {
-		sc := trace.SpanFromContext(ctx).SpanContext()
-		if !sc.IsValid() {
-			return ""
-		}
-		return sc.TraceID().String()
-	})
-	port.SetSpanContextExtractor(func(ctx context.Context) port.SpanContext {
-		sc := trace.SpanFromContext(ctx).SpanContext()
-		if !sc.IsValid() {
-			return port.SpanContext{}
-		}
-		return port.SpanContext{TraceID: sc.TraceID().String(), SpanID: sc.SpanID().String()}
-	})
-	consumerTracer := gincommon.NewTracer(cfg.ServiceName)
-	port.SetConsumerSpanFunc(func(ctx context.Context, name, queue string, link port.SpanContext) (context.Context, func(error)) {
-		spanOpts := []trace.SpanStartOption{
-			trace.WithSpanKind(trace.SpanKindInternal),
-			trace.WithAttributes(attribute.String("messaging.destination.name", queue)),
-		}
-		if link.TraceID != "" && link.SpanID != "" {
-			tid, err1 := trace.TraceIDFromHex(link.TraceID)
-			sid, err2 := trace.SpanIDFromHex(link.SpanID)
-			if err1 == nil && err2 == nil {
-				sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid, Remote: true})
-				if sc.IsValid() {
-					spanOpts = append(spanOpts, trace.WithLinks(trace.Link{SpanContext: sc}))
-				}
-			}
-		}
-		ctx, span := consumerTracer.Start(ctx, name, spanOpts...)
-		return ctx, func(err error) {
-			if err != nil {
-				span.RecordError(err)
-			}
-			span.End()
-		}
-	})
+	sqspipeline.InstallTracingHooks(cfg.ServiceName)
 
 	_ = gincommon.ObservabilityMiddlewares(cfg)
 	metrics.Register(appEnv)
@@ -567,4 +528,3 @@ type validatorFunc func(eventType string, payload []byte) error
 func (f validatorFunc) Validate(eventType string, payload []byte) error {
 	return f(eventType, payload)
 }
-

@@ -25,15 +25,43 @@ func NewPlansHandler(catalogSvc port.CatalogService) *PlansHandler {
 // Returns the plan definition for the tenant's current plan.
 func (h *PlansHandler) GetCurrentPlan(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
-	// planCode query param overrides tenant lookup.
 	planCode := c.Query("plan_code")
 	if planCode == "" {
 		gincommon.AbortWithProblem(c, problem.NewBadRequestError("plan_code query parameter is required"))
 		return
 	}
-	_ = tenantID // tenantID used for future per-tenant catalog customisation
+	_ = tenantID
 
 	plan, err := h.catalogSvc.GetPlan(c.Request.Context(), planCode)
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, planToResponse(plan))
+}
+
+// ListPlans handles GET /api/v1/operator/plans — lists all plan codes cached locally.
+func (h *PlansHandler) ListPlans(c *gin.Context) {
+	codes, err := h.catalogSvc.ListPlans(c.Request.Context())
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	if codes == nil {
+		codes = []string{}
+	}
+	c.JSON(http.StatusOK, gin.H{"plan_codes": codes})
+}
+
+// RefreshCatalog handles POST /api/v1/operator/plans/:planCode/refresh —
+// re-fetches the plan from IAM and warms the local cache.
+func (h *PlansHandler) RefreshCatalog(c *gin.Context) {
+	planCode := c.Param("planCode")
+	if planCode == "" {
+		gincommon.AbortWithProblem(c, problem.NewBadRequestError("planCode path parameter is required"))
+		return
+	}
+	plan, err := h.catalogSvc.RefreshPlan(c.Request.Context(), planCode)
 	if err != nil {
 		HandleError(c, err)
 		return

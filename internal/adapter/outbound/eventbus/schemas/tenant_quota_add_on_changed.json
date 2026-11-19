@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TenantQuotaAddOnChanged",
+  "type": "object",
+  "required": ["tenant_id", "addon_id", "limit_key", "total_tokens", "reason", "action", "purchased_at"],
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The tenant whose quota add-on changed."
+    },
+    "addon_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The quota add-on pack identifier."
+    },
+    "limit_key": {
+      "type": "string",
+      "description": "The limit key this add-on extends (e.g. llm_token_quota_monthly)."
+    },
+    "total_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Total token capacity of the add-on pack."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Human-readable reason for the change."
+    },
+    "action": {
+      "type": "string",
+      "enum": ["granted", "revoked", "expired"],
+      "description": "What happened to the add-on pack."
+    },
+    "purchased_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Wall-clock time the add-on was originally granted. Billing uses this as the 12-month expiry anchor (BL-OQ-4)."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this add-on pack expires; omitted when no expiry is set."
+    }
+  },
+  "additionalProperties": false
+}

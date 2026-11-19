@@ -76,6 +76,7 @@ type CatalogCacheRepository interface {
 	GetPlan(ctx context.Context, planCode string) (*domain.Plan, error)
 	SetPlan(ctx context.Context, plan *domain.Plan) error
 	InvalidatePlan(ctx context.Context, planCode string) error
+	ListPlanCodes(ctx context.Context) ([]string, error)
 }
 
 // ── Outbound client interfaces ─────────────────────────────────────────────

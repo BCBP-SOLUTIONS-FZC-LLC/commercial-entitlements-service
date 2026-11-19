@@ -376,6 +376,15 @@ func (s *AddonService) ResolveShortfall(ctx context.Context, req port.ResolveSho
 	if txErr != nil {
 		return nil, txErr
 	}
+
+	// Trigger recompute on approval so the quota ceiling and effective set are
+	// refreshed and TenantEntitlementsChanged is emitted to downstream services.
+	if req.Disposition == domain.DispositionApprove {
+		if _, err := s.effectSvc.Recompute(ctx, sf.TenantID, domain.CauseShortfallResolution); err != nil {
+			s.logger().Warn("shortfall resolve: recompute failed",
+				map[string]any{"shortfall_id": req.ShortfallID, "tenant_id": sf.TenantID, "error": err.Error()})
+		}
+	}
 	return sf, nil
 }
 

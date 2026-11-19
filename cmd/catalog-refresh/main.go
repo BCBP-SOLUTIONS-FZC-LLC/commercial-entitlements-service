@@ -97,11 +97,12 @@ func main() {
 	trialRepo := pgadapter.NewTrialRepository(pool)
 	iamClient := iamclientadapter.New(rawLog)
 	starter := temporaladapter.NewStarter(tc)
-	catalogSvc := service.NewCatalogService(iamClient, cache, starter).WithLogger(rawLog)
+	catalogCacheRepo := pgadapter.NewCatalogCacheRepository(pool)
+	catalogSvc := service.NewCatalogService(iamClient, cache, starter).
+		WithLogger(rawLog).
+		WithCatalogCache(catalogCacheRepo)
 	effectSvc := service.NewEffectiveSetService(snapshotRepo, overrideRepo, addonRepo, trialRepo, catalogSvc, iamClient, cache, txRunner)
 	_ = effectSvc
-
-	catalogCacheRepo := pgadapter.NewCatalogCacheRepository(pool)
 	planCodes, err := catalogCacheRepo.ListPlanCodes(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "list plans: "+err.Error())

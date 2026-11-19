@@ -87,3 +87,40 @@ func (h *TrialHandler) RemoveOverride(c *gin.Context) {
 	}
 	c.Status(http.StatusNoContent)
 }
+
+// GetAssignment handles GET /api/v1/operator/tenants/:id/entitlements/trial-profile.
+func (h *TrialHandler) GetAssignment(c *gin.Context) {
+	tenantID := tenantIDFromContext(c)
+	a, err := h.trialSvc.GetTrialAssignment(c.Request.Context(), tenantID)
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, trialAssignmentToResponse(a))
+}
+
+// PurgeTrial handles DELETE /api/v1/operator/tenants/:id/entitlements/trial-profile.
+// Removes all trial data (assignment + overrides) for the tenant.
+func (h *TrialHandler) PurgeTrial(c *gin.Context) {
+	tenantID := tenantIDFromContext(c)
+	if err := h.trialSvc.PurgeTrialForTenant(c.Request.Context(), tenantID); err != nil {
+		HandleError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// ListOverrides handles GET /api/v1/operator/tenants/:id/entitlements/trial-overrides.
+func (h *TrialHandler) ListOverrides(c *gin.Context) {
+	tenantID := tenantIDFromContext(c)
+	overrides, err := h.trialSvc.ListTrialOverrides(c.Request.Context(), tenantID)
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	resp := make([]TrialOverrideResponse, len(overrides))
+	for i := range overrides {
+		resp[i] = trialOverrideToResponse(&overrides[i])
+	}
+	c.JSON(http.StatusOK, resp)
+}

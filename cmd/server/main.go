@@ -271,7 +271,10 @@ func main() {
 		}
 	}
 
-	catalogSvc := service.NewCatalogService(iamClient, cache, temporalStarter).WithLogger(log)
+	catalogCacheRepo := pgadapter.NewCatalogCacheRepository(pool)
+	catalogSvc := service.NewCatalogService(iamClient, cache, temporalStarter).
+		WithLogger(log).
+		WithCatalogCache(catalogCacheRepo)
 	effectSvc := service.NewEffectiveSetService(snapshotRepo, overrideRepo, addonRepo, trialRepo, catalogSvc, iamClient, cache, txRunner).WithLogger(log)
 	overrideSvc := service.NewOverrideService(overrideRepo, effectSvc, txRunner).WithLogger(log)
 	addonSvc := service.NewAddonService(addonRepo, drawdownRepo, shortfallRepo, effectSvc, txRunner).WithLogger(log)

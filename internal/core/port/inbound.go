@@ -52,6 +52,7 @@ type CatalogService interface {
 	GetPlan(ctx context.Context, planCode string) (*domain.Plan, error)
 	RefreshPlan(ctx context.Context, planCode string) (*domain.Plan, error)
 	FanoutCatalogRefresh(ctx context.Context, planCode string) error
+	ListPlans(ctx context.Context) ([]string, error)
 }
 
 // TrialService manages trial profile assignments and trial-scoped overrides.
@@ -78,10 +79,10 @@ type SetOverrideRequest struct {
 
 // RemoveOverrideRequest identifies which override to delete.
 type RemoveOverrideRequest struct {
-	TenantID uuid.UUID
-	LimitKey domain.LimitKey
+	TenantID  uuid.UUID
+	LimitKey  domain.LimitKey
 	RemovedBy uuid.UUID
-	Reason   string
+	Reason    string
 }
 
 // AddAddonRequest contains parameters for granting a quota addon pack.

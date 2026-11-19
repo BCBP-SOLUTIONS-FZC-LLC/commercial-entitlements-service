@@ -11,10 +11,11 @@ import (
 // CatalogService handles plan catalog lookups and cache warming.
 // It is backed by the IAMClient for live fetches and the advisory Valkey cache.
 type CatalogService struct {
-	iamClient port.IAMClient
-	cache     port.Cache
-	temporal  port.TemporalStarter
-	log       port.Logger
+	iamClient    port.IAMClient
+	cache        port.Cache
+	temporal     port.TemporalStarter
+	catalogCache port.CatalogCacheRepository // optional; enables ListPlans
+	log          port.Logger
 }
 
 // Ensure CatalogService implements port.CatalogService at compile time.
@@ -36,6 +37,14 @@ func NewCatalogService(
 // WithLogger attaches a logger.
 func (s *CatalogService) WithLogger(l port.Logger) *CatalogService {
 	s.log = l
+	return s
+}
+
+// WithCatalogCache attaches the Postgres-backed plan catalog cache repository,
+// enabling the ListPlans method. Called in cmd/server and cmd/catalog-refresh;
+// omitted in cmd/worker (no plan listing needed there).
+func (s *CatalogService) WithCatalogCache(repo port.CatalogCacheRepository) *CatalogService {
+	s.catalogCache = repo
 	return s
 }
 
@@ -72,6 +81,15 @@ func (s *CatalogService) RefreshPlan(ctx context.Context, planCode string) (*dom
 		}
 	}
 	return plan, nil
+}
+
+// ListPlans returns all plan codes currently in the Postgres catalog cache.
+// Returns nil when no catalog cache repository is wired (CACHE-1 — degrades gracefully).
+func (s *CatalogService) ListPlans(ctx context.Context) ([]string, error) {
+	if s.catalogCache == nil {
+		return nil, nil
+	}
+	return s.catalogCache.ListPlanCodes(ctx)
 }
 
 // FanoutCatalogRefresh triggers a Temporal workflow that recomputes all tenants

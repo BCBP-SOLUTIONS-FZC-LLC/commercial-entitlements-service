@@ -130,10 +130,10 @@ func NewRouter(cfg RouterConfig) *Router {
 	{
 		internalTenant := internal.Group("/tenants/:id")
 		internalTenant.Use(tenantIDGate())
-		internalTenant.GET("/entitlements", cfg.EntitlementHandler.GetEffectiveSetInternal)       // ENT-I1
-		internalTenant.POST("/entitlements/recompute", cfg.EntitlementHandler.Recompute)          // ENT-I1b
-		internalTenant.GET("/plans/current", cfg.PlansHandler.GetCurrentPlan)                     // ENT-I2
-		internalTenant.POST("/entitlements/drawdown", cfg.AddonHandler.RecordDrawdownInternal)    // ENT-I3
+		internalTenant.GET("/entitlements", cfg.EntitlementHandler.GetEffectiveSetInternal)    // ENT-I1
+		internalTenant.POST("/entitlements/recompute", cfg.EntitlementHandler.Recompute)       // ENT-I1b
+		internalTenant.GET("/plans/current", cfg.PlansHandler.GetCurrentPlan)                  // ENT-I2
+		internalTenant.POST("/entitlements/drawdown", cfg.AddonHandler.RecordDrawdownInternal) // ENT-I3
 	}
 
 	// Tenant-scoped JWT routes (ENT-T1).
@@ -154,27 +154,35 @@ func NewRouter(cfg RouterConfig) *Router {
 
 		// Overrides (ENT-O1, ENT-O2).
 		opOverrides := opTenant.Group("/entitlements/overrides")
-		opOverrides.GET("", cfg.OverrideHandler.List)                      // ENT-O1
+		opOverrides.GET("", cfg.OverrideHandler.List) // ENT-O1
 		opOverrides.GET("/:limitKey", cfg.OverrideHandler.Get)
-		opOverrides.PUT("/:limitKey", cfg.OverrideHandler.Set)             // ENT-O2 set
-		opOverrides.DELETE("/:limitKey", cfg.OverrideHandler.Remove)       // ENT-O2 remove
+		opOverrides.PUT("/:limitKey", cfg.OverrideHandler.Set)       // ENT-O2 set
+		opOverrides.DELETE("/:limitKey", cfg.OverrideHandler.Remove) // ENT-O2 remove
 		opOverrides.GET("/:limitKey/history", cfg.OverrideHandler.History)
 
 		// Trial (ENT-O3, ENT-O4).
-		opTenant.PUT("/entitlements/trial-profile", cfg.TrialHandler.AssignProfile)         // ENT-O3
-		opTenant.PUT("/entitlements/trial-overrides/:limitKey", cfg.TrialHandler.SetOverride) // ENT-O4
+		opTenant.PUT("/entitlements/trial-profile", cfg.TrialHandler.AssignProfile) // ENT-O3
+		opTenant.GET("/entitlements/trial-profile", cfg.TrialHandler.GetAssignment)
+		opTenant.DELETE("/entitlements/trial-profile", cfg.TrialHandler.PurgeTrial)
+		opTenant.GET("/entitlements/trial-overrides", cfg.TrialHandler.ListOverrides)         // ENT-O4 list
+		opTenant.PUT("/entitlements/trial-overrides/:limitKey", cfg.TrialHandler.SetOverride) // ENT-O4 set
 		opTenant.DELETE("/entitlements/trial-overrides/:limitKey", cfg.TrialHandler.RemoveOverride)
 
 		// Addons (ENT-O5).
 		opAddons := opTenant.Group("/entitlements/addons")
-		opAddons.GET("", cfg.AddonHandler.List)                       // ENT-O5 list
-		opAddons.POST("", cfg.AddonHandler.Add)                       // ENT-O5 add
-		opAddons.DELETE("/:addonId", cfg.AddonHandler.Remove)         // ENT-O5 remove
+		opAddons.GET("", cfg.AddonHandler.List)               // ENT-O5 list
+		opAddons.POST("", cfg.AddonHandler.Add)               // ENT-O5 add
+		opAddons.DELETE("/:addonId", cfg.AddonHandler.Remove) // ENT-O5 remove
 		opAddons.GET("/drawdowns", cfg.AddonHandler.ListDrawdowns)
 
 		// Shortfalls (ENT-O6, ENT-O7).
-		opAddons.GET("/shortfalls", cfg.ShortfallHandler.List)                              // ENT-O6
-		opAddons.POST("/shortfalls/:shortfallId/resolve", cfg.ShortfallHandler.Resolve)    // ENT-O7
+		opAddons.GET("/shortfalls", cfg.ShortfallHandler.List)                          // ENT-O6
+		opAddons.POST("/shortfalls/:shortfallId/resolve", cfg.ShortfallHandler.Resolve) // ENT-O7
+
+		// Plan catalog (operator visibility).
+		opPlans := operator.Group("/plans")
+		opPlans.GET("", cfg.PlansHandler.ListPlans)
+		opPlans.POST("/:planCode/refresh", cfg.PlansHandler.RefreshCatalog)
 	}
 
 	return &Router{engine: engine}

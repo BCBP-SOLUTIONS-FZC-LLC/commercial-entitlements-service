@@ -1,100 +1,105 @@
 package metrics
 
 import (
-	"context"
+	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
 )
 
-// IncRecompute increments the recompute counter for the given cause.
-func IncRecompute(cause domain.EffectiveSetCause) {
+// outcome constants for the recompute counter / histogram.
+const (
+	OutcomeComputed = "computed"
+	OutcomeNoop     = "noop"
+	OutcomeError    = "error"
+)
+
+// IncRecompute increments the recompute counter.
+// outcome must be one of OutcomeComputed, OutcomeNoop, OutcomeError.
+func IncRecompute(cause domain.EffectiveSetCause, outcome string) {
 	if RecomputeTotal != nil {
-		RecomputeTotal.WithLabelValues(string(cause)).Inc()
+		RecomputeTotal.WithLabelValues(string(cause), outcome).Inc()
 	}
 }
 
-// IncRecomputeNoop increments the noop guard counter (ENT-INV-6).
-func IncRecomputeNoop(cause domain.EffectiveSetCause) {
-	if RecomputeNoopTotal != nil {
-		RecomputeNoopTotal.WithLabelValues(string(cause)).Inc()
+// ObserveRecomputeDuration records the duration of one Recompute call.
+func ObserveRecomputeDuration(cause domain.EffectiveSetCause, outcome string, d time.Duration) {
+	if RecomputeDuration != nil {
+		RecomputeDuration.WithLabelValues(string(cause), outcome).Observe(d.Seconds())
 	}
 }
 
-// IncOverrideSet increments the override-set counter.
-func IncOverrideSet(limitKey domain.LimitKey) {
+// IncOverrideSet increments the override-set counter for a limit key.
+func IncOverrideSet(key domain.LimitKey) {
 	if OverrideSetTotal != nil {
-		OverrideSetTotal.WithLabelValues(string(limitKey)).Inc()
+		OverrideSetTotal.WithLabelValues(string(key)).Inc()
 	}
 }
 
-// IncOverrideRemove increments the override-remove counter.
-func IncOverrideRemove(limitKey domain.LimitKey) {
+// IncOverrideRemove increments the override-remove counter for a limit key.
+func IncOverrideRemove(key domain.LimitKey) {
 	if OverrideRemoveTotal != nil {
-		OverrideRemoveTotal.WithLabelValues(string(limitKey)).Inc()
+		OverrideRemoveTotal.WithLabelValues(string(key)).Inc()
 	}
 }
 
-// IncOverrideExpire increments the override-expire counter.
+// IncOverrideExpire increments the override-expire counter (reconciler sweep).
 func IncOverrideExpire() {
 	if OverrideExpireTotal != nil {
 		OverrideExpireTotal.Inc()
 	}
 }
 
-// IncAddonGrant increments the addon-grant counter.
-func IncAddonGrant(limitKey domain.LimitKey) {
+// IncAddonGrant increments the addon-grant counter for a limit key.
+func IncAddonGrant(key domain.LimitKey) {
 	if AddonGrantTotal != nil {
-		AddonGrantTotal.WithLabelValues(string(limitKey)).Inc()
+		AddonGrantTotal.WithLabelValues(string(key)).Inc()
 	}
 }
 
-// IncAddonExpire increments the addon-expire counter.
+// IncAddonExpire increments the addon-expire counter (reconciler sweep).
 func IncAddonExpire() {
 	if AddonExpireTotal != nil {
 		AddonExpireTotal.Inc()
 	}
 }
 
-// IncDrawdown increments the drawdown counter.
-func IncDrawdown(limitKey domain.LimitKey, hadShortfall bool) {
+// IncDrawdown increments the drawdown counter for a limit key.
+// hadShortfall indicates whether a quota shortfall occurred.
+func IncDrawdown(key domain.LimitKey, hadShortfall bool) {
 	if DrawdownTotal != nil {
-		sf := "false"
+		sf := "no"
 		if hadShortfall {
-			sf = "true"
+			sf = "yes"
 		}
-		DrawdownTotal.WithLabelValues(string(limitKey), sf).Inc()
+		DrawdownTotal.WithLabelValues(string(key), sf).Inc()
 	}
 }
 
 // IncShortfallRaised increments the shortfall-raised counter.
-func IncShortfallRaised(limitKey domain.LimitKey, status domain.ShortfallStatus) {
+func IncShortfallRaised(key domain.LimitKey, status domain.ShortfallStatus) {
 	if ShortfallRaisedTotal != nil {
-		ShortfallRaisedTotal.WithLabelValues(string(limitKey), string(status)).Inc()
+		ShortfallRaisedTotal.WithLabelValues(string(key), string(status)).Inc()
 	}
 }
 
-// IncShortfallResolve increments the shortfall-resolve counter.
+// IncShortfallResolve increments the shortfall-resolved counter.
 func IncShortfallResolve(disposition domain.ShortfallDisposition) {
 	if ShortfallResolveTotal != nil {
 		ShortfallResolveTotal.WithLabelValues(string(disposition)).Inc()
 	}
 }
 
-// IncCacheHit increments the cache-hit counter.
+// IncCacheHit increments the cache-hit counter for a named resource kind.
+// kind should be one of "effective_set", "plan".
 func IncCacheHit(kind string) {
 	if CacheHitTotal != nil {
 		CacheHitTotal.WithLabelValues(kind).Inc()
 	}
 }
 
-// IncCacheMiss increments the cache-miss counter.
+// IncCacheMiss increments the cache-miss counter for a named resource kind.
 func IncCacheMiss(kind string) {
 	if CacheMissTotal != nil {
 		CacheMissTotal.WithLabelValues(kind).Inc()
 	}
-}
-
-// RecordDuplicate is called by consumer dedup to increment the duplicate counter.
-func RecordDuplicate(_ context.Context, consumer, eventType string) {
-	IncDuplicate(consumer, eventType)
 }

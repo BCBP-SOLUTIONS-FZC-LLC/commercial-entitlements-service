@@ -43,6 +43,13 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
+networkPolicy:
+  enabled: true
+
+istio:
+  authzPolicy:
+    enabled: true
+
 # Migration job (pre-install/pre-upgrade hook).
 migrate:
   enabled: true

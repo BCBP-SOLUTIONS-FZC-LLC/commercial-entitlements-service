@@ -20,6 +20,11 @@ type AddonService struct {
 	effectSvc  *EffectiveSetService
 	txRunner   port.TxRunner
 	log        port.Logger
+
+	// Observability hooks injected by the wiring layer so the core service
+	// stays free of adapter imports.
+	onDrawdown  func(key domain.LimitKey, hadShortfall bool)
+	onShortfall func(key domain.LimitKey, status domain.ShortfallStatus)
 }
 
 // Ensure AddonService implements port.AddonService at compile time.
@@ -45,6 +50,18 @@ func NewAddonService(
 // WithLogger attaches a logger.
 func (s *AddonService) WithLogger(l port.Logger) *AddonService {
 	s.log = l
+	return s
+}
+
+// WithAddonMetricsHooks registers observability callbacks invoked after
+// RecordDrawdown succeeds. onDrawdown(key, hadShortfall) is always called.
+// onShortfall(key, status) is called only when a shortfall was raised.
+func (s *AddonService) WithAddonMetricsHooks(
+	onDrawdown func(domain.LimitKey, bool),
+	onShortfall func(domain.LimitKey, domain.ShortfallStatus),
+) *AddonService {
+	s.onDrawdown = onDrawdown
+	s.onShortfall = onShortfall
 	return s
 }
 
@@ -92,15 +109,15 @@ func (s *AddonService) AddAddon(ctx context.Context, req port.AddAddonRequest) (
 			return fmt.Errorf("insert addon: %w", err)
 		}
 		if pub, ok := port.EventPublisherFromContext(txCtx); ok {
-			ev := domain.NewTenantEvent(domain.EventTypeTenantQuotaAddOnChanged, req.TenantID,
-				domain.TenantQuotaAddOnChangedPayload{
+			ev := domain.NewTenantEvent(domain.EventTypeTenantAddOnBalanceChanged, req.TenantID,
+				domain.TenantAddOnBalanceChangedPayload{
 					TenantID:    req.TenantID,
 					AddonID:     a.ID,
 					LimitKey:    string(req.LimitKey),
 					TotalTokens: req.TotalTokens,
 					Reason:      req.Reason,
 					Action:      "granted",
-					PurchasedAt: a.CreatedAt,
+					GrantedAt:   a.CreatedAt,
 					ExpiresAt:   req.ExpiresAt,
 				},
 			)
@@ -128,37 +145,40 @@ func (s *AddonService) RemoveAddon(ctx context.Context, req port.RemoveAddonRequ
 	if req.Reason == "" {
 		return domain.NewError(domain.ErrReasonRequired, "reason is required")
 	}
-	a, err := s.addons.GetByID(ctx, req.AddonID)
-	if err != nil {
-		return domain.NewError(domain.ErrAddonNotFound, "addon not found")
-	}
-	if a.TenantID != req.TenantID {
-		return domain.NewError(domain.ErrForbidden, "addon does not belong to tenant")
-	}
-	if a.RemainingTokens < a.TotalTokens {
-		return domain.NewError(domain.ErrPackPartiallyUsed, "cannot remove a partially-used addon pack")
-	}
 
-	now := time.Now().UTC()
-	a.Status = domain.AddonStatusRevoked
-	a.RemainingTokens = 0
-	a.RecordVersion++
-	a.UpdatedAt = now
-
+	// Read and write inside the same transaction to close the CONC-1
+	// read-modify-write race between RemoveAddon and concurrent RecordDrawdown.
 	txErr := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
+		a, err := s.addons.GetByID(txCtx, req.AddonID)
+		if err != nil {
+			return domain.NewError(domain.ErrAddonNotFound, "addon not found")
+		}
+		if a.TenantID != req.TenantID {
+			return domain.NewError(domain.ErrForbidden, "addon does not belong to tenant")
+		}
+		if a.RemainingTokens < a.TotalTokens {
+			return domain.NewError(domain.ErrPackPartiallyUsed, "cannot remove a partially-used addon pack")
+		}
+
+		now := time.Now().UTC()
+		a.Status = domain.AddonStatusRevoked
+		a.RemainingTokens = 0
+		a.RecordVersion++
+		a.UpdatedAt = now
+
 		if err := s.addons.Update(txCtx, a); err != nil {
 			return err
 		}
 		if pub, ok := port.EventPublisherFromContext(txCtx); ok {
-			ev := domain.NewTenantEvent(domain.EventTypeTenantQuotaAddOnChanged, a.TenantID,
-				domain.TenantQuotaAddOnChangedPayload{
+			ev := domain.NewTenantEvent(domain.EventTypeTenantAddOnBalanceChanged, a.TenantID,
+				domain.TenantAddOnBalanceChangedPayload{
 					TenantID:    a.TenantID,
 					AddonID:     a.ID,
 					LimitKey:    string(a.LimitKey),
 					TotalTokens: a.TotalTokens,
 					Reason:      req.Reason,
 					Action:      "revoked",
-					PurchasedAt: a.CreatedAt,
+					GrantedAt:   a.CreatedAt,
 					ExpiresAt:   a.ExpiresAt,
 				},
 			)
@@ -278,6 +298,14 @@ func (s *AddonService) RecordDrawdown(ctx context.Context, req port.RecordDrawdo
 		return nil, txErr
 	}
 
+	// Observability hooks — fire after successful commit.
+	if s.onDrawdown != nil {
+		s.onDrawdown(req.LimitKey, shortfall > 0)
+	}
+	if s.onShortfall != nil && sfRecord != nil {
+		s.onShortfall(req.LimitKey, sfRecord.Status)
+	}
+
 	// Recompute (advisory).
 	if _, err := s.effectSvc.Recompute(ctx, req.TenantID, domain.CauseAddonChange); err != nil {
 		s.logger().Warn("record drawdown: recompute failed",
@@ -346,7 +374,9 @@ func (s *AddonService) ResolveShortfall(ctx context.Context, req port.ResolveSho
 	if err != nil {
 		return nil, domain.NewError(domain.ErrShortfallNotFound, "shortfall not found")
 	}
-	if sf.Status == domain.ShortfallStatusApproved || sf.Status == domain.ShortfallStatusRejected {
+	if sf.Status == domain.ShortfallStatusApproved ||
+		sf.Status == domain.ShortfallStatusRejected ||
+		sf.Status == domain.ShortfallStatusAutoAccepted {
 		return nil, domain.NewError(domain.ErrShortfallAlreadyResolved, "shortfall already resolved")
 	}
 	if req.Disposition == domain.DispositionApprove &&
@@ -417,15 +447,15 @@ func (s *AddonService) ExpireAddons(ctx context.Context) (int, error) {
 				return err
 			}
 			if pub, ok := port.EventPublisherFromContext(txCtx); ok {
-				ev := domain.NewTenantEvent(domain.EventTypeTenantQuotaAddOnChanged, a.TenantID,
-					domain.TenantQuotaAddOnChangedPayload{
+				ev := domain.NewTenantEvent(domain.EventTypeTenantAddOnBalanceChanged, a.TenantID,
+					domain.TenantAddOnBalanceChangedPayload{
 						TenantID:    a.TenantID,
 						AddonID:     a.ID,
 						LimitKey:    string(a.LimitKey),
 						TotalTokens: a.TotalTokens,
 						Reason:      "expired",
 						Action:      "expired",
-						PurchasedAt: a.CreatedAt,
+						GrantedAt:   a.CreatedAt,
 						ExpiresAt:   a.ExpiresAt,
 					},
 				)
@@ -447,6 +477,56 @@ func (s *AddonService) ExpireAddons(ctx context.Context) (int, error) {
 		count++
 	}
 	return count, nil
+}
+
+// ApplyBillingRefund reduces unused tokens on an addon pack in response to a
+// Billing refund event (C-5). It removes at most |delta| unused tokens, never
+// below zero and never consuming already-drawn tokens (CONC-1 optimistic lock).
+// Idempotency is guaranteed by the caller via processOnce on the billing event ID.
+func (s *AddonService) ApplyBillingRefund(ctx context.Context, req port.ApplyBillingRefundRequest) error {
+	if req.Delta >= 0 {
+		return domain.NewError(domain.ErrInvalidValue, "delta must be negative for a refund")
+	}
+
+	// Read and write inside the same transaction to close the CONC-1
+	// read-modify-write race between ApplyBillingRefund and concurrent RecordDrawdown.
+	txErr := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
+		a, err := s.addons.GetByID(txCtx, req.PurchaseRef)
+		if err != nil {
+			return domain.NewError(domain.ErrAddonNotFound, "addon not found for purchase_ref")
+		}
+		if a.TenantID != req.TenantID {
+			return domain.NewError(domain.ErrForbidden, "addon does not belong to tenant")
+		}
+
+		// reduction = min(|delta|, remaining_tokens) — never reduces consumed tokens.
+		reduction := -req.Delta
+		if reduction > a.RemainingTokens {
+			reduction = a.RemainingTokens
+		}
+		if reduction == 0 {
+			s.logger().Info("billing refund: no unused tokens to remove",
+				map[string]interface{}{"addon_id": a.ID, "tenant_id": req.TenantID, "billing_ref": req.BillingRef})
+			return nil
+		}
+
+		now := time.Now().UTC()
+		a.TotalTokens -= reduction
+		a.RemainingTokens -= reduction
+		a.RecordVersion++
+		a.UpdatedAt = now
+
+		return s.addons.Update(txCtx, a)
+	})
+	if txErr != nil {
+		return txErr
+	}
+
+	if _, err := s.effectSvc.Recompute(ctx, req.TenantID, domain.CauseAddonChange); err != nil {
+		s.logger().Warn("billing refund: recompute failed",
+			map[string]interface{}{"tenant_id": req.TenantID, "error": err.Error()})
+	}
+	return nil
 }
 
 func sortAddonsByExpiry(addons []domain.QuotaAddon) {

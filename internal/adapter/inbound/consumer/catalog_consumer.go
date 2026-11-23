@@ -10,7 +10,8 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 )
 
-const catalogConsumerName = "catalog-entitlements-q"
+// CatalogConsumerName is the stable consumer name used for processed_events dedup.
+const CatalogConsumerName = "catalog-entitlements-q"
 
 // CatalogConsumer processes plan catalog change events from IAM.
 // On receipt it refreshes the local plan cache and optionally triggers
@@ -41,11 +42,11 @@ func NewCatalogConsumer(
 func (c *CatalogConsumer) Handle(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	switch env.Type {
 	case "PlanCatalogChanged":
-		return processOnce(ctx, c.inbox, catalogConsumerName, env, func(txCtx context.Context) error {
-			return c.handleCatalogChanged(ctx, env)
+		return processOnce(ctx, c.inbox, CatalogConsumerName, env, func(txCtx context.Context) error {
+			return c.handleCatalogChanged(txCtx, env)
 		})
 	default:
-		return ackUnknown(ctx, c.inbox, c.log, catalogConsumerName, env)
+		return ackUnknown(ctx, c.inbox, c.log, CatalogConsumerName, env)
 	}
 }
 

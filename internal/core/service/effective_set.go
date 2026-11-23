@@ -34,6 +34,12 @@ type EffectiveSetService struct {
 	cache     port.Cache
 	txRunner  port.TxRunner
 	log       port.Logger
+
+	// onRecompute is an optional observability hook injected by the wiring
+	// layer. It fires after every Recompute attempt. Keeping it here (not in
+	// a port interface) lets the core layer stay free of adapter imports while
+	// the metrics package can still register a closure against it.
+	onRecompute func(cause domain.EffectiveSetCause, noop, failed bool, d time.Duration)
 }
 
 // Ensure EffectiveSetService implements port.EffectiveSetService at compile time.
@@ -65,6 +71,14 @@ func NewEffectiveSetService(
 // WithLogger attaches a logger.
 func (s *EffectiveSetService) WithLogger(l port.Logger) *EffectiveSetService {
 	s.log = l
+	return s
+}
+
+// WithRecomputeHook registers an observability callback invoked after every
+// Recompute attempt. The wiring layer (cmd/server/main.go) injects the
+// metrics implementation; tests may inject a recording stub.
+func (s *EffectiveSetService) WithRecomputeHook(fn func(cause domain.EffectiveSetCause, noop, failed bool, d time.Duration)) *EffectiveSetService {
+	s.onRecompute = fn
 	return s
 }
 
@@ -115,6 +129,19 @@ func (s *EffectiveSetService) GetEffectiveSet(ctx context.Context, tenantID uuid
 // llm_token_quota_monthly to Valkey so the downstream quota enforcer can
 // rate-gate without hitting Postgres on every request.
 func (s *EffectiveSetService) Recompute(ctx context.Context, tenantID uuid.UUID, cause domain.EffectiveSetCause) (*domain.EffectiveSet, error) {
+	if s.onRecompute == nil {
+		return s.recomputeCore(ctx, tenantID, cause, nil)
+	}
+	start := time.Now()
+	noop := false
+	es, err := s.recomputeCore(ctx, tenantID, cause, &noop)
+	s.onRecompute(cause, noop, err != nil, time.Since(start))
+	return es, err
+}
+
+// recomputeCore contains the full recompute logic. noopOut, when non-nil, is
+// set to true when ENT-INV-6 fires (no write, no event emitted).
+func (s *EffectiveSetService) recomputeCore(ctx context.Context, tenantID uuid.UUID, cause domain.EffectiveSetCause, noopOut *bool) (*domain.EffectiveSet, error) {
 	// Fetch the upstream subscription to get plan code and state.
 	sub, err := s.iamClient.FetchTenantSubscription(ctx, tenantID)
 	if err != nil {
@@ -193,16 +220,16 @@ func (s *EffectiveSetService) Recompute(ctx context.Context, tenantID uuid.UUID,
 	// Build computed EffectiveSet.
 	computedAt := time.Now().UTC()
 	es := &domain.EffectiveSet{
-		TenantID:      tenantID,
-		PlanCode:      sub.PlanCode,
-		State:         state,
-		FeatureFlags:  plan.FeatureFlags(),
-		ModelTier:     plan.ModelTier,
-		Limits:        limits,
-		TrialProfile:  trialProfile,
-		Cause:         cause,
-		ComputedAt:    computedAt,
-		AddonEligible: computeAddonEligible(state, limits),
+		TenantID:         tenantID,
+		PlanCode:         sub.PlanCode,
+		State:            state,
+		FeatureFlags:     plan.FeatureFlags(),
+		ModelTier:        plan.ModelTier,
+		Limits:           limits,
+		TrialProfile:     trialProfile,
+		Cause:            cause,
+		ComputedAt:       computedAt,
+		AddonEligibility: computeAddonEligibility(state, limits),
 	}
 
 	// ENT-INV-6 no-op guard: compare against latest snapshot.
@@ -211,9 +238,12 @@ func (s *EffectiveSetService) Recompute(ctx context.Context, tenantID uuid.UUID,
 	if snapErr == nil {
 		// Check if computed set is effectively identical.
 		if effectiveSetUnchanged(es, existingSnap) {
-			// Return existing EffectiveSet from snapshot without writing.
+			// ENT-INV-6: return existing EffectiveSet without writing.
 			s.logger().Debug("recompute: effective set unchanged, skipping write",
 				map[string]interface{}{"tenant_id": tenantID, "version": existingSnap.Version})
+			if noopOut != nil {
+				*noopOut = true
+			}
 			existing := snapToEffectiveSet(existingSnap)
 			return existing, nil
 		}
@@ -223,11 +253,25 @@ func (s *EffectiveSetService) Recompute(ctx context.Context, tenantID uuid.UUID,
 
 	snap := effectiveSetToSnap(es)
 
+	// Pre-compute which limit keys changed so the event payload is populated.
+	changedKeys := computeChangedKeys(es.Limits, existingSnap)
+
 	// Persist snapshot + emit event within single transaction.
-	var finalES *domain.EffectiveSet
+	// written=false means a concurrent recompute already committed the same or
+	// a newer version; we skip event emission to prevent duplicate events.
+	var (
+		finalES *domain.EffectiveSet
+		written bool
+	)
 	txErr := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-		if err := s.snapshots.Upsert(txCtx, snap); err != nil {
-			return fmt.Errorf("upsert snapshot: %w", err)
+		var upsertErr error
+		written, upsertErr = s.snapshots.Upsert(txCtx, snap)
+		if upsertErr != nil {
+			return fmt.Errorf("upsert snapshot: %w", upsertErr)
+		}
+		if !written {
+			// Concurrent recompute committed a same/newer version first.
+			return nil
 		}
 
 		// Emit TenantEntitlementsChanged event.
@@ -238,6 +282,7 @@ func (s *EffectiveSetService) Recompute(ctx context.Context, tenantID uuid.UUID,
 					TenantID:        tenantID,
 					Version:         es.Version,
 					Cause:           cause,
+					ChangedKeys:     changedKeys,
 					PreviousVersion: nextVersion - 1,
 					ComputedAt:      computedAt,
 				},
@@ -252,6 +297,13 @@ func (s *EffectiveSetService) Recompute(ctx context.Context, tenantID uuid.UUID,
 	if txErr != nil {
 		return nil, txErr
 	}
+	if !written {
+		// Another concurrent recompute won the race; treat as noop.
+		if noopOut != nil {
+			*noopOut = true
+		}
+		return es, nil
+	}
 
 	// ENT-D13: write quota ceiling to Valkey (advisory, best-effort).
 	if s.cache != nil {
@@ -261,6 +313,43 @@ func (s *EffectiveSetService) Recompute(ctx context.Context, tenantID uuid.UUID,
 	}
 
 	return finalES, nil
+}
+
+// computeChangedKeys returns the limit keys that differ between the new limits
+// map and the previous snapshot. All keys are returned as changed when there is
+// no previous snapshot (first recompute for the tenant).
+func computeChangedKeys(newLimits map[domain.LimitKey]domain.LimitValue, prev *domain.EntitlementSnapshot) []string {
+	if prev == nil {
+		keys := make([]string, 0, len(newLimits))
+		for k := range newLimits {
+			keys = append(keys, string(k))
+		}
+		return keys
+	}
+	var changed []string
+	seen := make(map[domain.LimitKey]struct{}, len(newLimits))
+	for k, v := range newLimits {
+		seen[k] = struct{}{}
+		if old, ok := prev.Limits[k]; !ok || !limitValEqual(v, old) {
+			changed = append(changed, string(k))
+		}
+	}
+	for k := range prev.Limits {
+		if _, ok := seen[k]; !ok {
+			changed = append(changed, string(k))
+		}
+	}
+	return changed
+}
+
+func limitValEqual(a, b domain.LimitValue) bool {
+	if a.IsUnlimited() != b.IsUnlimited() {
+		return false
+	}
+	if a.IsUnlimited() {
+		return true
+	}
+	return *a.Value == *b.Value
 }
 
 // writeQuotaCeiling writes ENT-D13 quota ceiling key to Valkey.
@@ -300,36 +389,57 @@ func effectiveSetUnchanged(es *domain.EffectiveSet, snap *domain.EntitlementSnap
 
 func snapToEffectiveSet(snap *domain.EntitlementSnapshot) *domain.EffectiveSet {
 	return &domain.EffectiveSet{
-		TenantID:      snap.TenantID,
-		Version:       snap.Version,
-		PlanCode:      snap.Plan,
-		State:         snap.State,
-		FeatureFlags:  snap.FeatureFlags,
-		ModelTier:     snap.ModelTier,
-		Limits:        snap.Limits,
-		TrialProfile:  snap.TrialProfile,
-		Cause:         snap.Cause,
-		ComputedAt:    snap.ComputedAt,
-		AddonEligible: computeAddonEligible(snap.State, snap.Limits),
+		TenantID:         snap.TenantID,
+		Version:          snap.Version,
+		PlanCode:         snap.Plan,
+		State:            snap.State,
+		FeatureFlags:     snap.FeatureFlags,
+		ModelTier:        snap.ModelTier,
+		Limits:           snap.Limits,
+		TrialProfile:     snap.TrialProfile,
+		Cause:            snap.Cause,
+		ComputedAt:       snap.ComputedAt,
+		AddonEligibility: computeAddonEligibility(snap.State, snap.Limits),
 	}
 }
 
-// computeAddonEligible returns true when the tenant may purchase quota add-on
-// packs: the subscription must be active (not trial/suspended/etc.) and at
-// least one addable limit key must be finite (BL-OQ-3).
-func computeAddonEligible(state domain.EntitlementState, limits map[domain.LimitKey]domain.LimitValue) bool {
-	if state != domain.EntitlementStateActive {
-		return false
+// computeAddonEligibility returns per-resource eligibility for quota add-on purchases (BL-OQ-3).
+// Keys: "llm_tokens" → LLMTokenQuotaMonthly, "api_requests" → APIRequestBudgetMonthly.
+// Reasons: "not_active" (state not active), "trial" (state is trial), "unlimited_quota" (resource is unlimited).
+func computeAddonEligibility(state domain.EntitlementState, limits map[domain.LimitKey]domain.LimitValue) map[string]domain.AddonResourceEligibility {
+	type resourceDef struct {
+		key      domain.LimitKey
+		shortKey string
 	}
-	for _, key := range []domain.LimitKey{
-		domain.LimitKeyLLMTokenQuotaMonthly,
-		domain.LimitKeyAPIRequestBudgetMonthly,
-	} {
-		if lv, ok := limits[key]; ok && !lv.IsUnlimited() {
-			return true
+	resources := []resourceDef{
+		{domain.LimitKeyLLMTokenQuotaMonthly, "llm_tokens"},
+		{domain.LimitKeyAPIRequestBudgetMonthly, "api_requests"},
+	}
+
+	result := make(map[string]domain.AddonResourceEligibility, len(resources))
+
+	var stateReason *string
+	if state == domain.EntitlementStateTrial {
+		r := "trial"
+		stateReason = &r
+	} else if state != domain.EntitlementStateActive {
+		r := "not_active"
+		stateReason = &r
+	}
+
+	for _, r := range resources {
+		if stateReason != nil {
+			result[r.shortKey] = domain.AddonResourceEligibility{Eligible: false, Reason: stateReason}
+			continue
+		}
+		if lv, ok := limits[r.key]; !ok || lv.IsUnlimited() {
+			reason := "unlimited_quota"
+			result[r.shortKey] = domain.AddonResourceEligibility{Eligible: false, Reason: &reason}
+		} else {
+			result[r.shortKey] = domain.AddonResourceEligibility{Eligible: true, Reason: nil}
 		}
 	}
-	return false
+	return result
 }
 
 func effectiveSetToSnap(es *domain.EffectiveSet) *domain.EntitlementSnapshot {

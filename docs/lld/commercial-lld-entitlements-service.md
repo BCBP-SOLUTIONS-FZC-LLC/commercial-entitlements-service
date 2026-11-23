@@ -20,6 +20,8 @@
 
 | Rev | Date | Change |
 |---|---|---|
+| 1.17 | 2026-11-22 | **ENT-D7 closed.** `TenantConverted` trial-deletion code confirmed complete (`membership_consumer.go` → `handleConverted`); "approved pending Product confirmation" caveat removed from §16.2. ENT-D6 trial profile limit numbers remain the only Product/Finance decision outstanding. |
+| 1.16 | 2026-11-22 | **Workflow team response incorporated; Commercial confirmations recorded.** Five LLD wording corrections: §5.2 adds `x-tenant-roles` to ENT-I1 internal-route header check; fail-closed row scoped to gated limits with W-4 queue-grant exception; freshness row updated to actual built behaviour (60 s TTL, stale-while-revalidate up to 2× TTL, 10-minute fallback, configurable via `ENTITLEMENTS_STALE_TTL`); `dedicated_workflow_queue` sentence corrected to pick-start-queue-and-register-as-side-effect; §7.1.2 Workflow subscriber rows removed (not needed at Phase 1, note added). ENT-D10 updated with: Workflow confirmation of non-conflicting queue names and Go SDK v1.46.0; Commercial confirmations of port 8080 (final, `deploy/helm/values.yaml`), pod label `app.kubernetes.io/name: commercial-entitlements` (final, `deployment.yaml`), 10-min freshness fallback accepted, and Commercial SDK currently v1.30.0 (upgrade path noted). §16.3 Workflow Team sign-off updated to Conditionally Ready. Only remaining Commercial action: publish LLD v1.15 to design repository. |
 | 1.15 | 2026-11-18 | **ENT-D3 framed as Product decision PD-LLM-1 (Commercial HLD v0.62).** Nine principles recorded (tiers differ only for draft and judge; common platform models elsewhere; sole `bge-m3` and `bge-reranker-v2-m3`; cross-family judge; Sonnet default with Opus for defined scenarios; fixed-task aliases mapped to exact Bedrock IDs by configuration; English and Arabic evaluation before any replacement) and four confirmations required before approval (ap-south-1 availability, Arabic evaluation, Finance quota validation, `draft-premium-max` routing rules). No Entitlements change. |
 | 1.14 | 2026-11-18 | **ENT-D3 proposed model table recorded (Product decision memo; Commercial HLD v0.61).** §16.1 ENT-D3 now carries the proposed models per `model_tier` and task class, the virtual model names and the approval steps. Status: proposed, pending Product. No Entitlements change: the service serves the tier label only. |
 | 1.13 | 2026-11-18 | **B-2 approved: override history retained at tenant purge (Commercial HLD v0.60).** `TenantMembershipsPurged` deletes active entitlement state and operational overrides but keeps `entitlement_override_history` as an immutable audit record under the platform's standard audit-retention policy, archivable after offboarding; deleted only if Legal identifies a regulatory erasure requirement. Fixed the contradicting statements in the table notes and EOH-3; §15.1 and §15.2 aligned; `quota_addon_shortfalls` added to the retained records; B-2 moved to resolved. |
@@ -1126,7 +1128,7 @@ The `limits` column in `entitlement_snapshots` and the `limits` field in every A
 
 | Route | Required role / check |
 |---|---|
-| `GET /api/v1/internal/tenants/:id/entitlements` | mTLS caller is an admitted namespace (§10.2); `x-user-id` and `x-tenant-id` present |
+| `GET /api/v1/internal/tenants/:id/entitlements` | mTLS caller is an admitted namespace (§10.2); `x-user-id`, `x-tenant-id`, and `x-tenant-roles` present |
 | `GET /api/v1/internal/plans` | Same as above |
 | `GET /api/v1/tenants/:id/entitlements` | `x-tenant-roles` contains `tenant_owner` or `tenant_admin`, AND `x-tenant-id == :id` |
 | `PUT /api/v1/operator/tenants/:id/entitlement-overrides/:key` | `x-tenant-roles` contains `platform_operator`; re-checked in handler |
@@ -1212,7 +1214,7 @@ Each limit entry has:
 - `source`: `"plan"` | `"override"` | `"trial_profile"` (see §4.6).
 - `expires_at` (optional string, RFC 3339): present only when `source = "override"` and the override has an expiry set.
 
-**`feature_flags` contract.** The array always contains the **merged effective set**: `planDefaults(plan.feature_set) ∪ tenants.feature_flags`. It is never the per-tenant override delta alone. Callers check membership, they do not interpret the structure. At the time of writing the catalog seeds these flags: Enterprise has `["require_mfa_all_users_allowed", "dedicated_workflow_queue"]` in its `feature_set`; Pro and Starter have `[]`. A tenant admin boolean override (`O-4`) may add or suppress a flag. The `dedicated_workflow_queue` flag is what Workflow Execution reads at W-4 to decide whether to register a per-tenant task queue.
+**`feature_flags` contract.** The array always contains the **merged effective set**: `planDefaults(plan.feature_set) ∪ tenants.feature_flags`. It is never the per-tenant override delta alone. Callers check membership, they do not interpret the structure. At the time of writing the catalog seeds these flags: Enterprise has `["require_mfa_all_users_allowed", "dedicated_workflow_queue"]` in its `feature_set`; Pro and Starter have `[]`. A tenant admin boolean override (`O-4`) may add or suppress a flag. The `dedicated_workflow_queue` flag is what Workflow Execution reads at W-4 to pick the start queue: when present, Execution starts on `wf-queue-{tenant_id}` and registers that queue as a side effect if it is missing; when absent, Execution uses the shared `wf-queue-default`. The first start after a new grant uses the shared queue (workers discover new queues on a 60-second poll); subsequent starts use the tenant queue. (Workflow team confirmed 2026-11-22.)
 
 **Success response `200` — example (paid active tenant):**
 
@@ -1276,8 +1278,8 @@ Each limit entry has:
 |---|---|
 | Cache TTL at this service | 60 s (Valkey `ent:tenant:{id}`); Postgres snapshot is the fallback |
 | Staleness on `TenantEntitlementsChanged` | The event is emitted within 5 s p99 (platform outbox SLO). Callers may treat the event as an invalidation signal and evict their own cache; not mandatory |
-| Caller's recommended local TTL | ≤ 60 s. Workflow uses a short in-process cache (freshness bound = cache TTL) per W-3/W-4. |
-| Fail-closed rule | A caller that has **never** received a limit for this tenant, or holds an entry older than its stated freshness bound, **must** refuse the gated operation with its own `503`, never default to an unlimited or Starter value (CD-30) |
+| Caller's recommended local TTL | ≤ 60 s. As built, Workflow keeps each entry for 60 s (±20 %) and serves it stale while a background renewal runs (up to 2× TTL). After a failed renewal the last-known value is served for at most **10 minutes** (configurable via `ENTITLEMENTS_STALE_TTL`). Commercial accepts this bound; Workflow adjusts the setting if a different value is agreed. |
+| Fail-closed rule | A caller that has **never** received a limit for this tenant, or holds an entry older than its stated freshness bound, **must** refuse the gated operation with its own `503`, never default to an unlimited or Starter value (CD-30). **Queue-grant exception (W-4):** when Workflow Execution cannot reach ENT-I1 it falls back to the queue in its local registry — a dedicated queue isolates performance and grants no additional capacity, so this fallback grants nothing extra (confirmed 2026-11-22) |
 | `version` semantics | Monotonically increasing; a cached entry with a lower `version` than a freshly received one is stale. Callers may use this to detect changes without polling the event bus |
 
 **Error responses:**
@@ -1698,11 +1700,11 @@ The `entitlement-events` SNS topic fans out to the following downstream consumer
 | Downstream service | Queue | Events consumed | Purpose |
 |---|---|---|---|
 | Usage & Metering / Rate Limit Service | `entitlements-usage-q` | `TenantEntitlementsChanged` | Refresh effective quota limits; Rate Limit Service reads updated `quota:tenant:{id}:llm_token_quota_monthly` ceiling key from Valkey for atomic INCR enforcement (ENT-D13) |
-| Workflow Definition Service | `entitlements-workflow-def-q` | `TenantEntitlementsChanged` | Re-check `dedicated_workflow_queue` flag and template limits (W-3) |
-| Workflow Execution Service | `entitlements-workflow-exec-q` | `TenantEntitlementsChanged` | Re-check quota gate before new execution (W-4) |
 | Tender Service | `entitlements-tender-q` | `TenantEntitlementsChanged` | Re-check `concurrent_tender_limit` (CD-33) — **TBD: ENT-D2 open** |
 
 Each queue has a DLQ (`<queue>-dlq`, `maxReceiveCount: 5`). SNS filter policies are set to `TenantEntitlementsChanged` only — each consumer receives only this event type.
+
+> **Workflow subscriber queues (W-3/W-4):** not needed at Phase 1. The Workflow services refresh their local cache on TTL expiry (≤ 2 min) and do not subscribe to this SNS topic. If a subscriber queue is added in future, the Workflow team will request it; Commercial and Workflow will agree on a single name at that time.
 
 ### 7.2 Consumed events
 
@@ -2485,7 +2487,17 @@ This service does not store `tenants.residency_mode`. It is read from I-17 at co
 
 ### 16.1 Open items
 
-**Total open gaps: 5** | **Actionable now: 3** | **Blocked (Tender): 2** — ENT-D1, ENT-D4, ENT-D7 (17 Nov), ENT-D8, ENT-D9, ENT-D11, ENT-D12, B-2 and ENT-D13 (18 Nov) resolved (§16.2); ENT-D10 added
+**Total open gaps: 9** | **Updated: 2026-11-22**
+
+| Category | Items | Count |
+|---|---|---|
+| AI team | ENT-D3 (`model_tier` model names — awaiting R-1, R-2, R-4 responses) | 1 |
+| Tender team | ENT-D2 + B-3 (Tender Service identity + quota key name — service not yet developed) | 2 |
+| Infra / Cluster operator | Temporal namespace, retention, `TEMPORAL_HOSTPORT`, mTLS certificate, NetworkPolicy egress, server version | 6 |
+
+**Not counted as gaps:** ENT-D6 live DB calls (operations task at go-live, not development); Workflow team sign-off (standard housekeeping, unblocked on LLD publication); ENT-D7 (code complete, closed 2026-11-22).
+
+Previously resolved: ENT-D1, ENT-D4, ENT-D7 (17 Nov), ENT-D8, ENT-D9, ENT-D11, ENT-D12, B-2, ENT-D13 (18 Nov); ENT-D10 Commercial confirmations recorded (22 Nov)
 
 #### Commercial Team with Platform (1 gap)
 
@@ -2495,7 +2507,24 @@ This service does not store `tenants.residency_mode`. It is read from I-17 at co
 
 The fan-out workflow needs, on the platform Temporal cluster: the `commercial-entitlements` namespace provisioned (with retention), the frontend address for `TEMPORAL_HOSTPORT`, client credentials or mTLS for the `commercial` / `commercial-entitlements` identity, and egress from namespace `commercial` to the Temporal frontend.
 
-**Owner:** Platform (Temporal cluster owner) with the Workflow team | **Status:** Open
+**Workflow team response (22 Nov 2026):** Namespace `commercial-entitlements` agreed in principle under the one-namespace-per-domain rule. Queue names `ent-catalog-fanout` and `ent-expiry-fanout` confirmed non-conflicting with Execution queues. Workflow uses Go SDK v1.46.0 — Commercial must pick a compatible SDK once the cluster operator states the server version. All five infrastructure items (namespace creation, retention, `TEMPORAL_HOSTPORT`, mTLS certificate, NetworkPolicy, server version, `tctl` access) require cluster-operator action; Workflow services hold no cluster-admin rights.
+
+**Commercial team confirmations (22 Nov 2026):**
+- ✅ **Port:** `8080` — confirmed final (`deploy/helm/values.yaml`: `service.port: 8080`, `APP_PORT: "8080"`). Workflow may lock this in their egress rules.
+- ✅ **Pod label:** `app.kubernetes.io/name: commercial-entitlements` — confirmed final (`deploy/helm/templates/deployment.yaml`). Workflow may lock this in both their Helm charts.
+- ✅ **Freshness fallback:** 10-minute stale-TTL (`ENTITLEMENTS_STALE_TTL`) accepted. Workflow adjusts if a shorter value is later agreed.
+- ✅ **Commercial Temporal SDK:** currently `go.temporal.io/sdk v1.30.0` (`go.mod`). Workflow uses v1.46.0. Both SDKs must be compatible with the server version — Commercial will upgrade to match the server major version once the cluster operator confirms it. No blocking issue on queue names or task semantics.
+- ⬜ **LLD v1.15 in design repository:** pending manual publication — the only remaining Commercial action.
+
+**Outstanding cluster-operator actions:**
+- [ ] Provision namespace `commercial-entitlements` with retention
+- [ ] Share `TEMPORAL_HOSTPORT` (Temporal frontend address)
+- [ ] Issue mTLS certificate for identity `commercial` / `commercial-entitlements`
+- [ ] Confirm NetworkPolicy: egress from `commercial` namespace to Temporal frontend on port 7233
+- [ ] Confirm Temporal server version (Commercial worker must use a compatible SDK)
+- [ ] Confirm `tctl --namespace commercial-entitlements` access for runbook operations
+
+**Owner:** Platform (cluster operator) | **Status:** Commercial confirmations recorded 2026-11-22; infrastructure pending cluster operator
 
 ---
 
@@ -2525,7 +2554,11 @@ The `plan_trial_profiles` table exists in Catalog with 6 rows (3 plans × 2 prof
 
 No column is left `NULL`, so no trial inherits an unlimited Enterprise value. **Rollout:** after approval an operator applies the six rows with Catalog `PATCH /api/v1/operator/plans/:code/trial-profiles/:profile`; Catalog emits `PlanCatalogChanged`, and `CatalogFanoutWorkflow` (§8.6) recomputes the trial tenants on each plan. No Entitlements code change. **Open Product points:** a trial crossing month-end receives two monthly quotas (quota resets on the 1st, UTC); token budgets to be validated with Finance against trial volume and model cost; on exhaustion a trial tenant cannot buy add-ons, so the product prompts conversion or Sales assigns `reduced_plan` or `full_plan`.
 
-**Owner:** Product (Finance for the token budgets) | **Status:** Proposed — pending Product approval; required before trial commercial launch (CD-51)
+**Field name note:** the API field and column is `tender_limit`, not `concurrent_tender_limit` (CD-16b, Catalog `dto.go:77`).
+
+**Migration 000003 updated (2026-11-22):** `plan_trial_profiles` seed rows now included with all five limit columns populated. Fresh installs and CI containers get the values automatically — no API calls needed. Existing live/staging DBs (migration already applied) still require the 6 PATCH calls after CD-51 approval.
+
+**Owner:** Product (Finance for the token budgets) | **Status:** Migration seeded — pending CD-51 (Product + Finance approval) before executing 6 PATCH calls on existing DBs; required before trial commercial launch
 
 ---
 
@@ -2599,7 +2632,7 @@ Tender Service namespace, ServiceAccount, and pod label are needed to admit Tend
 | CD-55 | Token add-on balance via `quota_addons` + `quota_addon_drawdowns`; FIFO draw; 12-month expiry | Commercial Team | 2026-11-14 |
 | ENT-D1 | `PlanCatalogChanged` fan-out as a Temporal workflow from Phase 1: affected tenants only, parallel activities under configurable concurrency, platform Temporal cluster (§8.6) | Commercial Team (TL discussion) | 2026-11-17 |
 | ENT-D4 | Override expiry as a dedicated Temporal workflow (`OverrideExpiryFanoutWorkflow`) in Phase 1, same batching, concurrency, retry and observability model as ENT-D1 (§8.7) | Commercial Team (resolved by the ENT-D1 decision) | 2026-11-17 |
-| ENT-D7 | On `TenantConverted`, `tenant_trial_assignments` and `trial_entitlement_overrides` are deleted; commercial `entitlement_overrides` stay in effect. A trial benefit meant to persist must be re-created as a commercial override before or during conversion (ENT-INV-7). Separates trial incentives from contractual entitlements | Commercial Team; **approved pending Product confirmation** | 2026-11-17 |
+| ENT-D7 | On `TenantConverted`, `tenant_trial_assignments` and `trial_entitlement_overrides` are deleted; commercial `entitlement_overrides` stay in effect. A trial benefit meant to persist must be re-created as a commercial override before or during conversion (ENT-INV-7). Separates trial incentives from contractual entitlements. **Code complete** (`membership_consumer.go` → `handleConverted`, single transaction, ENT-INV-7 enforced) | Commercial Team | 2026-11-22 |
 | ENT-D9 | Drawdown shortfalls are recorded, not silently absorbed: drain all balances, persist the uncovered amount as a reconciliation record, emit an audit event, increment metrics and alert above configurable thresholds; silent absorption rejected. Resolution policy → ENT-D11 | Commercial + Product | 2026-11-18 |
 | ENT-D11 | Every shortfall gets a formal disposition: at or below tolerance auto-accepted as commercial loss; above it operator review resolving as accepted loss, entitlement correction, metering correction or billing escalation; all audited and linked to the shortfall; Commercial owns loss acceptance and billing escalation, Entitlements balance corrections, Usage & Metering usage corrections; repeated or high-value shortfalls escalated regardless (QAS-5 to QAS-7) | Commercial + Product | 2026-11-18 |
 | ENT-D12 | Shortfall defaults approved: tolerance 10,000 tokens and 1 %, high-value 250,000 tokens, repetition 2 within 3 periods; configuration-driven, adjustable after production review; high-value or repeated shortfalls always go to operator review and Commercial escalation | Commercial | 2026-11-18 |
@@ -2615,7 +2648,7 @@ Tender Service namespace, ServiceAccount, and pod label are needed to admit Tend
 | Platform Architecture | — | Pending |
 | Security Review | — | Pending |
 | Catalog Team | — | Pending |
-| Workflow Team | — | Pending |
+| Workflow Team | — | **Conditionally ready** — answers provided 2026-11-22. Blocked on: **(1)** LLD v1.16 published to design repository by Commercial. On publication, Workflow must: replace their v1.4 reference with v1.16, review 5 wording corrections (§5.2 headers, fail-closed, freshness, W-4 sentence, §7.1.2), lock port 8080 + pod label `app.kubernetes.io/name: commercial-entitlements` in both Helm charts (already confirmed by Commercial 2026-11-22), then formally sign off here. |
 
 ---
 

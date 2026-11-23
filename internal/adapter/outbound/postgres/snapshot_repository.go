@@ -31,18 +31,19 @@ var _ port.SnapshotRepository = (*SnapshotRepository)(nil)
 
 // Upsert inserts or replaces the snapshot for the tenant, only when the
 // incoming version is strictly greater than the stored one.
-func (r *SnapshotRepository) Upsert(ctx context.Context, snap *domain.EntitlementSnapshot) error {
+func (r *SnapshotRepository) Upsert(ctx context.Context, snap *domain.EntitlementSnapshot) (bool, error) {
 	limitsJSON, err := json.Marshal(snap.Limits)
 	if err != nil {
-		return fmt.Errorf("marshal limits: %w", err)
+		return false, fmt.Errorf("marshal limits: %w", err)
 	}
 	flagsJSON, err := json.Marshal(snap.FeatureFlags)
 	if err != nil {
-		return fmt.Errorf("marshal feature_flags: %w", err)
+		return false, fmt.Errorf("marshal feature_flags: %w", err)
 	}
 
-	return withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
-		_, err := tx.Exec(ctx, `
+	var written bool
+	err = withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
+		tag, execErr := tx.Exec(ctx, `
 			INSERT INTO entitlement_snapshots (
 				tenant_id, version, source_record_version, plan, state,
 				feature_flags, model_tier, limits, trial_profile, cause, computed_at
@@ -71,8 +72,13 @@ func (r *SnapshotRepository) Upsert(ctx context.Context, snap *domain.Entitlemen
 			string(snap.Cause),
 			snap.ComputedAt,
 		)
-		return err
+		if execErr != nil {
+			return execErr
+		}
+		written = tag.RowsAffected() > 0
+		return nil
 	})
+	return written, err
 }
 
 // GetLatest returns the current snapshot for a tenant.

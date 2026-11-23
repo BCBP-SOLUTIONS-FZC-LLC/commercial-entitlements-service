@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 )
@@ -105,6 +106,7 @@ func (c *Cache) Health(ctx context.Context) error {
 func (c *Cache) GetEffectiveSet(ctx context.Context, tenantID uuid.UUID) (*domain.EffectiveSet, error) {
 	data, err := c.rdb.Get(ctx, effectiveSetKey(tenantID)).Bytes()
 	if err == redis.Nil {
+		metrics.IncCacheMiss("effective_set")
 		return nil, nil
 	}
 	if err != nil {
@@ -114,6 +116,7 @@ func (c *Cache) GetEffectiveSet(ctx context.Context, tenantID uuid.UUID) (*domai
 	if err := json.Unmarshal(data, &es); err != nil {
 		return nil, err
 	}
+	metrics.IncCacheHit("effective_set")
 	return &es, nil
 }
 
@@ -137,6 +140,7 @@ func (c *Cache) InvalidateEffectiveSet(ctx context.Context, tenantID uuid.UUID) 
 func (c *Cache) GetPlan(ctx context.Context, planCode string) (*domain.Plan, error) {
 	data, err := c.rdb.Get(ctx, planKey(planCode)).Bytes()
 	if err == redis.Nil {
+		metrics.IncCacheMiss("plan")
 		return nil, nil
 	}
 	if err != nil {
@@ -146,6 +150,7 @@ func (c *Cache) GetPlan(ctx context.Context, planCode string) (*domain.Plan, err
 	if err := json.Unmarshal(data, &plan); err != nil {
 		return nil, err
 	}
+	metrics.IncCacheHit("plan")
 	return &plan, nil
 }
 
@@ -235,4 +240,3 @@ func usageCounterKey(tenantID uuid.UUID, limitKey domain.LimitKey, period string
 
 // Ensure Cache implements port.Cache at compile time.
 var _ port.Cache = (*Cache)(nil)
-

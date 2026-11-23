@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
 )
 
@@ -48,6 +49,7 @@ func OverrideExpiry(ctx context.Context, jctx *Context) (Result, error) {
 					"tenant_id", ov.TenantID, "error", err.Error())
 			}
 		}
+		metrics.IncOverrideExpire()
 		res.Succeeded++
 	}
 	jctx.Logger.Info("override-expiry complete",

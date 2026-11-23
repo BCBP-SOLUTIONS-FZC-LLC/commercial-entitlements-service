@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/cmd/reconciler/jobs"
+	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/inbound/consumer"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/inbound/sqspipeline"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/eventbus"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/metrics"
@@ -137,14 +138,11 @@ func run() int {
 	ctx, jobSpan := gincommon.NewTracer(serviceName).Start(ctx, "reconciler."+jobName)
 	defer jobSpan.End()
 
-	pgCfg, pgWarnings := pgcommon.ConfigFromEnv()
-	for _, w := range pgWarnings {
-		log.Warn("postgres config warning", "key", w.Key, "reason", w.Reason)
-	}
-	pgCfg.DSN = pgadapter.DSNFromEnv()
-	stmtTimeout := envDuration("RECONCILER_STATEMENT_TIMEOUT", defaultReconcilerStatementTimeout)
-	pgCfg.StatementTimeout = stmtTimeout
-	pgCfg.GUCProvider = pgcommon.GUCSetFromContext
+	// Use the BYPASSRLS system pool so cross-tenant sweeps (addon-expiry,
+	// override-expiry, quota-reset) are not filtered to zero rows by RLS.
+	// GUCProvider is nil — the system role does not filter by tenant.
+	pgCfg := pgadapter.SystemPoolConfig(pgadapter.SystemDSNFromEnv(), nil)
+	pgCfg.StatementTimeout = envDuration("RECONCILER_STATEMENT_TIMEOUT", defaultReconcilerStatementTimeout)
 	pgCfg.Logger = pgadapter.NewLoggerAdapter(rawLog)
 	pgCfg.Tracer = gincommon.NewSpanTracer(serviceName)
 	pool, err := pgcommon.NewPool(ctx, pgCfg)
@@ -185,7 +183,23 @@ func run() int {
 	overrideRepo := pgadapter.NewOverrideRepository(pool)
 	addonRepo := pgadapter.NewAddonRepository(pool)
 	shortfallRepo := pgadapter.NewShortfallRepository(pool)
-	idempotencyRepo := pgadapter.NewIdempotencyRepository(pool, outboxPublisher)
+
+	// Build per-consumer inboxes (platform-events inbox.Store) so the
+	// processed-events-prune job can prune each consumer independently.
+	mustReconcilerInbox := func(consumer string) *pgadapter.IdempotencyRepository {
+		repo, err := pgadapter.NewIdempotencyRepository(pool, outboxPublisher, consumer)
+		if err != nil {
+			log.Error("init reconciler inbox", "consumer", consumer, "error", err.Error())
+			os.Exit(1)
+		}
+		return repo
+	}
+	inboxMulti := pgadapter.NewMultiPruneInbox(
+		mustReconcilerInbox(consumeradapter.BillingConsumerName),
+		mustReconcilerInbox(consumeradapter.TenantConsumerName),
+		mustReconcilerInbox(consumeradapter.CatalogConsumerName),
+		mustReconcilerInbox(consumeradapter.MembershipConsumerName),
+	)
 
 	// Valkey cache — optional for most reconciler jobs but required for quota-reset.
 	var cache port.Cache
@@ -206,7 +220,7 @@ func run() int {
 		Overrides:              overrideRepo,
 		Addons:                 addonRepo,
 		Shortfalls:             shortfallRepo,
-		Inbox:                  idempotencyRepo,
+		Inbox:                  inboxMulti,
 		OutboxRunner:           outboxRunner,
 		Cache:                  cache,
 		Logger:                 log,

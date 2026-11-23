@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
 )
 
@@ -40,6 +41,7 @@ func AddonExpiry(ctx context.Context, jctx *Context) (Result, error) {
 					"tenant_id", a.TenantID, "error", err.Error())
 			}
 		}
+		metrics.IncAddonExpire()
 		res.Succeeded++
 	}
 	jctx.Logger.Info("addon-expiry complete",

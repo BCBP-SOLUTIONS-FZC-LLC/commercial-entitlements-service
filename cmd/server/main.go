@@ -33,6 +33,7 @@ import (
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/postgres"
 	valkeyadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/valkey"
 	temporaladapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/temporal"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/service"
 
@@ -256,8 +257,6 @@ func main() {
 	drawdownRepo := pgadapter.NewDrawdownRepository(pool)
 	shortfallRepo := pgadapter.NewShortfallRepository(pool)
 	trialRepo := pgadapter.NewTrialRepository(pool)
-	idempotencyRepo := pgadapter.NewIdempotencyRepository(pool, outboxPublisher)
-
 	iamClient := iamclientadapter.New(log)
 
 	// Temporal starter (optional — nil if not configured).
@@ -275,9 +274,25 @@ func main() {
 	catalogSvc := service.NewCatalogService(iamClient, cache, temporalStarter).
 		WithLogger(log).
 		WithCatalogCache(catalogCacheRepo)
-	effectSvc := service.NewEffectiveSetService(snapshotRepo, overrideRepo, addonRepo, trialRepo, catalogSvc, iamClient, cache, txRunner).WithLogger(log)
+	effectSvc := service.NewEffectiveSetService(snapshotRepo, overrideRepo, addonRepo, trialRepo, catalogSvc, iamClient, cache, txRunner).
+		WithLogger(log).
+		WithRecomputeHook(func(cause domain.EffectiveSetCause, noop, failed bool, d time.Duration) {
+			outcome := metrics.OutcomeComputed
+			if failed {
+				outcome = metrics.OutcomeError
+			} else if noop {
+				outcome = metrics.OutcomeNoop
+			}
+			metrics.IncRecompute(cause, outcome)
+			metrics.ObserveRecomputeDuration(cause, outcome, d)
+		})
 	overrideSvc := service.NewOverrideService(overrideRepo, effectSvc, txRunner).WithLogger(log)
-	addonSvc := service.NewAddonService(addonRepo, drawdownRepo, shortfallRepo, effectSvc, txRunner).WithLogger(log)
+	addonSvc := service.NewAddonService(addonRepo, drawdownRepo, shortfallRepo, effectSvc, txRunner).
+		WithLogger(log).
+		WithAddonMetricsHooks(
+			func(key domain.LimitKey, hadShortfall bool) { metrics.IncDrawdown(key, hadShortfall) },
+			func(key domain.LimitKey, status domain.ShortfallStatus) { metrics.IncShortfallRaised(key, status) },
+		)
 	trialSvc := service.NewTrialService(trialRepo, effectSvc, txRunner).WithLogger(log)
 
 	entitlementH := httpadapter.NewEntitlementHandler(effectSvc)
@@ -295,16 +310,28 @@ func main() {
 	sqsEnv := eventcfg.LoadSQS()
 	eventcfg.LogWarningsTo(log, sqsEnv.Warnings)
 
+	// Per-consumer inboxes backed by platform-events inbox.Store. Each inbox
+	// is scoped to its consumer name so dedup records are independent.
+	mustInbox := func(consumer string) *pgadapter.IdempotencyRepository {
+		repo, err := pgadapter.NewIdempotencyRepository(pool, outboxPublisher, consumer)
+		if err != nil {
+			log.Error("init consumer inbox", map[string]interface{}{"consumer": consumer, "error": err.Error()})
+			os.Exit(1)
+		}
+		repo.WithAuditRecorder(auditRecorder)
+		return repo
+	}
+
 	billingConsumer := consumeradapter.NewBillingEventConsumer(
-		pgadapter.NewIdempotencyRepository(pool, outboxPublisher),
-		effectSvc, trialSvc, log)
+		mustInbox(consumeradapter.BillingConsumerName),
+		effectSvc, trialSvc, addonSvc, log)
 	tenantConsumer := consumeradapter.NewTenantEventConsumer(
-		pgadapter.NewIdempotencyRepository(pool, outboxPublisher),
+		mustInbox(consumeradapter.TenantConsumerName),
 		effectSvc, trialSvc, log)
 	catalogConsumer := consumeradapter.NewCatalogConsumer(
-		idempotencyRepo, catalogSvc, cache, log)
+		mustInbox(consumeradapter.CatalogConsumerName), catalogSvc, cache, log)
 	membershipConsumer := consumeradapter.NewMembershipConsumer(
-		pgadapter.NewIdempotencyRepository(pool, outboxPublisher),
+		mustInbox(consumeradapter.MembershipConsumerName),
 		effectSvc, trialSvc, log)
 
 	for _, wiring := range []struct {

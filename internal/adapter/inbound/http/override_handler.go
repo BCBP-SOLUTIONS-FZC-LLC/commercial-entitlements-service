@@ -8,6 +8,7 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 )
@@ -73,6 +74,7 @@ func (h *OverrideHandler) Set(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
+	metrics.IncOverrideSet(key)
 	c.JSON(http.StatusOK, overrideToResponse(o))
 }
 
@@ -95,6 +97,7 @@ func (h *OverrideHandler) Remove(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
+	metrics.IncOverrideRemove(key)
 	c.Status(http.StatusNoContent)
 }
 

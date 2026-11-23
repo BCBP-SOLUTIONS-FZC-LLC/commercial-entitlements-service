@@ -10,7 +10,8 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 )
 
-const membershipConsumerName = "membership-entitlements-q"
+// MembershipConsumerName is the stable consumer name used for processed_events dedup.
+const MembershipConsumerName = "membership-entitlements-q"
 
 // MembershipConsumer handles IAM membership lifecycle events that may require
 // entitlement recomputation (e.g. TenantConverted → state changes).
@@ -40,19 +41,19 @@ func NewMembershipConsumer(
 func (c *MembershipConsumer) Handle(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	switch env.Type {
 	case "TenantMembershipsPurged":
-		return processOnce(ctx, c.inbox, membershipConsumerName, env, func(txCtx context.Context) error {
-			return c.handlePurge(ctx, env)
+		return processOnce(ctx, c.inbox, MembershipConsumerName, env, func(txCtx context.Context) error {
+			return c.handlePurge(txCtx, env)
 		})
 	case "TenantConverted":
-		return processOnce(ctx, c.inbox, membershipConsumerName, env, func(txCtx context.Context) error {
-			return c.handleConverted(ctx, env)
+		return processOnce(ctx, c.inbox, MembershipConsumerName, env, func(txCtx context.Context) error {
+			return c.handleConverted(txCtx, env)
 		})
 	case "TenantOffboarded":
-		return processOnce(ctx, c.inbox, membershipConsumerName, env, func(txCtx context.Context) error {
-			return c.handleOffboarded(ctx, env)
+		return processOnce(ctx, c.inbox, MembershipConsumerName, env, func(txCtx context.Context) error {
+			return c.handleOffboarded(txCtx, env)
 		})
 	default:
-		return ackUnknown(ctx, c.inbox, c.log, membershipConsumerName, env)
+		return ackUnknown(ctx, c.inbox, c.log, MembershipConsumerName, env)
 	}
 }
 

@@ -14,10 +14,10 @@ type UUID = uuid.UUID
 // every recomputation of a tenant's effective entitlement set.
 const EventTypeTenantEntitlementsChanged = "tenant_entitlements_changed"
 
-// EventTypeTenantQuotaAddOnChanged is emitted by Entitlements (and only by
-// Entitlements) when a quota add-on pack is granted, revoked, or expires.
-// Billing uses purchased_at as the 12-month expiry anchor (BL-OQ-4, BL-OQ-20).
-const EventTypeTenantQuotaAddOnChanged = "tenant_quota_add_on_changed"
+// EventTypeTenantAddOnBalanceChanged is emitted by Entitlements when an operator
+// grants, adjusts, revokes, or expires a quota add-on pack. This is distinct from
+// Billing's TenantQuotaAddOnChanged (purchase/refund) which Entitlements consumes.
+const EventTypeTenantAddOnBalanceChanged = "tenant_add_on_balance_changed"
 
 // TopicEntitlements is the SNS topic that carries entitlement events.
 const TopicEntitlements = "entitlements"
@@ -85,19 +85,29 @@ type TenantEntitlementsChangedPayload struct {
 	ComputedAt      time.Time         `json:"computed_at"`
 }
 
-// TenantQuotaAddOnChangedPayload is the event body for EventTypeTenantQuotaAddOnChanged.
-// Action is one of "granted" | "revoked" | "expired".
-// PurchasedAt is the wall-clock time the add-on was originally granted; Billing
-// uses it as the 12-month expiry basis regardless of when this event arrives (BL-OQ-4).
-type TenantQuotaAddOnChangedPayload struct {
+// TenantAddOnBalanceChangedPayload is the event body for EventTypeTenantAddOnBalanceChanged.
+// Action is one of "granted" | "adjusted" | "revoked" | "expired".
+// GrantedAt is the wall-clock time the operator originally granted the add-on pack.
+type TenantAddOnBalanceChangedPayload struct {
 	TenantID    uuid.UUID  `json:"tenant_id"`
 	AddonID     uuid.UUID  `json:"addon_id"`
 	LimitKey    string     `json:"limit_key"`
 	TotalTokens int64      `json:"total_tokens"`
 	Reason      string     `json:"reason"`
 	Action      string     `json:"action"`
-	PurchasedAt time.Time  `json:"purchased_at"`
+	GrantedAt   time.Time  `json:"granted_at"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+}
+
+// InboundBillingAddonRefundEvent is the payload of TenantQuotaAddOnChanged {reason: "refund"}
+// consumed from billing.events (BL-OQ-23 / C-5). Delta is always negative.
+type InboundBillingAddonRefundEvent struct {
+	TenantID    uuid.UUID `json:"tenant_id"`
+	Resource    string    `json:"resource"`
+	Delta       int64     `json:"delta"`
+	Reason      string    `json:"reason"`
+	BillingRef  string    `json:"billing_ref"`
+	PurchaseRef uuid.UUID `json:"purchase_ref"`
 }
 
 // InboundBillingEvent represents a billing subscription event from upstream.

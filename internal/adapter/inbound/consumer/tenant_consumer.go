@@ -10,7 +10,8 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 )
 
-const tenantConsumerName = "tenant-entitlements-q"
+// TenantConsumerName is the stable consumer name used for processed_events dedup.
+const TenantConsumerName = "tenant-entitlements-q"
 
 // TenantEventConsumer handles tenant lifecycle events that may require
 // an entitlement recomputation or trial data purge.
@@ -40,15 +41,15 @@ func NewTenantEventConsumer(
 func (c *TenantEventConsumer) Handle(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	switch env.Type {
 	case "TenantIdentityProvisioned", "TenantSubscriptionUpdated":
-		return processOnce(ctx, c.inbox, tenantConsumerName, env, func(txCtx context.Context) error {
+		return processOnce(ctx, c.inbox, TenantConsumerName, env, func(txCtx context.Context) error {
 			return c.handleLifecycleEvent(txCtx, env)
 		})
 	case "TenantMembershipsPurged", "TenantConverted", "TenantOffboarded":
-		return processOnce(ctx, c.inbox, tenantConsumerName, env, func(txCtx context.Context) error {
+		return processOnce(ctx, c.inbox, TenantConsumerName, env, func(txCtx context.Context) error {
 			return c.handleOffboard(txCtx, env)
 		})
 	default:
-		return ackUnknown(ctx, c.inbox, c.log, tenantConsumerName, env)
+		return ackUnknown(ctx, c.inbox, c.log, TenantConsumerName, env)
 	}
 }
 

@@ -47,10 +47,11 @@ func (r *AddonRepository) Update(ctx context.Context, a *domain.QuotaAddon) erro
 			UPDATE quota_addons
 			SET remaining_tokens = $3, status = $4,
 			    record_version   = $5, updated_at = $6
-			WHERE id=$1 AND tenant_id=$2`,
+			WHERE id=$1 AND tenant_id=$2 AND record_version=$7`,
 			a.ID, a.TenantID,
 			a.RemainingTokens, string(a.Status),
 			a.RecordVersion, a.UpdatedAt,
+			a.RecordVersion-1,
 		)
 		if err != nil {
 			return err

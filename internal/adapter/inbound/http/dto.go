@@ -21,9 +21,17 @@ type EffectiveSetResponse struct {
 	TrialProfile *string                       `json:"trial_profile,omitempty"`
 	Cause        string                        `json:"cause"`
 	ComputedAt   time.Time                     `json:"computed_at"`
-	// AddonEligible signals whether the tenant may purchase quota add-on packs.
-	// Billing reads this for the BIL-ADD-1 finite-quota check (BL-OQ-3).
-	AddonEligible bool `json:"addon_eligible"`
+	// AddonEligibility reports per-resource eligibility for quota add-on purchases.
+	// Billing reads llm_tokens in v1 for the BIL-ADD-1 check (BL-OQ-3).
+	AddonEligibility map[string]AddonResourceEligibilityResponse `json:"addon_eligibility"`
+}
+
+// AddonResourceEligibilityResponse is the HTTP representation of per-resource
+// add-on eligibility. Reason is null when eligible, one of "trial" / "not_active" /
+// "unlimited_quota" when not.
+type AddonResourceEligibilityResponse struct {
+	Eligible bool    `json:"eligible"`
+	Reason   *string `json:"reason"`
 }
 
 type LimitValueResponse struct {
@@ -36,18 +44,26 @@ func effectiveSetToResponse(es *domain.EffectiveSet) EffectiveSetResponse {
 		limits[string(k)] = LimitValueResponse{Value: v.Value}
 	}
 	return EffectiveSetResponse{
-		TenantID:      es.TenantID,
-		Version:       es.Version,
-		PlanCode:      es.PlanCode,
-		State:         string(es.State),
-		FeatureFlags:  es.FeatureFlags,
-		ModelTier:     es.ModelTier,
-		Limits:        limits,
-		TrialProfile:  es.TrialProfile,
-		Cause:         string(es.Cause),
-		ComputedAt:    es.ComputedAt,
-		AddonEligible: es.AddonEligible,
+		TenantID:         es.TenantID,
+		Version:          es.Version,
+		PlanCode:         es.PlanCode,
+		State:            string(es.State),
+		FeatureFlags:     es.FeatureFlags,
+		ModelTier:        es.ModelTier,
+		Limits:           limits,
+		TrialProfile:     es.TrialProfile,
+		Cause:            string(es.Cause),
+		ComputedAt:       es.ComputedAt,
+		AddonEligibility: addonEligibilityToResponse(es.AddonEligibility),
 	}
+}
+
+func addonEligibilityToResponse(m map[string]domain.AddonResourceEligibility) map[string]AddonResourceEligibilityResponse {
+	out := make(map[string]AddonResourceEligibilityResponse, len(m))
+	for k, v := range m {
+		out[k] = AddonResourceEligibilityResponse{Eligible: v.Eligible, Reason: v.Reason}
+	}
+	return out
 }
 
 // ── Override ──────────────────────────────────────────────────────────────

@@ -30,7 +30,7 @@ export APP_NAME APP_ENV BUILD_VERSION
         test test-unit test-postgres test-integration test-ci \
         _test-unit _test-postgres _test-integration _merge-coverage \
         cover cover-func \
-        docker-up docker-down docker-build swag swag-check trivy vuln-check ci clean mod-verify
+        docker-up docker-down docker-build swag swag-check trivy vuln-check check-metrics ci clean mod-verify
 
 help:
 	@echo "Available targets: setup tidy fmt fmt-check vet lint arch-lint build run migrate"
@@ -45,6 +45,7 @@ help:
 	@echo "  make swag-check      - fail if Swagger regeneration would change docs/swagger/ (CI drift gate)"
 	@echo "  make trivy           - build the image and Trivy-scan it like CI (CRITICAL/HIGH/UNKNOWN, fixed only); run by .githooks/pre-push"
 	@echo "  make vuln-check      - run govulncheck on internal and cmd packages"
+	@echo "  make check-metrics   - validate metric names, labels, suffixes, and tier compliance"
 
 setup:
 	@test -f .env || cp .env-example .env
@@ -197,7 +198,10 @@ trivy:
 vuln-check:
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./internal/... ./cmd/...
 
-ci: tidy fmt-check vet lint test-ci build
+check-metrics:
+	bash scripts/check-metrics.sh
+
+ci: tidy fmt-check vet lint check-metrics test-ci build
 
 .coverage:
 	@mkdir -p .coverage

@@ -33,6 +33,7 @@ type AddonService interface {
 	RemoveAddon(ctx context.Context, req RemoveAddonRequest) error
 	ListAddons(ctx context.Context, tenantID uuid.UUID) ([]domain.QuotaAddon, error)
 	RecordDrawdown(ctx context.Context, req RecordDrawdownRequest) (*domain.QuotaAddonDrawdown, error)
+	ApplyBillingRefund(ctx context.Context, req ApplyBillingRefundRequest) error
 	ListDrawdowns(ctx context.Context, tenantID uuid.UUID, limitKey domain.LimitKey) ([]domain.QuotaAddonDrawdown, error)
 	ResolveShortfall(ctx context.Context, req ResolveShortfallRequest) (*domain.QuotaAddonShortfall, error)
 	ListShortfalls(ctx context.Context, tenantID uuid.UUID, statusFilter []domain.ShortfallStatus) ([]domain.QuotaAddonShortfall, error)
@@ -101,6 +102,16 @@ type RemoveAddonRequest struct {
 	AddonID   uuid.UUID
 	RemovedBy uuid.UUID
 	Reason    string
+}
+
+// ApplyBillingRefundRequest carries the refund parameters from Billing's
+// TenantQuotaAddOnChanged {reason: "refund"} event (C-5 / BL-OQ-23).
+// Delta is always negative; PurchaseRef is the addon UUID to reduce.
+type ApplyBillingRefundRequest struct {
+	TenantID    uuid.UUID
+	PurchaseRef uuid.UUID
+	Delta       int64
+	BillingRef  string
 }
 
 // RecordDrawdownRequest deducts tokens from addon packs for a billing period.

@@ -9,6 +9,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/problem"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 )
@@ -71,5 +72,6 @@ func (h *ShortfallHandler) Resolve(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
+	metrics.IncShortfallResolve(domain.ShortfallDisposition(body.Disposition))
 	c.JSON(http.StatusOK, shortfallToResponse(sf))
 }

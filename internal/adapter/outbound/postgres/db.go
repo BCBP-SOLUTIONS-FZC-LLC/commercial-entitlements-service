@@ -97,7 +97,26 @@ var writeRetryOpts = pgcommon.RetryOptions{
 // injects the EventPublisher and AuditRecorder, then calls fn. Commits on
 // success; rolls back on error. Contended writes retry on deadlock /
 // serialization failure via pgcommon.RunInTxWithRetryOpts.
+//
+// Join mode: when a transaction is already present in ctx (placed there by
+// platform-events inbox.Store.Process for the processed_events claim), RunInTx
+// reuses it instead of opening a new one. This keeps the dedup claim, the
+// snapshot upsert, and the outbox.Enqueue atomically in one transaction
+// (IDEMP-1..4, EVT-10). The retry logic is not applied in join mode — the
+// outer inbox transaction handles retries via SQS message redelivery.
 func (r *TxRunner) RunInTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	if _, ok := port.TxFromContext(ctx); ok {
+		// Already inside a transaction (inbox.Store.Process or nested call).
+		// Inject publishers fresh without opening a second connection.
+		txCtx := ctx
+		if r.events != nil {
+			txCtx = port.WithEventPublisher(txCtx, r.events)
+		}
+		if r.audit != nil {
+			txCtx = port.WithAuditRecorder(txCtx, r.audit)
+		}
+		return wrapConnErr(fn(txCtx))
+	}
 	return wrapConnErr(pgcommon.RunInTxWithRetryOpts(ctx, r.pool, pgcommon.TxOptions{}, writeRetryOpts, func(ctx context.Context, tx pgcommon.Tx) error {
 		txCtx := port.WithTx(ctx, tx)
 		if r.events != nil {

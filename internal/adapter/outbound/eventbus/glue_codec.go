@@ -209,8 +209,8 @@ func AllSchemaNames() ([]string, error) {
 
 // schemaFileNames maps every embedded schemas/*.json filename to its event type.
 var schemaFileNames = map[string]string{
-	"tenant_entitlements_changed.json": domain.EventTypeTenantEntitlementsChanged,
-	"tenant_quota_add_on_changed.json": domain.EventTypeTenantQuotaAddOnChanged,
+	"tenant_entitlements_changed.json":   domain.EventTypeTenantEntitlementsChanged,
+	"tenant_add_on_balance_changed.json": domain.EventTypeTenantAddOnBalanceChanged,
 }
 
 func eventTypeFromSchemaFile(filename string) string {

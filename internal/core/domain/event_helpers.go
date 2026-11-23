@@ -6,7 +6,7 @@ package domain
 // Billing must not emit any of the reserved reasons for this event type.
 var producedEvents = map[string]bool{
 	EventTypeTenantEntitlementsChanged: true,
-	EventTypeTenantQuotaAddOnChanged:   true,
+	EventTypeTenantAddOnBalanceChanged: true,
 }
 
 // IsProducedEvent reports whether the service produces events of this type.

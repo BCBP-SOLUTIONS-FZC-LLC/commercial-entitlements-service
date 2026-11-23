@@ -76,8 +76,15 @@ type EffectiveSet struct {
 	TrialProfile *string                 `json:"trial_profile,omitempty"`
 	Cause        EffectiveSetCause       `json:"cause"`
 	ComputedAt   time.Time               `json:"computed_at"`
-	// AddonEligible is true when the tenant's current state and plan allow
-	// purchasing quota add-on packs. Billing reads this field for the
-	// BIL-ADD-1 finite-quota eligibility check (BL-OQ-3).
-	AddonEligible bool `json:"addon_eligible"`
+	// AddonEligibility reports per-resource eligibility for quota add-on purchases.
+	// Billing reads llm_tokens in v1 for the BIL-ADD-1 check (BL-OQ-3).
+	// Keys: "llm_tokens", "api_requests". Reasons: "trial", "not_active", "unlimited_quota".
+	AddonEligibility map[string]AddonResourceEligibility `json:"addon_eligibility"`
+}
+
+// AddonResourceEligibility reports whether a specific resource type can receive
+// quota add-on packs and, if not, why.
+type AddonResourceEligibility struct {
+	Eligible bool    `json:"eligible"`
+	Reason   *string `json:"reason"`
 }

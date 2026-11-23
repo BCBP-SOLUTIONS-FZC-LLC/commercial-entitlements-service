@@ -1,13 +1,13 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "TenantQuotaAddOnChanged",
+  "title": "TenantAddOnBalanceChanged",
   "type": "object",
-  "required": ["tenant_id", "addon_id", "limit_key", "total_tokens", "reason", "action", "purchased_at"],
+  "required": ["tenant_id", "addon_id", "limit_key", "total_tokens", "reason", "action", "granted_at"],
   "properties": {
     "tenant_id": {
       "type": "string",
       "format": "uuid",
-      "description": "The tenant whose quota add-on changed."
+      "description": "The tenant whose quota add-on balance changed."
     },
     "addon_id": {
       "type": "string",
@@ -25,17 +25,17 @@
     },
     "reason": {
       "type": "string",
-      "description": "Human-readable reason for the change."
+      "description": "Human-readable reason for the change (e.g. promotional_grant, operator_correction, migration_credit)."
     },
     "action": {
       "type": "string",
-      "enum": ["granted", "revoked", "expired"],
+      "enum": ["granted", "adjusted", "revoked", "expired"],
       "description": "What happened to the add-on pack."
     },
-    "purchased_at": {
+    "granted_at": {
       "type": "string",
       "format": "date-time",
-      "description": "Wall-clock time the add-on was originally granted. Billing uses this as the 12-month expiry anchor (BL-OQ-4)."
+      "description": "Wall-clock time the operator originally granted this add-on pack."
     },
     "expires_at": {
       "type": "string",

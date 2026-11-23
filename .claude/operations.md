@@ -36,27 +36,28 @@
 
 Namespace: `commercial_entitlements_*`. Registered via `metrics.Register(appEnv)` onto `gincommon.MetricsRegisterer()`. Registry is guarded by `sync.Once` — safe to call from both `cmd/server` and `cmd/reconciler`.
 
+All metrics are Tier 3 service-specific (`commercial_entitlements_*`). Required labels `service`, `domain`, and `environment` are injected centrally by `gincommon.MetricsRegisterer()` as const labels (Rule 8). Tier 1 platform metrics (`platform_*`) are registered automatically by `events.InitMetrics()`, `pgmetrics.InitWithIdentity()`, and `audit.InitMetrics()`.
+
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `commercial_entitlements_recompute_total` | Counter | `cause` | Total recomputes, by cause |
-| `commercial_entitlements_recompute_noop_total` | Counter | `cause` | Idempotent no-ops skipped (ENT-INV-6) |
-| `commercial_entitlements_recompute_duration_seconds` | Histogram | `cause` | Recompute latency |
+| `commercial_entitlements_recompute_total` | Counter | `cause`, `outcome` | Total recomputations; `outcome` ∈ `computed`\|`noop`\|`error` (`noop` = ENT-INV-6 skipped) |
+| `commercial_entitlements_recompute_duration_seconds` | Histogram | `cause`, `outcome` | Wall-clock time per Recompute call |
 | `commercial_entitlements_override_set_total` | Counter | `limit_key` | Override sets |
 | `commercial_entitlements_override_remove_total` | Counter | `limit_key` | Override removes |
 | `commercial_entitlements_override_expire_total` | Counter | — | Overrides swept by reconciler |
 | `commercial_entitlements_addon_grant_total` | Counter | `limit_key` | Addon packs granted |
 | `commercial_entitlements_addon_expire_total` | Counter | — | Addons swept by reconciler |
-| `commercial_entitlements_drawdown_total` | Counter | `limit_key`, `shortfall` | Drawdown requests |
-| `commercial_entitlements_shortfall_raised_total` | Counter | `limit_key`, `status` | Shortfalls raised |
-| `commercial_entitlements_shortfall_resolve_total` | Counter | `disposition` | Shortfalls resolved |
-| `commercial_entitlements_cache_hit_total` | Counter | `kind` | Valkey cache hits |
-| `commercial_entitlements_cache_miss_total` | Counter | `kind` | Valkey cache misses |
-| `commercial_entitlements_processed_events_duplicates_total` | Counter | `consumer`, `event_type` | Duplicate events skipped |
-| `commercial_entitlements_unknown_event_acknowledged_total` | Counter | `event_type` | Unknown events acked |
+| `commercial_entitlements_drawdown_total` | Counter | `limit_key`, `shortfall` | Drawdown requests; `shortfall` ∈ `yes`\|`no` |
+| `commercial_entitlements_shortfall_raised_total` | Counter | `limit_key`, `status` | Shortfalls raised; `status` ∈ `auto_accepted`\|`pending_approval` |
+| `commercial_entitlements_shortfall_resolve_total` | Counter | `disposition` | Shortfalls resolved by operators; `disposition` ∈ `approve`\|`reject` |
+| `commercial_entitlements_cache_hit_total` | Counter | `kind` | Valkey advisory cache hits |
+| `commercial_entitlements_cache_miss_total` | Counter | `kind` | Valkey advisory cache misses (fell through to Postgres/IAM) |
+| `commercial_entitlements_duplicate_messages_total` | Counter | `consumer`, `event_type` | Duplicate events detected and skipped by inbox dedup layer (Tier-3 complement to Tier-1 `platform_duplicate_messages_total`) |
+| `commercial_entitlements_unknown_event_acknowledged_total` | Counter | `event_type` | Events with no registered handler acknowledged for forward compatibility |
 
-**Label cardinality:** no `tenant_id`/`user_id` label anywhere.
+**Label cardinality:** no `tenant_id`/`user_id`/`request_id`/`event_id`/`session_id` label anywhere (prohibited by standard).
 
-**`kind` values for cache metrics:** `effective_set`, `plan`, `quota_ceiling`.
+**`kind` values for cache metrics:** `effective_set`, `plan`.
 
 **`cause` values for recompute metrics:** `plan_change`, `override_change`, `addon_change`, `trial_change`, `catalog_refresh`, `billing_event`, `manual_recompute`, `tenant_lifecycle`, `shortfall_resolution`.
 

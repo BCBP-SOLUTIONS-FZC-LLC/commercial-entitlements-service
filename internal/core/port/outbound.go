@@ -15,7 +15,10 @@ import (
 // There is exactly one row per tenant; Upsert replaces it atomically with a
 // version guard (optimistic lock).
 type SnapshotRepository interface {
-	Upsert(ctx context.Context, snap *domain.EntitlementSnapshot) error
+	// Upsert writes snap only when snap.Version > stored version (ENT-INV-1).
+	// Returns (true, nil) when a row was written, (false, nil) when the stored
+	// version is already >= snap.Version (concurrent write won the race).
+	Upsert(ctx context.Context, snap *domain.EntitlementSnapshot) (bool, error)
 	GetLatest(ctx context.Context, tenantID uuid.UUID) (*domain.EntitlementSnapshot, error)
 }
 
@@ -190,10 +193,13 @@ type AuditRecorder interface {
 
 // ── Inbox (processed_events dedup) ────────────────────────────────────────
 
-// Inbox provides at-most-once delivery semantics using a processed_events table.
-// The claim, projection writes, and business fn all commit in one transaction.
+// Inbox provides at-most-once delivery semantics using a processed_events table
+// backed by platform-events inbox.Store. The consumer name is baked in at
+// construction time (NewIdempotencyRepository), not at call time.
+// The claim, fn's writes, and the outbox enqueue all commit in one transaction
+// (IDEMP-1..4, EVT-10).
 type Inbox interface {
-	ProcessOnce(ctx context.Context, consumer, eventID, eventType string, fn func(txCtx context.Context) error) (duplicate bool, err error)
+	ProcessOnce(ctx context.Context, eventID, eventType string, fn func(txCtx context.Context) error) (duplicate bool, err error)
 }
 
 // IdempotencyRepository combines Inbox with pruning for the reconciler job.

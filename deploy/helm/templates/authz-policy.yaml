@@ -1,0 +1,22 @@
+{{- if .Values.istio.authzPolicy.enabled }}
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ include "commercial-entitlements.fullname" . }}-billing-readonly
+  labels:
+    {{- include "commercial-entitlements.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "commercial-entitlements.selectorLabels" . | nindent 6 }}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/billing/sa/commercial-billing"
+      to:
+        - operation:
+            methods: ["GET"]
+            paths: ["/api/v1/internal/tenants/*/entitlements"]
+{{- end }}

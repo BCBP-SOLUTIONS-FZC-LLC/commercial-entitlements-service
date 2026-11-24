@@ -1,0 +1,134 @@
+name: Validate — quality
+
+"on":
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  GOPRIVATE: github.com/BCBP-SOLUTIONS-FZC-LLC/*
+  GONOSUMDB: github.com/BCBP-SOLUTIONS-FZC-LLC/*
+
+jobs:
+  static-checks:
+    name: static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Configure private module access
+        run: git config --global url."https://x-access-token:${{ secrets.CI_REPO_READ_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: go mod tidy
+        run: make tidy
+
+      - name: gofmt
+        run: make fmt-check
+
+      - name: go vet
+        run: make vet
+
+      - name: golangci-lint
+        run: make lint
+
+      - name: arch-lint
+        run: make arch-lint
+
+      - name: Swagger staleness
+        run: bash .github/scripts/check-swagger-stale.sh
+
+      - name: Database access
+        run: bash .github/scripts/check-database-access.sh
+
+      - name: Events platform isolation
+        run: bash .github/scripts/check-events-platform.sh
+
+      - name: Forbidden events bypass
+        run: bash .github/scripts/check-forbidden-events-bypass.sh
+
+      - name: Outbox access
+        run: bash .github/scripts/check-outbox-access.sh
+
+      - name: Metric naming
+        run: bash .github/scripts/metricslint.sh
+
+      - name: Helm lint + template + kubeconform
+        run: bash .github/scripts/helm-check.sh
+
+  coverage:
+    name: coverage gate
+    runs-on: ubuntu-latest
+    needs: static-checks
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: commercial_entitlements
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U app -d commercial_entitlements"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      valkey:
+        image: valkey/valkey:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgres://app:app@localhost:5432/commercial_entitlements?sslmode=disable
+      SYSTEM_DATABASE_URL: postgres://app:app@localhost:5432/commercial_entitlements?sslmode=disable
+      VALKEY_URL: localhost:6379
+      IAM_CATALOG_BASE_URL: http://localhost:8081
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Configure private module access
+        run: git config --global url."https://x-access-token:${{ secrets.CI_REPO_READ_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Run all test suites with coverage
+        run: make test-ci
+
+      - name: Coverage gate
+        id: coverage
+        run: bash .github/scripts/coverage-gate.sh
+        env:
+          COVERAGE_THRESHOLD: '95'
+
+      - name: PR summary comment
+        if: github.event_name == 'pull_request'
+        run: node .github/scripts/pr-summary.js
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COVERAGE_PCT: ${{ steps.coverage.outputs.pct }}
+          COVERAGE_THRESHOLD: '95'
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.out
+            .coverage/
+          retention-days: 7

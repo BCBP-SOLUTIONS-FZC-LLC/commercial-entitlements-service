@@ -1,0 +1,106 @@
+name: Validate — test
+
+"on":
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  GOPRIVATE: github.com/BCBP-SOLUTIONS-FZC-LLC/*
+  GONOSUMDB: github.com/BCBP-SOLUTIONS-FZC-LLC/*
+
+jobs:
+  unit:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Configure private module access
+        run: git config --global url."https://x-access-token:${{ secrets.CI_REPO_READ_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Unit tests
+        run: make test-unit
+
+  postgres:
+    name: postgres integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: commercial_entitlements
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U app -d commercial_entitlements"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgres://app:app@localhost:5432/commercial_entitlements?sslmode=disable
+      SYSTEM_DATABASE_URL: postgres://app:app@localhost:5432/commercial_entitlements?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Configure private module access
+        run: git config --global url."https://x-access-token:${{ secrets.CI_REPO_READ_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Postgres integration tests
+        run: make test-postgres
+
+  integration:
+    name: adapter integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: commercial_entitlements
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U app -d commercial_entitlements"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      valkey:
+        image: valkey/valkey:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgres://app:app@localhost:5432/commercial_entitlements?sslmode=disable
+      VALKEY_URL: localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Configure private module access
+        run: git config --global url."https://x-access-token:${{ secrets.CI_REPO_READ_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Adapter integration tests
+        run: make test-integration

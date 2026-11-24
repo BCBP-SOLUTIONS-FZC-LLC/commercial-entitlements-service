@@ -1,0 +1,79 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/bcbp-solutions-fzc-llc/commercial-entitlements
+  tag: ""
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+  metricsPort: 9090
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+env:
+  APP_NAME: commercial-entitlements
+  APP_ENV: production
+  APP_PORT: "8080"
+  METRICS_PORT: "9090"
+  RUN_MIGRATIONS: "false"
+  AWS_REGION: ap-south-1
+  OUTBOX_POLL_INTERVAL: "500ms"
+  OUTBOX_CONCURRENCY: "4"
+  OUTBOX_CLAIM_LEASE: "10m"
+
+# Secrets — reference a Kubernetes secret.
+secretRef: commercial-entitlements-secrets
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+networkPolicy:
+  enabled: true
+
+istio:
+  authzPolicy:
+    enabled: true
+
+# Migration job (pre-install/pre-upgrade hook).
+migrate:
+  enabled: true
+  backoffLimit: 4
+
+# CronJobs for the reconciler.
+cronjobs:
+  overrideExpiry:
+    schedule: "0 * * * *"    # every hour
+    job: override-expiry
+    suspend: false
+  addonExpiry:
+    schedule: "30 * * * *"   # offset from override
+    job: addon-expiry
+    suspend: false
+  outboxPrune:
+    schedule: "0 2 * * *"    # daily at 02:00 UTC
+    job: outbox-prune
+    suspend: false
+  processedEventsPrune:
+    schedule: "30 2 * * *"   # daily at 02:30 UTC
+    job: processed-events-prune
+    suspend: false
+  quotaReset:
+    schedule: "0 0 1 * *"    # monthly at first day 00:00 UTC
+    job: quota-reset
+    suspend: false

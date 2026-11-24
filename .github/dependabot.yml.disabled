@@ -1,0 +1,36 @@
+# Dependabot is DISABLED for this repository.
+#
+# Automated dependency updates are managed centrally by the platform team
+# via the internal dependency-management pipeline (see platform-dependency-bot).
+# Enabling dependabot here without coordinating with the platform team would
+# create conflicting PRs and bypass the standard platform library version
+# governance process.
+#
+# To re-enable: rename this file to dependabot.yml.
+#
+# version: 2
+# updates:
+#   - package-ecosystem: gomod
+#     directory: /
+#     schedule:
+#       interval: weekly
+#     open-pull-requests-limit: 5
+#     labels:
+#       - dependencies
+#       - go
+#
+#   - package-ecosystem: docker
+#     directory: /
+#     schedule:
+#       interval: weekly
+#     labels:
+#       - dependencies
+#       - docker
+#
+#   - package-ecosystem: github-actions
+#     directory: /
+#     schedule:
+#       interval: weekly
+#     labels:
+#       - dependencies
+#       - github-actions

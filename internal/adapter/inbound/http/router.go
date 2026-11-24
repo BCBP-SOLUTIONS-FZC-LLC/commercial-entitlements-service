@@ -127,6 +127,7 @@ func NewRouter(cfg RouterConfig) *Router {
 	// protected by internalServiceRequired() middleware (x-service-token).
 	internal := api.Group("/internal")
 	internal.Use(internalServiceRequired())
+	internal.Use(billingReadOnly())
 	{
 		internalTenant := internal.Group("/tenants/:id")
 		internalTenant.Use(tenantIDGate())

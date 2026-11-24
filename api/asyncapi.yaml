@@ -2,13 +2,14 @@ asyncapi: "3.0.0"
 
 info:
   title: Commercial Entitlements Service — Event Contracts
-  version: "1.2.0"
+  version: "1.3.0"
   description: |
     Publishes `tenant_entitlements_changed` whenever a tenant's effective
-    entitlement set is recomputed, and `tenant_add_on_balance_changed` when an
-    operator grants, adjusts, revokes, or expires a quota add-on pack.
-    Consumes `TenantQuotaAddOnChanged {reason: "refund"}` from Billing to reduce
-    unused add-on tokens in response to a successful invoice refund (C-5 / BL-OQ-23).
+    entitlement set is recomputed.
+    Consumes Billing's `TenantQuotaAddOnChanged` from `billing-entitlements-q`:
+    `reason: "purchase"` creates a new quota addon pack (expiry = purchased_at + 12 months,
+    idempotent on billing_ref); `reason: "refund"` reduces unused tokens on the referenced
+    pack (C-5 / BL-OQ-23, E-1 / BL-OQ-4).
   contact:
     name: BCBP Solutions Platform Team
     email: platform@bcbpsolutions.com
@@ -48,20 +49,6 @@ operations:
     messages:
       - $ref: "#/components/messages/TenantEntitlementsChanged"
 
-  publishTenantAddOnBalanceChanged:
-    action: send
-    channel:
-      $ref: "#/channels/tenantEntitlements"
-    summary: "Publish when an operator grants, adjusts, revokes, or expires an add-on pack."
-    description: |
-      Emitted exclusively by Entitlements for operator-initiated balance changes
-      (goodwill grants, migration credits, manual corrections) and reconciler
-      expiry sweeps. AL-5 is the audit path for these events.
-      NOT emitted for Billing purchase/refund transactions — those are owned by
-      Billing's TenantQuotaAddOnChanged on billing.events (BL-OQ-20).
-    messages:
-      - $ref: "#/components/messages/TenantAddOnBalanceChanged"
-
   consumeTenantQuotaAddOnChanged:
     action: receive
     channel:
@@ -70,9 +57,11 @@ operations:
     description: |
       Billing publishes TenantQuotaAddOnChanged on billing.events for every
       confirmed purchase (reason: purchase) and succeeded refund (reason: refund).
-      Entitlements processes reason: refund to reduce unused tokens on the
-      referenced add-on pack (purchase_ref), never below zero and never consuming
-      already-drawn tokens. Idempotent on billing_ref. (C-5 / BL-OQ-23)
+      On reason: purchase — creates a new addon pack; delta > 0; expiry =
+      purchased_at + 12 months; idempotent on billing_ref (E-1 / BL-OQ-4).
+      On reason: refund — reduces unused tokens on the referenced pack (purchase_ref),
+      never below zero and never consuming already-drawn tokens; idempotent on
+      billing_ref (C-5 / BL-OQ-23).
     messages:
       - $ref: "#/components/messages/InboundTenantQuotaAddOnChanged"
 
@@ -85,14 +74,6 @@ components:
       contentType: application/json
       payload:
         $ref: "#/components/schemas/TenantEntitlementsChangedPayload"
-
-    TenantAddOnBalanceChanged:
-      name: TenantAddOnBalanceChanged
-      title: Tenant Add-On Balance Changed
-      summary: "An operator granted, adjusted, revoked, or expired a quota add-on pack."
-      contentType: application/json
-      payload:
-        $ref: "#/components/schemas/TenantAddOnBalanceChangedPayload"
 
     InboundTenantQuotaAddOnChanged:
       name: TenantQuotaAddOnChanged
@@ -147,53 +128,6 @@ components:
           description: "Wall-clock time the recomputation completed (UTC)."
       additionalProperties: false
 
-    TenantAddOnBalanceChangedPayload:
-      type: object
-      required:
-        - tenant_id
-        - addon_id
-        - limit_key
-        - total_tokens
-        - reason
-        - action
-        - granted_at
-      properties:
-        tenant_id:
-          type: string
-          format: uuid
-          description: "The tenant whose add-on balance changed."
-        addon_id:
-          type: string
-          format: uuid
-          description: "The quota add-on pack identifier."
-        limit_key:
-          type: string
-          description: "The limit key this add-on extends (e.g. llm_token_quota_monthly)."
-        total_tokens:
-          type: integer
-          minimum: 1
-          description: "Total token capacity of the add-on pack."
-        reason:
-          type: string
-          description: "Human-readable reason (e.g. promotional_grant, operator_correction, migration_credit, contract_entitlement)."
-        action:
-          type: string
-          enum:
-            - granted
-            - adjusted
-            - revoked
-            - expired
-          description: "What happened to the add-on pack."
-        granted_at:
-          type: string
-          format: date-time
-          description: "Wall-clock time the operator originally granted this add-on pack."
-        expires_at:
-          type: string
-          format: date-time
-          description: "When this add-on pack expires; omitted when no expiry is set."
-      additionalProperties: false
-
     InboundTenantQuotaAddOnChangedPayload:
       type: object
       required:
@@ -227,5 +161,9 @@ components:
         purchase_ref:
           type: string
           format: uuid
-          description: "UUID of the original add-on grant; present on refund events."
-      additionalProperties: false
+          description: "UUID of the original add-on grant; present on refund events only."
+        purchased_at:
+          type: string
+          format: date-time
+          description: "Payment-confirmation instant; present on purchase events. Expiry = purchased_at + 12 months (E-1 / BL-OQ-4)."
+      additionalProperties: true

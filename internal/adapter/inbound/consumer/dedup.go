@@ -17,9 +17,7 @@ import (
 var knownEventTypes = func() map[string]struct{} {
 	types := []string{
 		// billing consumer
-		"BillingSubscriptionActivated", "BillingSubscriptionUpdated",
-		"BillingSubscriptionSuspended", "BillingSubscriptionReactivated",
-		"BillingTrialStarted", "BillingTrialExpired",
+		"TenantPlanChanged", "TenantSubscriptionCancelled", "TenantReactivated",
 		"TenantQuotaAddOnChanged",
 		// tenant consumer
 		"TenantProvisioned", "TenantSuspended", "TenantReactivated", "TenantOffboarded",

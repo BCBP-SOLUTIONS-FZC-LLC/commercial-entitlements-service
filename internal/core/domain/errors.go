@@ -42,6 +42,7 @@ var (
 	ErrDependencyUnavailable    = errors.New("dependency_unavailable")
 	ErrRequestTimeout           = errors.New("request_timeout")
 	ErrCatalogUnavailable       = errors.New("catalog_unavailable")
+	ErrBillingRefAlreadyClaimed = errors.New("billing_ref_already_claimed")
 )
 
 // DomainError wraps a sentinel code with a human-readable message, an

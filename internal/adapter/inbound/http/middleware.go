@@ -1,6 +1,9 @@
 package http
 
 import (
+	"net/http"
+	"slices"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
@@ -68,10 +71,27 @@ func tenantIDFromContext(c *gin.Context) uuid.UUID {
 
 // hasRole reports whether the given role is present in the roles slice.
 func hasRole(roles []string, role string) bool {
-	for _, r := range roles {
-		if r == role {
-			return true
+	return slices.Contains(roles, role)
+}
+
+// billingReadOnly is layer 3 of W-2 (W-2 app allow-list, BL-OQ-3).
+// It restricts calls that identify as "commercial-billing" (via x-service-name)
+// to exactly one route: GET /api/v1/internal/tenants/:id/entitlements (ENT-I1).
+// All other routes return 403, providing defense-in-depth behind the Istio
+// AuthorizationPolicy and NetworkPolicy layers.
+func billingReadOnly() gin.HandlerFunc {
+	const billingCaller = "commercial-billing"
+	const allowedRoute = "/api/v1/internal/tenants/:id/entitlements"
+
+	return func(c *gin.Context) {
+		if c.GetHeader(headerServiceName) != billingCaller {
+			c.Next()
+			return
 		}
+		if c.Request.Method == http.MethodGet && c.FullPath() == allowedRoute {
+			c.Next()
+			return
+		}
+		gincommon.AbortWithProblem(c, problem.NewForbiddenError("commercial-billing is only permitted to read entitlements (ENT-I1)."))
 	}
-	return false
 }

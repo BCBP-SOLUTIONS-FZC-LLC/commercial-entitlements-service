@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -108,23 +109,19 @@ func (s *AddonService) AddAddon(ctx context.Context, req port.AddAddonRequest) (
 		if err := s.addons.Insert(txCtx, a); err != nil {
 			return fmt.Errorf("insert addon: %w", err)
 		}
-		if pub, ok := port.EventPublisherFromContext(txCtx); ok {
-			ev := domain.NewTenantEvent(domain.EventTypeTenantAddOnBalanceChanged, req.TenantID,
-				domain.TenantAddOnBalanceChangedPayload{
-					TenantID:    req.TenantID,
-					AddonID:     a.ID,
-					LimitKey:    string(req.LimitKey),
-					TotalTokens: req.TotalTokens,
-					Reason:      req.Reason,
-					Action:      "granted",
-					GrantedAt:   a.CreatedAt,
-					ExpiresAt:   req.ExpiresAt,
-				},
-			)
-			if err := pub.Enqueue(txCtx, ev); err != nil {
-				return fmt.Errorf("enqueue addon event: %w", err)
-			}
-		}
+		recordAddonAudit(txCtx, s.log, port.AuditEntry{
+			TenantID:   &req.TenantID,
+			EntryType:  "billing.token_addon.granted",
+			Actor:      port.AuditActor{Type: "platform_operator", ID: req.GrantedBy.String()},
+			Target:     &port.AuditTarget{Type: "quota_addon", ID: a.ID.String()},
+			OccurredAt: now,
+			Metadata: map[string]any{
+				"limit_key":    string(req.LimitKey),
+				"total_tokens": req.TotalTokens,
+				"reason":       req.Reason,
+			},
+			IdempotencyKey: addonAuditKey(a.ID, a.RecordVersion, a.UpdatedAt),
+		})
 		final = a
 		return nil
 	})
@@ -169,23 +166,18 @@ func (s *AddonService) RemoveAddon(ctx context.Context, req port.RemoveAddonRequ
 		if err := s.addons.Update(txCtx, a); err != nil {
 			return err
 		}
-		if pub, ok := port.EventPublisherFromContext(txCtx); ok {
-			ev := domain.NewTenantEvent(domain.EventTypeTenantAddOnBalanceChanged, a.TenantID,
-				domain.TenantAddOnBalanceChangedPayload{
-					TenantID:    a.TenantID,
-					AddonID:     a.ID,
-					LimitKey:    string(a.LimitKey),
-					TotalTokens: a.TotalTokens,
-					Reason:      req.Reason,
-					Action:      "revoked",
-					GrantedAt:   a.CreatedAt,
-					ExpiresAt:   a.ExpiresAt,
-				},
-			)
-			if err := pub.Enqueue(txCtx, ev); err != nil {
-				return fmt.Errorf("enqueue addon event: %w", err)
-			}
-		}
+		recordAddonAudit(txCtx, s.log, port.AuditEntry{
+			TenantID:   &req.TenantID,
+			EntryType:  "billing.token_addon.revoked",
+			Actor:      port.AuditActor{Type: "platform_operator", ID: req.RemovedBy.String()},
+			Target:     &port.AuditTarget{Type: "quota_addon", ID: a.ID.String()},
+			OccurredAt: now,
+			Metadata: map[string]any{
+				"limit_key": string(a.LimitKey),
+				"reason":    req.Reason,
+			},
+			IdempotencyKey: addonAuditKey(a.ID, a.RecordVersion, a.UpdatedAt),
+		})
 		return nil
 	})
 	if txErr != nil {
@@ -438,6 +430,7 @@ func (s *AddonService) ExpireAddons(ctx context.Context) (int, error) {
 	count := 0
 	for i := range expired {
 		a := &expired[i]
+		forfeited := a.RemainingTokens
 		a.Status = domain.AddonStatusExpired
 		a.RemainingTokens = 0
 		a.RecordVersion++
@@ -446,23 +439,18 @@ func (s *AddonService) ExpireAddons(ctx context.Context) (int, error) {
 			if err := s.addons.Update(txCtx, a); err != nil {
 				return err
 			}
-			if pub, ok := port.EventPublisherFromContext(txCtx); ok {
-				ev := domain.NewTenantEvent(domain.EventTypeTenantAddOnBalanceChanged, a.TenantID,
-					domain.TenantAddOnBalanceChangedPayload{
-						TenantID:    a.TenantID,
-						AddonID:     a.ID,
-						LimitKey:    string(a.LimitKey),
-						TotalTokens: a.TotalTokens,
-						Reason:      "expired",
-						Action:      "expired",
-						GrantedAt:   a.CreatedAt,
-						ExpiresAt:   a.ExpiresAt,
-					},
-				)
-				if err := pub.Enqueue(txCtx, ev); err != nil {
-					return fmt.Errorf("enqueue addon event: %w", err)
-				}
-			}
+			recordAddonAudit(txCtx, s.log, port.AuditEntry{
+				TenantID:   &a.TenantID,
+				EntryType:  "billing.token_addon.expired",
+				Actor:      port.AuditActor{Type: "system", ID: "commercial-entitlements"},
+				Target:     &port.AuditTarget{Type: "quota_addon", ID: a.ID.String()},
+				OccurredAt: now,
+				Metadata: map[string]any{
+					"limit_key":        string(a.LimitKey),
+					"forfeited_tokens": forfeited,
+				},
+				IdempotencyKey: addonAuditKey(a.ID, a.RecordVersion, a.UpdatedAt),
+			})
 			return nil
 		})
 		if txErr != nil {
@@ -479,6 +467,67 @@ func (s *AddonService) ExpireAddons(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// ApplyBillingPurchase creates a new quota addon pack from a confirmed Billing
+// purchase event (E-1 / BL-OQ-4). Idempotent on BillingRef; expiry is
+// PurchasedAt + 12 months.
+func (s *AddonService) ApplyBillingPurchase(ctx context.Context, req port.ApplyBillingPurchaseRequest) error {
+	if req.Delta <= 0 {
+		return domain.NewError(domain.ErrInvalidValue, "delta must be positive for a purchase")
+	}
+	if req.BillingRef == "" {
+		return domain.NewError(domain.ErrInvalidValue, "billing_ref is required")
+	}
+
+	limitKey, ok := domain.BillingResourceToLimitKey(req.Resource)
+	if !ok {
+		return domain.NewError(domain.ErrInvalidLimitKey, "unknown billing resource: "+req.Resource)
+	}
+
+	expiresAt := req.PurchasedAt.UTC().AddDate(1, 0, 0)
+	now := time.Now().UTC()
+	a := &domain.QuotaAddon{
+		ID:              uuid.New(),
+		TenantID:        req.TenantID,
+		LimitKey:        limitKey,
+		TotalTokens:     req.Delta,
+		RemainingTokens: req.Delta,
+		GrantedBy:       uuid.Nil, // system actor — Billing confirmed purchase
+		Reason:          "billing_purchase",
+		BillingRef:      &req.BillingRef,
+		Status:          domain.AddonStatusActive,
+		ExpiresAt:       &expiresAt,
+		RecordVersion:   1,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+
+	txErr := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
+		existing, err := s.addons.GetByBillingRef(txCtx, req.TenantID, req.BillingRef)
+		if err != nil && !errors.Is(err, domain.ErrAddonNotFound) {
+			return err
+		}
+		if existing != nil {
+			s.logger().Info("billing purchase: idempotent replay, addon already exists",
+				map[string]interface{}{"billing_ref": req.BillingRef, "addon_id": existing.ID})
+			return nil
+		}
+		return s.addons.Insert(txCtx, a)
+	})
+	if txErr != nil {
+		if errors.Is(txErr, domain.ErrBillingRefAlreadyClaimed) {
+			s.logger().Error("billing purchase: billing_ref claimed by another tenant — dropping event",
+				map[string]interface{}{"billing_ref": req.BillingRef, "tenant_id": req.TenantID})
+			return nil
+		}
+		return txErr
+	}
+
+	if _, err := s.effectSvc.Recompute(ctx, req.TenantID, domain.CauseAddonChange); err != nil {
+		return fmt.Errorf("billing purchase: recompute failed, event will retry: %w", err)
+	}
+	return nil
+}
+
 // ApplyBillingRefund reduces unused tokens on an addon pack in response to a
 // Billing refund event (C-5). It removes at most |delta| unused tokens, never
 // below zero and never consuming already-drawn tokens (CONC-1 optimistic lock).
@@ -491,12 +540,9 @@ func (s *AddonService) ApplyBillingRefund(ctx context.Context, req port.ApplyBil
 	// Read and write inside the same transaction to close the CONC-1
 	// read-modify-write race between ApplyBillingRefund and concurrent RecordDrawdown.
 	txErr := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-		a, err := s.addons.GetByID(txCtx, req.PurchaseRef)
+		a, err := s.addons.GetByBillingRef(txCtx, req.TenantID, req.PurchaseRef.String())
 		if err != nil {
 			return domain.NewError(domain.ErrAddonNotFound, "addon not found for purchase_ref")
-		}
-		if a.TenantID != req.TenantID {
-			return domain.NewError(domain.ErrForbidden, "addon does not belong to tenant")
 		}
 
 		// reduction = min(|delta|, remaining_tokens) — never reduces consumed tokens.
@@ -523,8 +569,7 @@ func (s *AddonService) ApplyBillingRefund(ctx context.Context, req port.ApplyBil
 	}
 
 	if _, err := s.effectSvc.Recompute(ctx, req.TenantID, domain.CauseAddonChange); err != nil {
-		s.logger().Warn("billing refund: recompute failed",
-			map[string]interface{}{"tenant_id": req.TenantID, "error": err.Error()})
+		return fmt.Errorf("billing refund: recompute failed, event will retry: %w", err)
 	}
 	return nil
 }
@@ -550,4 +595,31 @@ func min64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// addonAuditKey returns a stable v5 UUID idempotency key for a quota_addons row
+// following the LLD pattern: uuidv5("quota_addons:<id>:<version>:<updated_at>").
+func addonAuditKey(addonID uuid.UUID, recordVersion int64, updatedAt time.Time) string {
+	seed := fmt.Sprintf("quota_addons:%s:%d:%s", addonID, recordVersion, updatedAt.Format(time.RFC3339Nano))
+	return uuid.NewSHA1(uuid.NameSpaceDNS, []byte(seed)).String()
+}
+
+// recordAddonAudit writes an AL-5 audit entry inside the current transaction.
+// If no AuditRecorder is in ctx the call is a no-op — audit failures never
+// block the business write (AUDIT-CALLER-1).
+func recordAddonAudit(ctx context.Context, log port.Logger, entry port.AuditEntry) {
+	rec, ok := port.AuditRecorderFromContext(ctx)
+	if !ok {
+		if log != nil {
+			log.Warn("addon audit: recorder not in context, skipping",
+				map[string]interface{}{"entry_type": entry.EntryType})
+		}
+		return
+	}
+	if err := rec.Record(ctx, entry); err != nil {
+		if log != nil {
+			log.Warn("addon audit: record failed",
+				map[string]interface{}{"entry_type": entry.EntryType, "error": err.Error()})
+		}
+	}
 }

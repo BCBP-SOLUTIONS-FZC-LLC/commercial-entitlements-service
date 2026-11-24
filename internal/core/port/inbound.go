@@ -34,6 +34,10 @@ type AddonService interface {
 	ListAddons(ctx context.Context, tenantID uuid.UUID) ([]domain.QuotaAddon, error)
 	RecordDrawdown(ctx context.Context, req RecordDrawdownRequest) (*domain.QuotaAddonDrawdown, error)
 	ApplyBillingRefund(ctx context.Context, req ApplyBillingRefundRequest) error
+	// ApplyBillingPurchase creates a new quota addon pack from a confirmed
+	// Billing purchase event (TenantQuotaAddOnChanged {reason: "purchase"}).
+	// Idempotent on BillingRef; expiry is PurchasedAt + 12 months (E-1 / BL-OQ-4).
+	ApplyBillingPurchase(ctx context.Context, req ApplyBillingPurchaseRequest) error
 	ListDrawdowns(ctx context.Context, tenantID uuid.UUID, limitKey domain.LimitKey) ([]domain.QuotaAddonDrawdown, error)
 	ResolveShortfall(ctx context.Context, req ResolveShortfallRequest) (*domain.QuotaAddonShortfall, error)
 	ListShortfalls(ctx context.Context, tenantID uuid.UUID, statusFilter []domain.ShortfallStatus) ([]domain.QuotaAddonShortfall, error)
@@ -104,9 +108,20 @@ type RemoveAddonRequest struct {
 	Reason    string
 }
 
+// ApplyBillingPurchaseRequest carries the purchase parameters from Billing's
+// TenantQuotaAddOnChanged {reason: "purchase"} event (E-1 / BL-OQ-4).
+type ApplyBillingPurchaseRequest struct {
+	TenantID    uuid.UUID
+	Resource    string    // Billing short name, e.g. "llm_tokens"
+	Delta       int64     // positive: tokens to grant
+	BillingRef  string    // purchase_id — idempotency key
+	PurchasedAt time.Time // payment-confirmation time; expiry = PurchasedAt + 12 months
+}
+
 // ApplyBillingRefundRequest carries the refund parameters from Billing's
 // TenantQuotaAddOnChanged {reason: "refund"} event (C-5 / BL-OQ-23).
-// Delta is always negative; PurchaseRef is the addon UUID to reduce.
+// Delta is always negative; PurchaseRef is Billing's purchase ID and matches
+// billing_ref on the original grant — not the addon's internal UUID.
 type ApplyBillingRefundRequest struct {
 	TenantID    uuid.UUID
 	PurchaseRef uuid.UUID

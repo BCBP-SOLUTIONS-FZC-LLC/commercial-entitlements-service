@@ -5,6 +5,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/google/uuid"
 
@@ -26,18 +28,52 @@ var _ port.AddonRepository = (*AddonRepository)(nil)
 
 // Insert creates a new quota addon pack.
 func (r *AddonRepository) Insert(ctx context.Context, a *domain.QuotaAddon) error {
-	return withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
+	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO quota_addons
 				(id, tenant_id, limit_key, total_tokens, remaining_tokens, granted_by,
-				 reason, status, expires_at, record_version, created_at, updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+				 reason, billing_ref, status, expires_at, record_version, created_at, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 			a.ID, a.TenantID, string(a.LimitKey), a.TotalTokens, a.RemainingTokens,
-			a.GrantedBy, a.Reason, string(a.Status), a.ExpiresAt,
+			a.GrantedBy, a.Reason, a.BillingRef, string(a.Status), a.ExpiresAt,
 			a.RecordVersion, a.CreatedAt, a.UpdatedAt,
 		)
 		return err
 	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_quota_addons_billing_ref" {
+			return domain.NewError(domain.ErrBillingRefAlreadyClaimed, "billing_ref already claimed by a different tenant")
+		}
+	}
+	return err
+}
+
+// GetByBillingRef returns the addon pack created for a Billing purchase,
+// identified by billing_ref. Returns ErrAddonNotFound when none exists.
+func (r *AddonRepository) GetByBillingRef(ctx context.Context, tenantID uuid.UUID, billingRef string) (*domain.QuotaAddon, error) {
+	var a domain.QuotaAddon
+	var lk, status string
+	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT id, tenant_id, limit_key, total_tokens, remaining_tokens, granted_by,
+			       reason, status, expires_at, record_version, created_at, updated_at
+			FROM quota_addons
+			WHERE tenant_id=$1 AND billing_ref=$2`, tenantID, billingRef).
+			Scan(&a.ID, &a.TenantID, &lk, &a.TotalTokens, &a.RemainingTokens,
+				&a.GrantedBy, &a.Reason, &status, &a.ExpiresAt,
+				&a.RecordVersion, &a.CreatedAt, &a.UpdatedAt)
+	})
+	if err != nil {
+		if errors.Is(err, pgcommon.ErrNoRows) {
+			return nil, domain.ErrAddonNotFound
+		}
+		return nil, wrapConnErr(err)
+	}
+	a.LimitKey = domain.LimitKey(lk)
+	a.Status = domain.QuotaAddonStatus(status)
+	a.BillingRef = &billingRef
+	return &a, nil
 }
 
 // Update applies mutations to an existing addon pack.

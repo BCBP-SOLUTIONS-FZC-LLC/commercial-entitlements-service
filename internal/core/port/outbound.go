@@ -38,6 +38,10 @@ type AddonRepository interface {
 	Insert(ctx context.Context, a *domain.QuotaAddon) error
 	Update(ctx context.Context, a *domain.QuotaAddon) error
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.QuotaAddon, error)
+	// GetByBillingRef returns the addon pack created for a Billing purchase,
+	// identified by billing_ref (= purchase_id). Returns ErrAddonNotFound when
+	// no such pack exists. Used for idempotency in ApplyBillingPurchase (E-1).
+	GetByBillingRef(ctx context.Context, tenantID uuid.UUID, billingRef string) (*domain.QuotaAddon, error)
 	ListByTenant(ctx context.Context, tenantID uuid.UUID, limitKey *domain.LimitKey) ([]domain.QuotaAddon, error)
 	ListExpired(ctx context.Context, before time.Time) ([]domain.QuotaAddon, error)
 	ListActiveByTenantAndKey(ctx context.Context, tenantID uuid.UUID, limitKey domain.LimitKey) ([]domain.QuotaAddon, error)

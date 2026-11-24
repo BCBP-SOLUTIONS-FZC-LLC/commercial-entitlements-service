@@ -26,6 +26,20 @@ var KnownLimitKeys = map[LimitKey]bool{
 	LimitKeyTenderLimit:             true,
 }
 
+// billingResourceKeys maps Billing's short resource names (from TenantQuotaAddOnChanged)
+// to domain LimitKeys. Only quota-bearing keys are add-on eligible (BL-OQ-3).
+var billingResourceKeys = map[string]LimitKey{
+	"llm_tokens":   LimitKeyLLMTokenQuotaMonthly,
+	"api_requests": LimitKeyAPIRequestBudgetMonthly,
+}
+
+// BillingResourceToLimitKey maps a Billing resource name to a domain LimitKey.
+// Returns false if the resource name is unknown or not add-on eligible.
+func BillingResourceToLimitKey(resource string) (LimitKey, bool) {
+	k, ok := billingResourceKeys[resource]
+	return k, ok
+}
+
 // LimitValue holds a numeric limit; nil Value means unlimited.
 type LimitValue struct {
 	// Value is nil when the dimension is unlimited.

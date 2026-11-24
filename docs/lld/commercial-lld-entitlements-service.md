@@ -20,6 +20,7 @@
 
 | Rev | Date | Change |
 |---|---|---|
+| 1.18 | 2026-11-24 | **BL-OQ-4 / BL-OQ-20 (W-7): add-on event ownership and AL-5 audit path documented.** §7.1: explicit no-event statement — Entitlements never publishes an add-on-specific event; operator corrections and pack expiry are audited exclusively via AL-5 (`billing.token_addon.granted`, `.revoked`, `.expired`). §7.2: `TenantQuotaAddOnChanged` consumer row expanded with `reason` enum (`purchase` \| `refund`) and both code paths. §8.4: flow diagram updated to show purchase and refund dispatch, `billing_ref`-based idempotency for purchase, and `purchase_ref` lookup for refund. |
 | 1.17 | 2026-11-22 | **ENT-D7 closed.** `TenantConverted` trial-deletion code confirmed complete (`membership_consumer.go` → `handleConverted`); "approved pending Product confirmation" caveat removed from §16.2. ENT-D6 trial profile limit numbers remain the only Product/Finance decision outstanding. |
 | 1.16 | 2026-11-22 | **Workflow team response incorporated; Commercial confirmations recorded.** Five LLD wording corrections: §5.2 adds `x-tenant-roles` to ENT-I1 internal-route header check; fail-closed row scoped to gated limits with W-4 queue-grant exception; freshness row updated to actual built behaviour (60 s TTL, stale-while-revalidate up to 2× TTL, 10-minute fallback, configurable via `ENTITLEMENTS_STALE_TTL`); `dedicated_workflow_queue` sentence corrected to pick-start-queue-and-register-as-side-effect; §7.1.2 Workflow subscriber rows removed (not needed at Phase 1, note added). ENT-D10 updated with: Workflow confirmation of non-conflicting queue names and Go SDK v1.46.0; Commercial confirmations of port 8080 (final, `deploy/helm/values.yaml`), pod label `app.kubernetes.io/name: commercial-entitlements` (final, `deployment.yaml`), 10-min freshness fallback accepted, and Commercial SDK currently v1.30.0 (upgrade path noted). §16.3 Workflow Team sign-off updated to Conditionally Ready. Only remaining Commercial action: publish LLD v1.15 to design repository. |
 | 1.15 | 2026-11-18 | **ENT-D3 framed as Product decision PD-LLM-1 (Commercial HLD v0.62).** Nine principles recorded (tiers differ only for draft and judge; common platform models elsewhere; sole `bge-m3` and `bge-reranker-v2-m3`; cross-family judge; Sonnet default with Opus for defined scenarios; fixed-task aliases mapped to exact Bedrock IDs by configuration; English and Arabic evaluation before any replacement) and four confirmations required before approval (ap-south-1 availability, Arabic evaluation, Finance quota validation, `draft-premium-max` routing rules). No Entitlements change. |
@@ -1666,6 +1667,8 @@ The payload is intentionally thin — consumers call ENT-I1 to get the full effe
 
 Schema governed by `platform-schemagov`; schema version resolved at startup by definition. CI drift-gates `api/asyncapi.yaml` against the Glue registry.
 
+**Add-on balance changes: no bus event (BL-OQ-20, W-6/W-7).** Entitlements does not publish add-on balance change events on `entitlement-events`. Operator corrections (goodwill grants, pack revocations) and pack expiry write to `quota_addons`, trigger a snapshot recompute, and may emit `TenantEntitlementsChanged` if the effective set changes — but no add-on-specific event is produced. Audit visibility for goodwill grants, corrections, expiries and similar balance changes is provided exclusively through AL-5 audit submissions (`billing.token_addon.granted`, `billing.token_addon.revoked`, `billing.token_addon.expired`), never via the event bus.
+
 #### 7.1.1 AWS Glue Schema Registry and `platform-schemagov`
 
 `TenantEntitlementsChanged` is registered in the **`commercial-entitlements-events`** AWS Glue Schema Registry (one registry, one schema). The service uses `events.WithCodec(ValidatingCodec(GlueCodec))` for all outbound publishes; the Glue schema version is resolved once at startup by definition (`glue:GetSchemaByDefinition`) — an unregistered definition fails startup immediately.
@@ -1713,7 +1716,7 @@ Each queue has a DLQ (`<queue>-dlq`, `maxReceiveCount: 5`). SNS filter policies 
 | `billing-entitlements-q` | `TenantPlanChanged` | Re-read I-17, recompute, emit `TenantEntitlementsChanged` |
 | `billing-entitlements-q` | `TenantSubscriptionCancelled` | Recompute; state → `read_only` or `suspended` per §8.2 |
 | `billing-entitlements-q` | `TenantReactivated` (source=billing) | Recompute; state → `active` |
-| `billing-entitlements-q` | `TenantQuotaAddOnChanged` | Insert `quota_addons` row; recompute `llm_token_quota_monthly` |
+| `billing-entitlements-q` | `TenantQuotaAddOnChanged` | Dispatches on `reason` enum (`purchase` \| `refund`): **purchase** — inserts `quota_addons` row, idempotent on `billing_ref`, expiry = `purchased_at` + 12 months; **refund** — reduces unused tokens of `purchase_ref` pack only, never below zero; both paths recompute `llm_token_quota_monthly` and emit `TenantEntitlementsChanged` if the effective set changes |
 | `tenant-entitlements-q` | `TenantConverted` | In one transaction: delete `tenant_trial_assignments` **and** `trial_entitlement_overrides`, keep `entitlement_overrides`, write one AL-5 entry per deleted trial override (`config.override.removed`, reason `trial_conversion`), recompute with the paid plan and emit `TenantEntitlementsChanged` (ENT-D7, ENT-INV-7) |
 | `tenant-entitlements-q` | `TenantSuspended` | Recompute; state → `suspended` |
 | `tenant-entitlements-q` | `TenantReactivated` (source=operator) | Recompute; state → `active` |
@@ -1926,18 +1929,35 @@ sequenceDiagram
     participant DB as Postgres
     participant Valkey
 
-    Billing->>SNS: TenantQuotaAddOnChanged {tenant_id, delta, reason, billing_ref}
+    Billing->>SNS: TenantQuotaAddOnChanged {tenant_id, delta, reason, billing_ref, purchase_ref?}
     SNS->>SQS: fan-out
     Ent->>SQS: receive message
     Ent->>DB: pkg/inbox Process(event_id, "billing-consumer")
     alt already processed
         Ent->>SQS: ack
-    else new
+    else new — reason = "purchase"
         Ent->>DB: BEGIN RunInTx
-        Ent->>DB: INSERT quota_addons (expires_at = purchased_at + 12 months)
-        Note over Ent,DB: Recompute llm_token_quota_monthly = base + SUM(remaining_tokens across active packs)
-        Ent->>DB: UPSERT entitlement_snapshots (bump version, update limits.llm_token_quota_monthly)
-        Ent->>DB: INSERT outbox_events (TenantEntitlementsChanged {cause:'addon_change', changed_keys:['llm_token_quota_monthly']})
+        Ent->>DB: GetByBillingRef (idempotency check)
+        alt billing_ref already exists
+            Note over Ent,DB: idempotent replay — no insert
+        else new purchase
+            Ent->>DB: INSERT quota_addons (expires_at = purchased_at + 12 months, billing_ref)
+        end
+        Note over Ent,DB: Recompute llm_token_quota_monthly = base + SUM(remaining_tokens)
+        Ent->>DB: UPSERT entitlement_snapshots (bump version)
+        Ent->>DB: INSERT outbox_events (TenantEntitlementsChanged {cause:'addon_change'})
+        Ent->>DB: INSERT processed_events
+        Ent->>DB: COMMIT
+        Ent->>Valkey: DEL ent:tenant:{id}
+        Ent->>SQS: ack
+    else new — reason = "refund"
+        Ent->>DB: BEGIN RunInTx
+        Ent->>DB: GetByID(purchase_ref) — load pack
+        Note over Ent,DB: reduction = min(|delta|, remaining_tokens); never reduces consumed tokens
+        Ent->>DB: UPDATE quota_addons (remaining_tokens -= reduction, total_tokens -= reduction)
+        Note over Ent,DB: Recompute llm_token_quota_monthly = base + SUM(remaining_tokens)
+        Ent->>DB: UPSERT entitlement_snapshots (bump version)
+        Ent->>DB: INSERT outbox_events (TenantEntitlementsChanged {cause:'addon_change'})
         Ent->>DB: INSERT processed_events
         Ent->>DB: COMMIT
         Ent->>Valkey: DEL ent:tenant:{id}

@@ -14,11 +14,6 @@ type UUID = uuid.UUID
 // every recomputation of a tenant's effective entitlement set.
 const EventTypeTenantEntitlementsChanged = "tenant_entitlements_changed"
 
-// EventTypeTenantAddOnBalanceChanged is emitted by Entitlements when an operator
-// grants, adjusts, revokes, or expires a quota add-on pack. This is distinct from
-// Billing's TenantQuotaAddOnChanged (purchase/refund) which Entitlements consumes.
-const EventTypeTenantAddOnBalanceChanged = "tenant_add_on_balance_changed"
-
 // TopicEntitlements is the SNS topic that carries entitlement events.
 const TopicEntitlements = "entitlements"
 
@@ -85,20 +80,6 @@ type TenantEntitlementsChangedPayload struct {
 	ComputedAt      time.Time         `json:"computed_at"`
 }
 
-// TenantAddOnBalanceChangedPayload is the event body for EventTypeTenantAddOnBalanceChanged.
-// Action is one of "granted" | "adjusted" | "revoked" | "expired".
-// GrantedAt is the wall-clock time the operator originally granted the add-on pack.
-type TenantAddOnBalanceChangedPayload struct {
-	TenantID    uuid.UUID  `json:"tenant_id"`
-	AddonID     uuid.UUID  `json:"addon_id"`
-	LimitKey    string     `json:"limit_key"`
-	TotalTokens int64      `json:"total_tokens"`
-	Reason      string     `json:"reason"`
-	Action      string     `json:"action"`
-	GrantedAt   time.Time  `json:"granted_at"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-}
-
 // InboundBillingAddonRefundEvent is the payload of TenantQuotaAddOnChanged {reason: "refund"}
 // consumed from billing.events (BL-OQ-23 / C-5). Delta is always negative.
 type InboundBillingAddonRefundEvent struct {
@@ -108,6 +89,18 @@ type InboundBillingAddonRefundEvent struct {
 	Reason      string    `json:"reason"`
 	BillingRef  string    `json:"billing_ref"`
 	PurchaseRef uuid.UUID `json:"purchase_ref"`
+}
+
+// InboundBillingAddonPurchaseEvent is the payload of TenantQuotaAddOnChanged {reason: "purchase"}
+// consumed from billing.events (E-1 / BL-OQ-4). Delta is always positive.
+// PurchasedAt is Billing's payment-confirmation time and anchors the 12-month expiry.
+type InboundBillingAddonPurchaseEvent struct {
+	TenantID    uuid.UUID `json:"tenant_id"`
+	Resource    string    `json:"resource"`
+	Delta       int64     `json:"delta"`
+	Reason      string    `json:"reason"`
+	BillingRef  string    `json:"billing_ref"`
+	PurchasedAt time.Time `json:"purchased_at"`
 }
 
 // InboundBillingEvent represents a billing subscription event from upstream.

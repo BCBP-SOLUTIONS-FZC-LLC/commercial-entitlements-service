@@ -25,11 +25,15 @@ type QuotaAddon struct {
 	RemainingTokens int64
 	GrantedBy       uuid.UUID
 	Reason          string
-	Status          QuotaAddonStatus
-	ExpiresAt       *time.Time
-	RecordVersion   int64
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// BillingRef is the Billing-side idempotency key set only for packs created
+	// from TenantQuotaAddOnChanged {reason: "purchase"} (E-1 / BL-OQ-4).
+	// Nil for operator-created packs.
+	BillingRef    *string
+	Status        QuotaAddonStatus
+	ExpiresAt     *time.Time
+	RecordVersion int64
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // QuotaAddonDrawdown records a single usage deduction from a QuotaAddon.

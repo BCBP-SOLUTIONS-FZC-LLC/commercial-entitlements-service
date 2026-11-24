@@ -20,6 +20,7 @@
 
 | Rev | Date | Change |
 |---|---|---|
+| 1.19 | 2026-11-24 | **LLD gap closure — sync with actual implementation.** (1) ENUM renamed `addon_status` → `quota_addon_status`; values `exhausted`/`forfeited` → `consumed`/`revoked` to match migration 000001 and domain code. (2) `quota_addons` DDL aligned: `set_by` → `granted_by`; `limit_key` column added; `purchased_at`, `expiry_deferred_since`, `expiry_attempts` removed (not in schema). FIFO ordering corrected from `purchased_at` to `expires_at ASC NULLS LAST, created_at ASC`. (3) Migration `000002_addon_billing_ref` documented (adds `billing_ref` column + `uq_quota_addons_billing_ref` unique index; E-1/BL-OQ-4). (4) QA-5 updated — unique index is a second-line idempotency guard; QA-6 updated to reflect `consumed`/`revoked` semantics. (5) §8.4 refund sequence: `GetByID(purchase_ref)` → `GetByBillingRef(tenant_id, purchase_ref)` (E-2/BL-OQ-20); new edge-case table covering malformed-event NACK (Review-1), cross-tenant billing_ref alert+ack (Review-4), recompute-retry (Review-2), refund-before-purchase retry (Review-5). (6) ENT-I1 response: `addon_eligibility` per-resource field added (E-4/BL-OQ-3). (7) §13.1 CronJobs: replaced 2 entries (`cmd/expiry`, `cmd/catalog-refresh`) with 5 reconciler jobs via `cmd/reconciler --job=<name>`; added `AuthorizationPolicy` Helm resource (E-5/BL-OQ-3). (8) §17 error taxonomy: `billing_ref_already_claimed` added (Review-4). (9) EVT-8: removed "Sequential at MVP; ENT-D1 open" — ENT-D1 resolved via `CatalogFanoutWorkflow` (§8.6). |
 | 1.18 | 2026-11-24 | **BL-OQ-4 / BL-OQ-20 (W-7): add-on event ownership and AL-5 audit path documented.** §7.1: explicit no-event statement — Entitlements never publishes an add-on-specific event; operator corrections and pack expiry are audited exclusively via AL-5 (`billing.token_addon.granted`, `.revoked`, `.expired`). §7.2: `TenantQuotaAddOnChanged` consumer row expanded with `reason` enum (`purchase` \| `refund`) and both code paths. §8.4: flow diagram updated to show purchase and refund dispatch, `billing_ref`-based idempotency for purchase, and `purchase_ref` lookup for refund. |
 | 1.17 | 2026-11-22 | **ENT-D7 closed.** `TenantConverted` trial-deletion code confirmed complete (`membership_consumer.go` → `handleConverted`); "approved pending Product confirmation" caveat removed from §16.2. ENT-D6 trial profile limit numbers remain the only Product/Finance decision outstanding. |
 | 1.16 | 2026-11-22 | **Workflow team response incorporated; Commercial confirmations recorded.** Five LLD wording corrections: §5.2 adds `x-tenant-roles` to ENT-I1 internal-route header check; fail-closed row scoped to gated limits with W-4 queue-grant exception; freshness row updated to actual built behaviour (60 s TTL, stale-while-revalidate up to 2× TTL, 10-minute fallback, configurable via `ENTITLEMENTS_STALE_TTL`); `dedicated_workflow_queue` sentence corrected to pick-start-queue-and-register-as-side-effect; §7.1.2 Workflow subscriber rows removed (not needed at Phase 1, note added). ENT-D10 updated with: Workflow confirmation of non-conflicting queue names and Go SDK v1.46.0; Commercial confirmations of port 8080 (final, `deploy/helm/values.yaml`), pod label `app.kubernetes.io/name: commercial-entitlements` (final, `deployment.yaml`), 10-min freshness fallback accepted, and Commercial SDK currently v1.30.0 (upgrade path noted). §16.3 Workflow Team sign-off updated to Conditionally Ready. Only remaining Commercial action: publish LLD v1.15 to design repository. |
@@ -123,7 +124,7 @@ This service reads the boolean side from Core's I-17 `feature_flags` field (the 
 
 ## 3. Architecture and Package Layout
 
-The service follows the platform Clean Architecture / Ports-and-Adapters layout (HLD §15.3): dependencies point inward, `core/domain` imports nothing external, and a single composition root (`cmd/server/main.go`) wires all adapters. Two CronJob binaries (`cmd/expiry`, `cmd/catalog-refresh`) handle scheduled work, mirroring the pattern Core's `cmd/reconciler` uses for its jobs.
+The service follows the platform Clean Architecture / Ports-and-Adapters layout (HLD §15.3): dependencies point inward, `core/domain` imports nothing external, and a single composition root (`cmd/server/main.go`) wires all adapters. Five CronJobs are dispatched through `cmd/reconciler --job=<name>` (Helm `values.yaml`): `override-expiry`, `addon-expiry`, `outbox-prune`, `processed-events-prune`, `quota-reset`. Standalone `cmd/expiry` and `cmd/catalog-refresh` binaries are retained for direct invocation and local development.
 
 ```
 commercial-entitlements/
@@ -134,12 +135,18 @@ commercial-entitlements/
 │   │   ├── wiring.go             # buildGlueCodec / buildTopicPublisher for entitlement-events SNS
 │   │   ├── identity.go           # resolveAppEnv — one resolved environment for metrics/tracing/logs
 │   │   └── swagger_info.go       # swaggo @title/@version metadata
+│   ├── reconciler/               # Helm CronJob dispatcher — all 5 scheduled jobs run via
+│   │   ├── main.go               #   cmd/reconciler --job=<name> (values.yaml §13.1)
+│   │   └── jobs/
+│   │       ├── override_expiry.go    # --job=override-expiry  (0 * * * *)  starts OverrideExpiryFanoutWorkflow (§8.7)
+│   │       ├── addon_expiry.go       # --job=addon-expiry     (30 * * * *) expires due add-on packs (ENT-D8, §8.8)
+│   │       ├── outbox_prune.go       # --job=outbox-prune     (0 2 * * *)  prunes delivered outbox_events rows
+│   │       ├── processed_events_prune.go # --job=processed-events-prune (30 2 * * *) prunes processed_events
+│   │       └── quota_reset.go        # --job=quota-reset      (0 0 1 * *)  resets monthly quota counters
 │   ├── expiry/
-│   │   └── main.go               # expiry CronJob (hourly) — starts OverrideExpiryFanoutWorkflow for the
-│   │                             #   hour window (§8.7); runs add-on pack expiry (ENT-I3 first, then expire)
+│   │   └── main.go               # standalone expiry binary (direct invocation / local dev); Helm uses cmd/reconciler
 │   ├── catalog-refresh/
-│   │   └── main.go               # catalog TTL backstop CronJob — re-fetch CAT-I2 when stale (600 s),
-│   │                             #   compare record_versions; on change start CatalogFanoutWorkflow (§8.6)
+│   │   └── main.go               # standalone catalog-refresh binary (direct invocation / local dev); Helm uses cmd/reconciler
 │   ├── worker/
 │   │   └── main.go               # Temporal worker (ENT-D1, ENT-D4) — CatalogFanoutWorkflow on ent-catalog-fanout,
 │   │                             #   OverrideExpiryFanoutWorkflow on ent-expiry-fanout; own Deployment
@@ -152,9 +159,10 @@ commercial-entitlements/
 │   │   │   ├── override.go       # Override, OverrideHistory, OverrideAction enum (set/removed/expired)
 │   │   │   ├── snapshot.go       # EntitlementSnapshot — the computed effective set stored to Postgres
 │   │   │   ├── plan.go           # Plan read-model — matches CAT-I2 PlanResponse shape
-│   │   │   ├── addon.go          # QuotaAddon{ID, TenantID, TotalTokens, RemainingTokens, Status, PurchasedAt, ExpiresAt},
-│   │   │   │                     #   QuotaAddonDrawdown{ID, TenantID, PeriodStart, TotalDrawn, Packs[]},
-│   │   │   │                     #   AddonStatus enum (active/exhausted/expired/forfeited), AddonAction enum
+│   │   │   ├── addon.go          # QuotaAddon{ID, TenantID, LimitKey, TotalTokens, RemainingTokens, GrantedBy,
+│   │   │   │                     #   Reason, BillingRef, Status, ExpiresAt, RecordVersion},
+│   │   │   │                     #   QuotaAddonDrawdown{ID, AddonID, TenantID, LimitKey, TokensConsumed, PeriodStart, RequestID},
+│   │   │   │                     #   QuotaAddonStatus enum (active/consumed/expired/revoked)
 │   │   │   ├── event.go          # TenantEntitlementsChangedPayload, EffectiveSetCause enum
 │   │   │   └── errors.go         # DomainError catalogue (ErrTenantNotFound, ErrUpstreamUnavailable, …)
 │   │   ├── port/
@@ -220,7 +228,9 @@ commercial-entitlements/
 │           │   ├── addon_repository.go                # CD-55: quota_addons CRUD; quota_addon_drawdowns insert/query
 │           │   ├── db.go                              # DSNFromEnv / MigrationDSNFromEnv; wrapConnErr
 │           │   ├── migrate.go                         # RunMigrations (pgcommon migrate.Runner)
-│           │   └── migrations/                        # 000001_initial_schema.{up,down}.sql
+│           │   └── migrations/
+│           │       ├── 000001_initial_schema.{up,down}.sql
+│           │       └── 000002_addon_billing_ref.{up,down}.sql  # E-1/BL-OQ-4: adds billing_ref TEXT + uq_quota_addons_billing_ref unique index
 │           ├── valkey/
 │           │   └── cache.go                # go-redis/v9 — ent:tenant:{id} snapshot cache; ent:plans catalog cache;
 │           │                               #   quota:tenant:{id}:llm_token_quota_monthly (ENT-D13 enforcement ceiling);
@@ -249,7 +259,7 @@ commercial-entitlements/
 │   ├── lld/                      # this document
 │   └── observability/            # README, metric-registry.md (CI-generated), runbooks.md
 ├── deploy/
-│   ├── helm/                     # Deployments (API + worker), HPA(2-4), 2 CronJobs, migrate Job, PDB,
+│   ├── helm/                     # Deployments (API + worker), HPA(2-4), 5 CronJobs (via cmd/reconciler), migrate Job, PDB,
 │   │                             #   NetworkPolicy, ServiceMonitor, PrometheusRule, HTTPRoute, SecurityPolicy
 │   └── messaging/                # SQS/SNS Terraform — 4 inbound queues + DLQs + SNS subscriptions
 ├── test/
@@ -322,7 +332,7 @@ The outbox publisher uses `events.WithCodec(ValidatingCodec(GlueCodec))` for `en
 
 ### 4.0 Entity-relationship overview
 
-`entitlement_overrides` is the root operator-entered entity — it is the system-of-record for per-tenant numeric limit customisations for custom deals, and every other tenant-scoped table references the same `tenant_id`. `entitlement_snapshots` is the **computed effective set** per tenant (one row, rebuildable); it derives its value from `entitlement_overrides`, `plan_catalog_cache`, `tenant_trial_assignments`, `trial_entitlement_overrides`, and `quota_addons` at recompute time. `plan_catalog_cache` is the **only global table** (one row per plan code, no `tenant_id`, no RLS) — it is a read-through mirror of the Catalog Service's authoritative `plans` table (CAT-I2), never a source of truth. `tenant_trial_assignments` holds the operator-set trial profile (0–1 row per tenant, absent = `trial_specific` default); `trial_entitlement_overrides` holds per-key numeric overrides for the `custom` profile only. `quota_addons` accumulates purchased token packs (many per tenant, drawn FIFO by `purchased_at`); `quota_addon_drawdowns` records period-close consumption written by Usage & Metering (one row per `(tenant_id, period_start)`). `entitlement_override_history` is an append-only audit trail written in the same transaction as every override mutation. `pending_audit_entries` and `outbox_events` are transient platform infrastructure tables committed atomically with their triggering business write; `processed_events` is the global consumer-idempotency ledger (not tenant-scoped, no FK relationships).
+`entitlement_overrides` is the root operator-entered entity — it is the system-of-record for per-tenant numeric limit customisations for custom deals, and every other tenant-scoped table references the same `tenant_id`. `entitlement_snapshots` is the **computed effective set** per tenant (one row, rebuildable); it derives its value from `entitlement_overrides`, `plan_catalog_cache`, `tenant_trial_assignments`, `trial_entitlement_overrides`, and `quota_addons` at recompute time. `plan_catalog_cache` is the **only global table** (one row per plan code, no `tenant_id`, no RLS) — it is a read-through mirror of the Catalog Service's authoritative `plans` table (CAT-I2), never a source of truth. `tenant_trial_assignments` holds the operator-set trial profile (0–1 row per tenant, absent = `trial_specific` default); `trial_entitlement_overrides` holds per-key numeric overrides for the `custom` profile only. `quota_addons` accumulates purchased token packs (many per tenant, drawn FIFO by `expires_at` then `created_at`); `quota_addon_drawdowns` records consumption per pack written by Usage & Metering. `entitlement_override_history` is an append-only audit trail written in the same transaction as every override mutation. `pending_audit_entries` and `outbox_events` are transient platform infrastructure tables committed atomically with their triggering business write; `processed_events` is the global consumer-idempotency ledger (not tenant-scoped, no FK relationships).
 
 ```mermaid
 erDiagram
@@ -343,7 +353,7 @@ erDiagram
         bigint value "NULL = explicit unlimited; forbidden for api_rate_limit_rps (chk_override_rps_never_null)"
         text reason "non-empty; audit trail"
         uuid set_by "operator principal UUID"
-        timestamptz expires_at "NULL = no expiry; enforced by expiry CronJob (cmd/expiry)"
+        timestamptz expires_at "NULL = no expiry; enforced by override-expiry reconciler job"
         bigint record_version "optimistic locking; incremented by touch_row() trigger"
         timestamptz created_at
         timestamptz updated_at
@@ -418,17 +428,15 @@ erDiagram
 
     QUOTA_ADDONS {
         uuid id PK
-        uuid tenant_id "NOT NULL; UNIQUE key with purchased_at for FIFO ordering"
+        uuid tenant_id "NOT NULL"
+        text limit_key "NOT NULL; entitlement_limit_key ENUM value"
         bigint total_tokens "NOT NULL; CHECK > 0"
         bigint remaining_tokens "NOT NULL; CHECK >= 0 AND <= total_tokens"
-        addon_status status "ENUM: active|exhausted|expired|forfeited; default active"
-        text reason "non-empty; purchase|goodwill|correction|…"
-        text billing_ref "NULL for operator grants; Billing provider reference for purchases"
-        uuid set_by "operator UUID or commercial-system UUID for purchases"
-        timestamptz purchased_at "NOT NULL; FIFO ordering key"
-        timestamptz expires_at "NOT NULL; purchased_at + 12 months; enforced by expiry CronJob"
-        timestamptz expiry_deferred_since "NULL unless expiry deferred (ENT-D8)"
-        int expiry_attempts "expiry attempts while deferred"
+        quota_addon_status status "ENUM: active|consumed|expired|revoked; default active"
+        text reason "non-empty; billing_purchase|goodwill|correction|…"
+        text billing_ref "NULL for operator grants; Billing purchase ID (uq_quota_addons_billing_ref unique index — migration 000002)"
+        uuid granted_by "operator UUID or uuid.Nil for billing purchases"
+        timestamptz expires_at "NULL for no-expiry operator grants; purchased_at + 12 months for billing purchases"
         bigint record_version
         timestamptz created_at
         timestamptz updated_at
@@ -508,7 +516,8 @@ CREATE TYPE override_action AS ENUM ('set', 'removed', 'expired');
 CREATE TYPE trial_profile AS ENUM ('trial_specific', 'reduced_plan', 'full_plan', 'custom');
 
 -- CD-55: lifecycle status of a token add-on pack.
-CREATE TYPE addon_status AS ENUM ('active', 'exhausted', 'expired', 'forfeited');
+-- 'consumed' = all tokens drawn; 'revoked' = operator-removed before any drawdown.
+CREATE TYPE quota_addon_status AS ENUM ('active', 'consumed', 'expired', 'revoked');
 ```
 
 ### 4.2 Tables
@@ -546,7 +555,7 @@ CREATE POLICY tenant_isolation ON entitlement_overrides
 
 - Composite `PRIMARY KEY (tenant_id, limit_key)` — exactly one override per tenant per limit key; a second `PUT` for the same key upserts (not inserts).
 - `value: NULL` means explicit unlimited for all keys except `api_rate_limit_rps`, which is guarded by `chk_rps_never_null`.
-- `expires_at` is enforced asynchronously by the `cmd/expiry` CronJob (hourly); on expiry the row is deleted, history is written with `action='expired'`, and `TenantEntitlementsChanged` is emitted.
+- `expires_at` is enforced asynchronously by the `override-expiry` reconciler job (`cmd/reconciler --job=override-expiry`, hourly); on expiry the row is deleted, history is written with `action='expired'`, and `TenantEntitlementsChanged` is emitted.
 - `idx_override_expiry` is a partial index on `expires_at IS NOT NULL` — the expiry scan is O(expiring rows), not O(all overrides).
 - RLS enforced via `app.tenant_id` GUC (§4.3). Cross-tenant reads return zero rows.
 
@@ -679,7 +688,7 @@ CREATE TABLE plan_catalog_cache (
 
 - Global table — no `tenant_id`, no RLS. Any service account with access to the app pool can read it.
 - Not a source of truth — the Catalog Service's `plans` table is authoritative. If this table is empty and CAT-I2 is unavailable, ENT-I2 returns `503`.
-- Invalidated on `PlanCatalogChanged`; also refreshed every 600 s by the `cmd/catalog-refresh` CronJob as a TTL backstop.
+- Invalidated on `PlanCatalogChanged`; also refreshed periodically by the `cmd/catalog-refresh` standalone binary as a TTL backstop.
 - `trial_profiles` JSONB holds CD-51 trial limit values keyed by profile (`trial_specific`, `reduced_plan`). `NULL` column value = inherit the plan value (not unlimited).
 
 **`plan_catalog_cache` invariants:**
@@ -767,34 +776,39 @@ CREATE POLICY tenant_isolation ON trial_entitlement_overrides
 
 #### `quota_addons` (CD-55)
 
-One row per purchased token add-on pack per tenant. The balance a tenant holds that is added on top of the plan or operator-override value for `llm_token_quota_monthly`. Packs are drawn down FIFO (oldest `purchased_at` first). Deleted on `TenantMembershipsPurged`.
+One row per purchased token add-on pack per tenant. The balance a tenant holds that is added on top of the plan or operator-override value for `llm_token_quota_monthly`. Packs are drawn down FIFO (soonest-expiring first, then by `created_at`). Deleted on `TenantMembershipsPurged`.
 
 ```sql
 CREATE TABLE quota_addons (
-  id              uuid          NOT NULL PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id       uuid          NOT NULL,
-  total_tokens    bigint        NOT NULL CHECK (total_tokens > 0),
-  remaining_tokens bigint       NOT NULL CHECK (remaining_tokens >= 0 AND remaining_tokens <= total_tokens),
-  status          addon_status  NOT NULL DEFAULT 'active',
-  reason          text          NOT NULL CHECK (reason <> ''),  -- 'purchase' | 'goodwill' | 'correction' | …
-  billing_ref     text,                                         -- Billing provider reference; NULL for operator grants
-  set_by          uuid          NOT NULL,                       -- operator UUID or commercial-system UUID for purchases
-  purchased_at    timestamptz   NOT NULL DEFAULT now(),
-  expires_at      timestamptz   NOT NULL,                       -- purchased_at + 12 months; enforced by expiry CronJob
-  expiry_deferred_since timestamptz,                            -- first failed expiry attempt (ENT-D8); NULL = not deferred
-  expiry_attempts int           NOT NULL DEFAULT 0 CHECK (expiry_attempts >= 0),
-  record_version  bigint        NOT NULL DEFAULT 1 CHECK (record_version > 0),
-  created_at      timestamptz   NOT NULL DEFAULT now(),
-  updated_at      timestamptz   NOT NULL DEFAULT now()
+  id               uuid               NOT NULL PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id        uuid               NOT NULL,
+  limit_key        text               NOT NULL,                        -- entitlement_limit_key ENUM value
+  total_tokens     bigint             NOT NULL CHECK (total_tokens > 0),
+  remaining_tokens bigint             NOT NULL CHECK (remaining_tokens >= 0 AND remaining_tokens <= total_tokens),
+  status           quota_addon_status NOT NULL DEFAULT 'active',
+  reason           text               NOT NULL CHECK (reason <> ''),   -- 'billing_purchase' | 'goodwill' | 'correction' | …
+  billing_ref      text,                                               -- NULL for operator grants; Billing purchase ID
+  granted_by       uuid               NOT NULL,                       -- operator UUID or uuid.Nil for billing purchases
+  expires_at       timestamptz,                                        -- NULL for no-expiry grants; purchased_at + 12 months for billing purchases (AddDate(1,0,0))
+  record_version   bigint             NOT NULL DEFAULT 1 CHECK (record_version > 0),
+  created_at       timestamptz        NOT NULL DEFAULT now(),
+  updated_at       timestamptz        NOT NULL DEFAULT now()
 );
 
+-- FIFO drawdown: soonest-expiring first, then insertion order.
 CREATE INDEX idx_quota_addons_tenant_active
-  ON quota_addons (tenant_id, purchased_at)
+  ON quota_addons (tenant_id, limit_key, expires_at, created_at)
   WHERE status = 'active';
 
 CREATE INDEX idx_quota_addons_expiry
   ON quota_addons (expires_at)
   WHERE status = 'active';
+
+-- Migration 000002 (E-1/BL-OQ-4): billing_ref idempotency column.
+-- billing_ref is already present from migration 000001; migration 000002 adds the unique index.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_quota_addons_billing_ref
+    ON quota_addons (billing_ref)
+    WHERE billing_ref IS NOT NULL;
 
 ALTER TABLE quota_addons ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON quota_addons
@@ -803,20 +817,20 @@ CREATE POLICY tenant_isolation ON quota_addons
 
 **Notes:**
 
-- Packs are drawn down FIFO by `purchased_at` (oldest pack first). `idx_quota_addons_tenant_active` partial index (on `status = 'active'`) keeps FIFO scans efficient regardless of historical pack count.
-- Pack expiry (12 months from `purchased_at`) is enforced by the `cmd/expiry` CronJob — it calls ENT-I3 first to record consumption, then marks the pack `expired` and forfeits the remaining balance. If the reconciliation cannot complete, the expiry is **deferred** and retried on every run (ENT-D8, §8.8).
-- Add-on balance survives `cancelled` and `suspended` subscription states; forfeited only on `TenantMembershipsPurged`.
+- Packs are drawn down FIFO ordered by `expires_at ASC NULLS LAST, created_at ASC` (soonest-expiring first to minimise waste). `idx_quota_addons_tenant_active` partial index (on `status = 'active'`) keeps FIFO scans efficient.
+- Pack expiry (12 months via `AddDate(1,0,0)` from `PurchasedAt` in the event) is enforced by the `addon-expiry` reconciler job (`cmd/reconciler --job=addon-expiry`, schedule `30 * * * *`). On expiry the pack is marked `expired`, remaining tokens forfeited, and `TenantEntitlementsChanged` emitted.
+- Add-on balance survives `cancelled` and `suspended` subscription states; deleted (all rows) on `TenantMembershipsPurged`.
 
 **`quota_addons` invariants:**
 
 | # | Invariant |
 |---|---|
-| QA-1 | FIFO ordering by `purchased_at` — oldest active pack is drawn down first. `idx_quota_addons_tenant_active` partial index enforces scan efficiency. |
+| QA-1 | FIFO ordering by `expires_at ASC NULLS LAST, created_at ASC` — soonest-expiring active pack is drawn down first to minimise forfeiture. `idx_quota_addons_tenant_active` partial index enforces scan efficiency. |
 | QA-2 | `remaining_tokens` is monotonically decreasing after creation — only the drawdown and expiry/forfeiture paths write to it; no path increases it after the initial insert. |
-| QA-3 | Pack balance survives `cancelled`/`suspended` states. It is forfeited (`status = 'forfeited'`) **only** on `TenantMembershipsPurged` — in the same transaction as the full tenant data wipe. |
-| QA-4 | Expiry (12 months from `purchased_at`) requires Usage & Metering to record consumption via ENT-I3 **before** the pack is marked `expired`. If that reconciliation cannot complete (Usage & Metering unavailable), the pack **stays `active`** past `expires_at`, the expiry is deferred and retried on every `cmd/expiry` run, and the pack is expired only after a successful drawdown (ENT-D8, approved). Reconciliation correctness takes precedence over strict expiry-time enforcement. |
-| QA-5 | `billing_ref` links back to the Billing provider reference for purchases; `NULL` for operator-granted (goodwill, correction) packs. Consumer-event idempotency is via `processed_events` inbox, not a unique constraint on `billing_ref`. |
-| QA-6 | A deferred expiry is always visible: `expiry_deferred_since` is set on the first failed attempt (with a `billing.token_addon.expiry_deferred` audit entry), `expiry_attempts` counts retries, and both are cleared when the pack is expired. While deferred the pack's remaining tokens stay in the effective limit. |
+| QA-3 | Pack balance survives `cancelled`/`suspended` states. All `quota_addons` rows are deleted on `TenantMembershipsPurged` — in the same transaction as the full tenant data wipe. No separate `forfeited` status exists. |
+| QA-4 | Expiry (12 calendar months via `AddDate(1,0,0)` from the event's `purchased_at`) is enforced by the `addon-expiry` reconciler job (`cmd/reconciler --job=addon-expiry`). On expiry the pack is marked `expired`, remaining tokens forfeited, effective set recomputed, and `TenantEntitlementsChanged` emitted. |
+| QA-5 | `billing_ref` is the Billing purchase ID for packs created from `TenantQuotaAddOnChanged {reason: "purchase"}`; `NULL` for operator-granted packs. Idempotency is enforced at two layers: (1) `processed_events` inbox (primary); (2) `uq_quota_addons_billing_ref` unique partial index (secondary — added in migration 000002, BL-OQ-4). A `billing_ref` arriving for a different tenant triggers `ErrBillingRefAlreadyClaimed`, logged at ERROR level and silently acknowledged (not retried). |
+| QA-6 | `status = 'consumed'` when `remaining_tokens` reaches 0 via drawdown; `status = 'revoked'` when an operator removes a fully-unused pack. Neither state is reversible. |
 
 #### `quota_addon_drawdowns` (CD-55)
 
@@ -847,7 +861,7 @@ CREATE POLICY tenant_isolation ON quota_addon_drawdowns
 **Notes:**
 
 - One record per `(tenant_id, period_start)` — idempotent via `UNIQUE (tenant_id, period_start)`. ENT-I3 returns `200` (not an error) on a duplicate write (`drawdown_already_recorded`).
-- `pack_draws` JSONB records the FIFO consumption breakdown: `[{addon_id, tokens_drawn}]` ordered by `purchased_at`.
+- Each drawdown record is per individual addon pack (`addon_id`), recording `tokens_consumed` for that pack in the period.
 - Financial record — retained 7 years (§15.1); **not** deleted on `TenantOffboarded` or `TenantMembershipsPurged`.
 - `period_start` is a `date` (UTC calendar month start, 1st of month). An `invalid_period_start` error is returned if it is not the 1st of a month.
 
@@ -1040,7 +1054,8 @@ Applied at startup by `cmd/migrate` using `platform-pgcommon`'s `migrate.Runner`
 
 | Migration | Purpose |
 |---|---|
-| `000001_initial_schema` | All enum types (§4.1) including `addon_status`; all eight tables (§4.2) with indexes, constraints, and RLS policies; app role grants; `entitlements_app` and `entitlements_sys` role setup; seed no rows (plan_catalog_cache populated at startup via CAT-I2). |
+| `000001_initial_schema` | All enum types (§4.1) including `quota_addon_status`; all eight tables (§4.2) with indexes, constraints, and RLS policies; app role grants; `entitlements_app` and `entitlements_sys` role setup; seed no rows (plan_catalog_cache populated at startup via CAT-I2). |
+| `000002_addon_billing_ref` | Adds `billing_ref TEXT` column to `quota_addons` (nullable) and `uq_quota_addons_billing_ref` partial unique index (WHERE `billing_ref IS NOT NULL`). Provides second-line idempotency for Billing purchases (E-1 / BL-OQ-4). |
 
 ### 4.5 Triggers — `touch_row`
 
@@ -1196,6 +1211,7 @@ Reachable mesh-internally only. `x-tenant-roles` must contain `platform_operator
 | `model_tier` | `string` | Yes | Plan's `model_tier` from the Catalog: `basic`, `standard`, or `premium` |
 | `limits` | `object` | Yes | An object with exactly five keys (below) |
 | `trial_profile` | `string \| null` | No | Present and non-null only when `tenants.status = 'trial'`. Values: `trial_specific`, `reduced_plan`, `full_plan`, `custom`. `null` when the tenant is not in trial |
+| `addon_eligibility` | `object` | Yes (may be empty `{}`) | Per Billing resource eligibility for token add-on purchases (BL-OQ-3 / E-4). Keys are Billing resource names (`llm_tokens`, `api_requests`). Each value is `{eligible: bool, reason?: string}`. `reason` is set only when `eligible = false`; values: `trial` (trial tenants cannot purchase add-ons), `not_active` (subscription not active), `unlimited_quota` (plan has unlimited quota — add-ons make no sense). Billing reads this field via ENT-I1 before allowing an add-on purchase |
 | `computed_at` | `string` (RFC 3339) | Yes | Timestamp at which the effective set was last computed |
 
 **Add-on balance note.** For `llm_token_quota_monthly`, when active add-on packs exist, `value` = plan/override base + `addon_balance`. The `addon_balance` field (optional integer) shows the add-on contribution; it is omitted when zero. `source` still reflects the base (`"plan"` or `"override"`). See §4.6 for full semantics.
@@ -1477,10 +1493,10 @@ Called by Usage & Metering at UTC calendar month rollover to record how many add
 
 **Processing — FIFO drawdown:**
 1. Reject if `(tenant_id, period_start)` already exists in `quota_addon_drawdowns` → `200` (idempotent replay).
-2. Load all `active` `quota_addons` for the tenant ordered by `purchased_at ASC` (oldest first).
+2. Load all `active` `quota_addons` for the tenant ordered by `expires_at ASC NULLS LAST, created_at ASC` (soonest-expiring first).
 3. Draw down packs sequentially: subtract from `remaining_tokens` until `tokens_drawn` is satisfied or packs exhausted.
 4. If total available `remaining_tokens` < `tokens_drawn` → drain every active pack to zero and record the **uncovered amount** as a shortfall (ENT-D9): `shortfall_tokens = tokens_drawn − covered`. Never an error and never a negative balance, but never silent either: in the same transaction insert a `quota_addon_shortfalls` row (`status = open`) and a `pending_audit_entries` row (`billing.token_addon.drawdown_shortfall`, with requested, covered and shortfall tokens), and after commit increment the shortfall metrics (§11.2). Then apply the ENT-D11 policy in the same transaction: first set `escalated` per QAS-7; then, if the shortfall is **not escalated** and `shortfall_tokens` ≤ `SHORTFALL_TOLERANCE_TOKENS` **and** ≤ `SHORTFALL_TOLERANCE_PCT` % of `tokens_drawn`, resolve it as `accepted_loss` (`auto_accepted = true`, `resolved_by` = `commercial-system`) and add a `billing.token_addon.shortfall_resolved` audit row. An escalated shortfall is never auto-accepted (ENT-D12). Above tolerance it stays `open` and `EntitlementsAddonShortfall` fires; escalation fires `EntitlementsAddonShortfallEscalated` (§11.3).
-5. Mark any fully drained packs `status = 'exhausted'`.
+5. Mark any fully drained packs `status = 'consumed'`.
 6. Insert `quota_addon_drawdowns` row with `tokens_requested`, `tokens_drawn` (covered), `shortfall_tokens` and the `pack_draws` JSON array.
 7. Recompute effective `llm_token_quota_monthly` and upsert snapshot.
 8. Enqueue `TenantEntitlementsChanged` in outbox.
@@ -1538,7 +1554,7 @@ Manual correction of a tenant's add-on token balance by a platform operator.
 | `goodwill` | Same as `add`; `reason` must mention goodwill |
 | `migration_adjustment` | Same as `add`; used for data migration corrections |
 | `remove_unused` | Delete an `active` pack with `remaining_tokens = total_tokens` (fully unused only); `409` if partially used |
-| `reverse_duplicate` | Mark a pack `status = 'forfeited'`; records reversal reason |
+| `reverse_duplicate` | Mark a pack `status = 'revoked'`; records reversal reason |
 
 Post-mutation: recompute effective set, upsert snapshot, enqueue `TenantEntitlementsChanged`, insert `pending_audit_entries`.
 
@@ -1784,8 +1800,8 @@ Schema version on outbound publishes: resolved from Glue at startup via `glue:Ge
 | EVT-5 | **Outbox dead letters require human intervention and trigger paging.** After `OUTBOX_MAX_ATTEMPTS` (5) the row stays at `attempts = 5`, increments `commercial_entitlements_outbox_failed_total`, and fires `EntitlementsOutboxFailed`. Manual replay: `POST /api/v1/operator/outbox/replay`. |
 | EVT-6 | **No self-consumption.** This service produces `TenantEntitlementsChanged` on `entitlement-events` and never consumes that topic itself. Produce and consume sets are disjoint. |
 | EVT-7 | **`TenantEntitlementsChanged` is a push notification, not a data carrier.** The payload carries only `tenant_id`, `version`, `cause`, `changed_keys`, `previous_version`, `computed_at`. Consumers call ENT-I1 for the full effective set — they must never derive enforcement decisions from the event payload alone. |
-| EVT-8 | **Catalog refresh is fan-out safe.** On `PlanCatalogChanged`, affected tenants are recomputed in batches (catalog-refresh CronJob, batch 100, 10 ms inter-batch sleep) to avoid thundering herd on I-17 and Postgres. Sequential at MVP; ENT-D1 open for Phase 1.5 batching design. |
-| EVT-9 | **`TenantMembershipsPurged` forfeits all add-on balance.** All `quota_addons` rows are marked `forfeited` in the purge transaction; no drawdown or expiry path can run after purge. `TenantEntitlementsChanged` is not emitted post-purge. |
+| EVT-8 | **Catalog refresh is fan-out safe.** On `PlanCatalogChanged`, affected tenants are recomputed in parallel via the `CatalogFanoutWorkflow` Temporal workflow (ENT-D1, resolved). Only tenants on the changed plan are recomputed; concurrency is capped at `FANOUT_MAX_PARALLEL`; continue-as-new paging prevents history overflow. See §8.6. |
+| EVT-9 | **`TenantMembershipsPurged` deletes all add-on packs.** All `quota_addons` rows are deleted in the purge transaction; no drawdown or expiry path can run after purge. `TenantEntitlementsChanged` is not emitted post-purge. |
 
 ---
 
@@ -1952,7 +1968,7 @@ sequenceDiagram
         Ent->>SQS: ack
     else new — reason = "refund"
         Ent->>DB: BEGIN RunInTx
-        Ent->>DB: GetByID(purchase_ref) — load pack
+        Ent->>DB: GetByBillingRef(tenant_id, purchase_ref) — load pack by billing_ref
         Note over Ent,DB: reduction = min(|delta|, remaining_tokens); never reduces consumed tokens
         Ent->>DB: UPDATE quota_addons (remaining_tokens -= reduction, total_tokens -= reduction)
         Note over Ent,DB: Recompute llm_token_quota_monthly = base + SUM(remaining_tokens)
@@ -1964,6 +1980,17 @@ sequenceDiagram
         Ent->>SQS: ack
     end
 ```
+
+**Error and edge-case behaviour (§8.4):**
+
+| Scenario | Behaviour |
+|---|---|
+| Malformed `TenantQuotaAddOnChanged` payload (unmarshal failure) | Returns `fmt.Errorf(...)` → NACK → SQS retry → DLQ after max attempts. Logged at `ERROR` level. Never silently acked for financial events. |
+| Non-positive `delta` on purchase event | Logged at `WARN` and silently acked (guard against bad Billing data; not financial loss). |
+| `billing_ref` already exists for the **same** tenant | Idempotent replay — existing addon returned, no insert, no error. |
+| `billing_ref` already claimed by a **different** tenant | `ErrBillingRefAlreadyClaimed` — logged at `ERROR` level (alert), silently acked (not retried; retrying is pointless as the unique index will keep firing). |
+| Recompute fails after grant/refund commit | Returns `fmt.Errorf("... event will retry: %w", err)` → NACK → retry. Grant insert is idempotent via `billing_ref`; retries are safe. |
+| Refund arrives before its purchase | `ErrAddonNotFound` from `GetByBillingRef` → error → NACK → retry (queues are not strictly ordered). |
 
 ### 8.5 Entitlement state derivation from subscription status
 
@@ -2198,7 +2225,7 @@ Egress is allowed to: `iam-org-membership` (I-17), `iam-catalog-admin` (CAT-I2),
 
 RLS on all tenant-scoped tables (`entitlement_overrides`, `entitlement_override_history`, `entitlement_snapshots`, `tenant_trial_assignments`, `trial_entitlement_overrides`, `quota_addons`, `quota_addon_drawdowns`). The `entitlements_app` role has no `BYPASSRLS`. CI step `scripts/verify-rls.sh` connects as `entitlements_app` and asserts cross-tenant reads return zero rows.
 
-The `entitlements_sys` role holds `BYPASSRLS` and is used only by the two CronJob binaries (`cmd/expiry`, `cmd/catalog-refresh`) and by the worker's tenant-listing activities (`ListAffectedTenants`, `ListTenantsWithDueOverrides`), which must scan across tenants. Per-tenant activities bind `app.tenant_id` and run as `entitlements_app`.
+The `entitlements_sys` role holds `BYPASSRLS` and is used only by the reconciler jobs (`cmd/reconciler`) and by the worker's tenant-listing activities (`ListAffectedTenants`, `ListTenantsWithDueOverrides`), which must scan across tenants. Per-tenant activities bind `app.tenant_id` and run as `entitlements_app`.
 
 ### 10.4 Operator authorization re-check
 
@@ -2367,10 +2394,14 @@ All configuration is via environment variables. Loaded at startup; no runtime re
 | `Deployment` — worker | `commercial-entitlements-worker` (`cmd/worker`), `replicas: 2`; same ServiceAccount; no ingress; egress to the Temporal frontend, Core, Postgres, Valkey (ENT-D1) |
 | `HorizontalPodAutoscaler` | CPU 70% → scale up; scale down stabilisation 300 s |
 | `PodDisruptionBudget` | `minAvailable: 1` |
-| `CronJob` — expiry | `0 * * * *` (hourly); `cmd/expiry` binary; `restartPolicy: OnFailure`; starts `OverrideExpiryFanoutWorkflow` (§8.7) and runs add-on pack expiry |
-| `CronJob` — catalog-refresh | `*/10 * * * *` (every 10 min backstop); `cmd/catalog-refresh` binary; on a changed `record_versions` it starts `CatalogFanoutWorkflow` (§8.6) |
+| `CronJob` — override-expiry | `0 * * * *` (hourly); `cmd/reconciler --job=override-expiry`; `restartPolicy: OnFailure`; starts `OverrideExpiryFanoutWorkflow` (§8.7) |
+| `CronJob` — addon-expiry | `30 * * * *` (hourly, offset); `cmd/reconciler --job=addon-expiry`; expires due add-on packs (ENT-D8, §8.8) |
+| `CronJob` — outbox-prune | `0 2 * * *` (daily 02:00 UTC); `cmd/reconciler --job=outbox-prune`; prunes delivered `outbox_events` rows |
+| `CronJob` — processed-events-prune | `30 2 * * *` (daily 02:30 UTC); `cmd/reconciler --job=processed-events-prune`; prunes old `processed_events` rows |
+| `CronJob` — quota-reset | `0 0 1 * *` (monthly); `cmd/reconciler --job=quota-reset`; resets monthly quota counters |
 | `Job` — migrate | Helm `pre-install`/`pre-upgrade` hook; `cmd/migrate` binary; `RUN_MIGRATIONS=true` |
 | `NetworkPolicy` | Ingress from admitted namespaces (§10.2); egress to upstream services; worker and API pods also egress to the platform Temporal frontend (ENT-D1) |
+| `AuthorizationPolicy` (`authz-policy.yaml`) | Istio `AuthorizationPolicy` — restricts `commercial-billing` SPIFFE principal (`cluster.local/ns/billing/sa/commercial-billing`) to `GET /api/v1/internal/tenants/*/entitlements` only; enabled when `istio.authzPolicy.enabled: true` (E-5 / BL-OQ-3) |
 | `ServiceMonitor` | Scrape `:9090/metrics` every 30 s |
 | `PrometheusRule` | Alerts defined in §11.3 |
 | `HTTPRoute` | Internal mesh routing only; no ingress gateway route |
@@ -2476,7 +2507,7 @@ resources:
 | `entitlement_override_history` | Indirect | `actor_id` (operator UUID) | Platform standard audit retention; kept after `TenantMembershipsPurged`, archivable after offboarding (B-2) |
 | `entitlement_snapshots` | No | No PII | Until tenant offboarded |
 | `tenant_trial_assignments` | Indirect | `set_by` (operator UUID) | Until conversion or purge |
-| `quota_addons` | No | `billing_ref` (non-PII reference) | Until pack expired/forfeited or purge |
+| `quota_addons` | No | `billing_ref` (non-PII reference) | Until pack expired/consumed/revoked or purge (deletion) |
 | `quota_addon_drawdowns` | No | — | 7 years (financial record) |
 | `quota_addon_shortfalls` | Indirect | `resolved_by` (operator UUID) | 7 years (financial record) |
 | `pending_audit_entries` | Indirect | Included in `entry` JSON | Until delivered (deleted post-delivery) |
@@ -2489,7 +2520,7 @@ On receipt of `TenantMembershipsPurged`:
 1. Delete all `entitlement_overrides` rows for the tenant.
 2. Delete `tenant_trial_assignments` row.
 3. Delete all `trial_entitlement_overrides` rows.
-4. Mark all `quota_addons` as `forfeited`.
+4. Delete all `quota_addons` rows for the tenant.
 5. Delete `entitlement_snapshots` row.
 6. Evict `ent:tenant:{id}` from Valkey.
 7. Do **not** delete `entitlement_override_history` (immutable audit record, platform audit retention, archivable after offboarding — B-2), `quota_addon_drawdowns` or `quota_addon_shortfalls` (financial records, 7 years).
@@ -2698,6 +2729,7 @@ All errors follow `gincommon.ErrorResponse`: `{"code": "<snake_case>", "message"
 | 409 | `drawdown_already_recorded` | ENT-I3 | `(tenant_id, period_start)` already in `quota_addon_drawdowns` — idempotent, returns 200 |
 | 503 | `upstream_unavailable` | ENT-I1/T1 | Cannot reach Core I-17; no snapshot exists |
 | 503 | `db_unavailable` | All | Postgres pool unavailable |
+| — | `billing_ref_already_claimed` | Consumer-internal | `billing_ref` unique index violated by a different tenant; event is logged at ERROR level and silently acknowledged (not surfaced as HTTP error; not retried) |
 
 ---
 
@@ -2862,7 +2894,7 @@ The override mutation transaction touches 5 tables (`entitlement_overrides`, `en
 
 ### 21.3 Add-on drawdown (ENT-I3)
 
-FIFO drawdown scans `quota_addons` for the tenant ordered by `purchased_at`. For typical tenants (< 10 active packs), this is a small scan. The `idx_quota_addons_tenant_active` partial index (on `status = 'active'`) keeps this efficient regardless of historical pack count.
+FIFO drawdown scans `quota_addons` for the tenant ordered by `expires_at ASC NULLS LAST, created_at ASC` (soonest-expiring first). For typical tenants (< 10 active packs), this is a small scan. The `idx_quota_addons_tenant_active` partial index (on `status = 'active'`) keeps this efficient regardless of historical pack count.
 
 ### 21.4 Catalog refresh fan-out
 

@@ -1,0 +1,31 @@
+flowchart TD
+    subgraph outbound["Outbound — TenantEntitlementsChanged"]
+        SVC["EntitlementsService\nPublish(ctx, event)"]
+        PUB["eventbus.Publisher\nEnqueueOrdered(tx, event)\nadvisory lock per tenantID\nplain JSON in outbox_events\nEVT-10: atomic with snapshot write"]
+        OUTBOX[("outbox_events\n(PostgreSQL)")]
+        RUNNER["outbox.Runner\npoll every OUTBOX_POLL_INTERVAL=500ms\nclaim batch, GlueCodec.Encode\nmark_published on success\ndead-letter after OUTBOX_RETENTION_DAYS"]
+        SNS["SNS\ncommercial-entitlements-events\n(1 topic, 1 Glue registry)"]
+        DEAD[("outbox_dead_letters")]
+    end
+
+    subgraph inbound["Inbound — 4 SQS consumers"]
+        BQ["billing-entitlements-q\nInboundBillingEvent\n(addon purchase/refund, plan change)"]
+        TQ["tenant-entitlements-q\nInboundTenantEvent\n(state change: suspended/cancelled/active)"]
+        CQ["catalog-entitlements-q\nInboundCatalogEvent\n(plan catalog changed)"]
+        MQ["membership-entitlements-q\nInboundMembershipEvent\n(seat/role change → recompute trigger)"]
+        PIPE["sqspipeline\nGlueDecodeCodec → strip 18-byte header\nDLQ router (EVT-14/15 guards)\ninbox.ProcessOnce (processed_events)"]
+        HANDLERS["consumer/\nbilling_consumer.go\ntenant_consumer.go\ncatalog_consumer.go\nmembership_consumer.go"]
+    end
+
+    SVC --> PUB
+    PUB --> OUTBOX
+    OUTBOX --> RUNNER
+    RUNNER -->|success| SNS
+    RUNNER -->|max retries| DEAD
+
+    BQ --> PIPE
+    TQ --> PIPE
+    CQ --> PIPE
+    MQ --> PIPE
+    PIPE -->|deduped, validated| HANDLERS
+    HANDLERS -->|trigger recompute| SVC

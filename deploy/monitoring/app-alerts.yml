@@ -1,0 +1,182 @@
+# Prometheus alerting rules for commercial-entitlements.
+#
+# HTTP request metrics (platform_http_request_duration_seconds,
+# platform_http_requests_total) are emitted by platform-gincommon; the
+# consumer/outbox platform_* metrics by platform-events. Business counters
+# (commercial_entitlements_*) are registered in
+# internal/adapter/outbound/metrics/registry.go.
+#
+# metric_status: proposed — the platform_http_* metrics are still Proposed
+# in the Platform Observability Registry (awaiting governance); every alert
+# that queries them carries the label metric_status: proposed.
+#
+# Deploy via PrometheusRule CRD (kube-prometheus-stack) or include in a
+# Prometheus --rule-files directory. The Helm chart renders an equivalent
+# PrometheusRule at deploy/helm/templates/prometheusrule.yaml — this file is
+# the source-of-truth "flat" version used by non-kube-prometheus setups.
+
+groups:
+  # ── Availability ────────────────────────────────────────────────────────────
+  - name: commercial_entitlements_availability
+    rules:
+      - alert: CommercialEntitlementsDown
+        expr: absent(up{job="commercial-entitlements"} == 1)
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "commercial-entitlements has no healthy instances"
+          description: "No commercial-entitlements pods have been scraped as healthy for 2 minutes."
+
+      - alert: CommercialEntitlementsReplicasMissing
+        expr: sum(up{job="commercial-entitlements"}) < 2
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "commercial-entitlements running below minimum replica count"
+          description: "Fewer than 2 replicas healthy. Current: {{ $value }}."
+
+  # ── Error rate ───────────────────────────────────────────────────────────────
+  - name: commercial_entitlements_errors
+    rules:
+      - alert: CommercialEntitlementsHighErrorRate
+        expr: |
+          sum by (domain, service, environment) (rate(platform_http_requests_total{job="commercial-entitlements", status_class="5xx"}[5m]))
+            /
+          sum by (domain, service, environment) (rate(platform_http_requests_total{job="commercial-entitlements"}[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+          metric_status: proposed
+        annotations:
+          summary: "commercial-entitlements 5xx error rate above 5%"
+          description: "{{ $value | humanizePercentage }} of requests returning 5xx errors over last 5 min."
+
+      - alert: CommercialEntitlementsCriticalErrorRate
+        expr: |
+          sum by (domain, service, environment) (rate(platform_http_requests_total{job="commercial-entitlements", status_class="5xx"}[5m]))
+            /
+          sum by (domain, service, environment) (rate(platform_http_requests_total{job="commercial-entitlements"}[5m]))
+          > 0.20
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+          metric_status: proposed
+        annotations:
+          summary: "commercial-entitlements 5xx error rate above 20% — escalate immediately"
+          description: "{{ $value | humanizePercentage }} of requests returning 5xx."
+
+  # ── Latency ─────────────────────────────────────────────────────────────────
+  - name: commercial_entitlements_latency
+    rules:
+      - alert: CommercialEntitlementsHighLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, domain, service, environment) (
+              rate(platform_http_request_duration_seconds_bucket{job="commercial-entitlements"}[5m])
+            )
+          ) > 2.0
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+          metric_status: proposed
+        annotations:
+          summary: "commercial-entitlements p99 latency above 2s"
+          description: "p99 = {{ $value | humanizeDuration }}. Check slow-query logs and Valkey."
+
+  # ── Outbox ───────────────────────────────────────────────────────────────────
+  - name: commercial_entitlements_outbox
+    rules:
+      - alert: CommercialEntitlementsOutboxDeadLetters
+        expr: |
+          sum by (domain, service, environment) (
+            increase(platform_dlq_messages_total{job="commercial-entitlements", operation="outbox_publish"}[30m])
+          ) > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "commercial-entitlements outbox events dead-lettered"
+          description: "Outbox events exceeded max retries. Check SNS_TOPIC_ENTITLEMENTS_ARN connectivity."
+
+      - alert: CommercialEntitlementsOutboxBacklog
+        expr: |
+          max by (domain, service, environment) (
+            platform_outbox_oldest_pending_age_seconds{job="commercial-entitlements"}
+          ) > 300
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "commercial-entitlements outbox delivery > 5 min behind"
+          description: "Oldest pending outbox event is {{ $value | humanizeDuration }} old."
+
+      - alert: CommercialEntitlementsDLQBacklog
+        expr: |
+          max by (domain, service, environment, queue) (
+            platform_dlq_depth{job="commercial-entitlements"}
+          ) > 0
+        for: 30m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Messages waiting in {{ $labels.queue }} DLQ"
+          description: "{{ $value }} messages in the DLQ. Inspect DLQReason, fix root cause, redrive."
+
+  # ── Database ─────────────────────────────────────────────────────────────────
+  - name: commercial_entitlements_database
+    rules:
+      - alert: CommercialEntitlementsDBPoolSaturated
+        expr: |
+          max by (domain, service, environment, pool) (
+            sum by (domain, service, environment, pool, instance) (platform_db_pool_connections{job="commercial-entitlements", state="acquired"})
+              /
+            (sum by (domain, service, environment, pool, instance) (platform_db_pool_max_connections{job="commercial-entitlements"}) > 0)
+          ) > 0.9
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "commercial-entitlements Postgres pool {{ $labels.pool }} over 90%"
+          description: "{{ $value | humanizePercentage }} of connections checked out on busiest replica."
+
+  # ── Business ─────────────────────────────────────────────────────────────────
+  - name: commercial_entitlements_business
+    rules:
+      - alert: CommercialEntitlementsRecomputeErrors
+        expr: |
+          sum by (domain, service, environment) (
+            rate(commercial_entitlements_recompute_total{outcome="error"}[5m])
+          ) > 0
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "commercial-entitlements entitlement recompute errors elevated"
+          description: "{{ $value | humanize }}/s recompute operations failing."
+
+  # ── Compliance ───────────────────────────────────────────────────────────────
+  - name: commercial_entitlements_compliance
+    rules:
+      - alert: CommercialEntitlementsRLSCrossTenantAccess
+        expr: |
+          increase(commercial_entitlements_rls_violations_total{violation_type="cross_tenant_access"}[5m]) > 0
+        labels:
+          severity: critical
+          team: platform
+          compliance: tenant-isolation
+        annotations:
+          summary: "RLS blocked a cross-tenant access attempt in commercial-entitlements"
+          description: "Investigate rls_violation_log immediately for user_id, session_role, client_addr."

@@ -1,0 +1,19 @@
+flowchart TD
+    subgraph keys["Valkey Key Namespace"]
+        K1["ent:tenant:{tenantID}\nEffective set for a tenant\nTTL 300s\nWritten by: RecomputeEntitlements\nRead by: GetEffectiveSet\nInvalidated by: any override/addon/trial mutation"]
+        K2["ent:plans:{planCode}\nPlan definition from IAM Catalog\nTTL 600s\nWritten by: catalog-refresh binary\nRead by: RecomputeEntitlements\nInvalidated by: catalog-refresh"]
+        K3["quota:tenant:{tenantID}:{limitKey}\nComputed quota ceiling (plan + addons)\nTTL 330s\nWritten by: RecomputeEntitlements\nRead by: drawdown check\nInvalidated by: addon grant/expire/refund"]
+        K4["quota:usage:{tenantID}:{limitKey}:{period}\nUsage counter (drawdowns in period)\nTTL = end of billing period\nWritten by: Drawdown commit\nRead by: drawdown check (ENT-INV-3)\nInvalidated by: quota-reset reconciler"]
+    end
+
+    subgraph invariants["Cache Invariants"]
+        INV["CACHE-1: Valkey is NEVER a correctness dependency.\nAll writes go to Postgres first (RunInTx).\nCache errors degrade gracefully — service answers from DB.\nCold cache: first request hits Postgres, warms Valkey.\nNo RLS on Valkey — tenant isolation is enforced at the\nrepository layer before any cache write."]
+    end
+
+    subgraph invalidation["Invalidation paths"]
+        I1["Override set/remove/expire → delete ent:tenant:{id}"]
+        I2["Addon grant/expire/refund → delete quota:tenant:{id}:{key}"]
+        I3["Billing event (plan change) → delete ent:tenant:{id} + ent:plans:{code}"]
+        I4["Trial assign/end → delete ent:tenant:{id}"]
+        I5["Quota reset reconciler → delete quota:usage:{id}:*:{period}"]
+    end

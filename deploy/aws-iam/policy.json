@@ -1,0 +1,77 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PublishEntitlementsEvents",
+      "Effect": "Allow",
+      "Action": [
+        "sns:Publish",
+        "sns:GetTopicAttributes"
+      ],
+      "Resource": [
+        "${entitlements_events_topic_arn}"
+      ]
+    },
+    {
+      "Sid": "ConsumeInboundQueues",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl",
+        "sqs:ChangeMessageVisibility",
+        "sqs:SendMessage"
+      ],
+      "Resource": [
+        "${billing_entitlements_queue_arn}",
+        "${billing_entitlements_queue_dlq_arn}",
+        "${tenant_entitlements_queue_arn}",
+        "${tenant_entitlements_queue_dlq_arn}",
+        "${catalog_entitlements_queue_arn}",
+        "${catalog_entitlements_queue_dlq_arn}",
+        "${membership_entitlements_queue_arn}",
+        "${membership_entitlements_queue_dlq_arn}"
+      ]
+    },
+    {
+      "Sid": "GlueSchemaRegistryReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "glue:GetRegistry",
+        "glue:GetSchema",
+        "glue:GetSchemaVersion",
+        "glue:GetSchemaByDefinition",
+        "glue:ListSchemas",
+        "glue:QuerySchemaVersionMetadata"
+      ],
+      "Resource": [
+        "${entitlements_registry_arn}",
+        "${entitlements_registry_arn}/*",
+        "${entitlements_schema_arn_prefix}/*"
+      ]
+    },
+    {
+      "Sid": "CloudWatchMetrics",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:PutMetricData"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "cloudwatch:namespace": "BCBP/CommercialEntitlements"
+        }
+      }
+    },
+    {
+      "Sid": "CloudWatchLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:${aws_region}:${aws_account_id}:log-group:/aws/eks/*:*"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+graph TD
+    subgraph cmd["Composition Roots — cmd/ (six binaries, one image)"]
+        server["server/main.go\nwire all dependencies\npgcommon.NewPool with GUCProvider = GUCSetFromContext (RLS-6) + BYPASSRLS sysPool\nRUN_MIGRATIONS false (Helm hook owns it)\nrouter registration + gincommon.ObservabilityMiddlewares\n/metrics = gincommon.MetricsHandler() on METRICS_PORT (9090)\n4 SQS consumers via sqspipeline:\n  billing-entitlements-q · tenant-entitlements-q\n  catalog-entitlements-q · membership-entitlements-q\nRoutingPublisher (1 SNS topic: commercial-entitlements-events, GlueCodec)\noutbox runner + auditoutbox runner\nTemporal client starter (optional, skipped when TEMPORAL_HOST_PORT unset)\ngraceful shutdown: SIGTERM → HTTP + SQS drain (parallel, ≤30s) → outbox (30s) → pools\nterminationGracePeriodSeconds=75"]
+        reconciler["reconciler/main.go\nsingle binary, --job=<name> dispatch\nselects one of 5 CronJobs:\n  override-expiry · addon-expiry\n  outbox-prune · processed-events-prune\n  quota-reset\nRECONCILER_STATEMENT_TIMEOUT (2m) on both pools\nmetrics pushed to PROMETHEUS_PUSHGATEWAY_URL"]
+        worker["worker/main.go\nTemporal workflow worker\ncatalog fan-out workflow"]
+        migrate["migrate/main.go\npgmigrate.Run() against MIGRATION_DATABASE_URL\nHelm pre-install/pre-upgrade hook"]
+        expiry["expiry/main.go\nstandalone addon/override expiry sweep\ncan run as a one-shot job"]
+        catalogrefresh["catalog-refresh/main.go\npulls IAM plan catalog into Postgres + Valkey\ncalls IAM_CATALOG_BASE_URL"]
+    end
+
+    subgraph inbound["Inbound Adapters — internal/adapter/inbound/"]
+        http["http/\nGin router + handlers\ngincommon.ObservabilityMiddlewares\nRLS tenant binding (BindPathTenant)\nrequest/response DTOs"]
+        sqspipeline["sqspipeline/\nplatform-events GlueDecodeCodec\nDLQ router (EVT-14/15 guards)\nconsumer span injection\nconsumed-schema validation\ninbox.ProcessOnce claim"]
+        consumers["consumer/\nbilling_consumer.go\ntenant_consumer.go\ncatalog_consumer.go\nmembership_consumer.go\ndedup.go"]
+    end
+
+    subgraph core["Core — internal/core/"]
+        domain["domain/\nEntitlementSnapshot · Override · QuotaAddon\nQuotaAddonDrawdown · QuotaAddonShortfall\nTenantTrialAssignment · TrialEntitlementOverride\nPlan · EffectiveSet · LimitValue\nDomainEvent · InboundEvents"]
+        service["service/\nEntitlementsService\nDrawdownService\nOverrideService\nTrialService\nShortfallService"]
+        port["port/\ninbound.go — service interfaces\noutbound.go — repository/cache/publisher interfaces\ncontext.go — tx/event-publisher context keys"]
+    end
+
+    subgraph outbound["Outbound Adapters — internal/adapter/outbound/"]
+        postgres["postgres/\nEntitlementRepository\nOverrideRepository\nAddonRepository\nShortfallRepository\nTrialRepository\nIdempotencyRepository (inbox.NewStore)\nplan_catalog_cache table\npgadapter.DSNFromEnv / MigrationDSNFromEnv"]
+        valkey["valkey/\nValkeyCache\neff-set: ent:tenant:{id}\nplan-def: ent:plans:{code}\nquota-ceil: quota:tenant:{id}:{key}\nusage-ctr: quota:usage:{id}:{key}:{period}"]
+        eventbus["eventbus/\nPublisher (port.EventPublisher)\nEnqueueOrdered → outbox_events\nGlueCodec (commercial-entitlements-events)"]
+        iamclient["iamclient/\nIAMCatalogClient\ncalls IAM_CATALOG_BASE_URL\nplan catalog fetch"]
+        metricsadapter["metrics/\nbusiness.go — Register, helpers, prewarm\nregistry.go — Tier 3 commercial_entitlements_* collectors\nauditrecorder/"]
+    end
+
+    http --> service
+    sqspipeline --> consumers
+    consumers --> service
+    service --> domain
+    service --> port
+    port --> postgres
+    port --> valkey
+    port --> eventbus
+    port --> iamclient
+    service --> metricsadapter
+    postgres -.->|platform-pgcommon| db[(PostgreSQL 16)]
+    valkey -.->|rueidis| vk[(Valkey 7)]
+    eventbus -.->|platform-events outbox| db
+    eventbus -.->|outbox runner → SNS| sns[(SNS\ncommercial-entitlements-events)]
+    sqspipeline -.->|platform-events SQS| sqs[(SQS\n4 queues)]

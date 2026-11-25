@@ -1,4 +1,24 @@
-replicaCount: 3
+# Prod environment overrides for commercial-entitlements.
+# Merge with base values.yaml: helm upgrade ... -f values.yaml -f values-prod.yaml
+
+env:
+  APP_ENV: "prod"
+  LOG_LEVEL: "info"
+  OTEL_TRACES_SAMPLER_RATIO: "0.1"
+
+# Admit callers in prod.
+# Istio required in prod — PeerAuthentication STRICT mode must be active in
+# the commercial namespace before enabling. Both NetworkPolicy (L3/L4) and
+# AuthorizationPolicy (L7 mTLS) are enforced together.
+callers:
+  enabled: true
+  istio:
+    enabled: true
+    trustDomain: cluster.local
+    existingCallerNamespaces:
+      - commercial      # commercial namespace: same-namespace services
+      - gateway         # Ingress controller / Envoy Gateway data plane
+      - observability   # Prometheus scrape (port 9090 only)
 
 resources:
   requests:
@@ -6,9 +26,4 @@ resources:
     memory: "256Mi"
   limits:
     cpu: "1000m"
-    memory: "1Gi"
-
-env:
-  APP_ENV: prod
-  RUN_MIGRATIONS: "false"
-  DOCS_ENABLED: "false"
+    memory: "512Mi"

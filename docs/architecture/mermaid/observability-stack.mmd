@@ -1,0 +1,34 @@
+flowchart TD
+    subgraph service["commercial-entitlements pod"]
+        APP["application code\ncommercial_entitlements_* Tier 3 metrics\n(registry.go, business.go)"]
+        GINCOMMON["platform-gincommon\nplatform_http_* (HTTP layer)\nplatform_build_info, platform_library_info\nMetricsHandler() on :9090/metrics"]
+        EVENTS["platform-events/v2\nplatform_messages_*, platform_outbox_*\nplatform_dlq_messages_total\nplatform_duplicate_messages_total"]
+        PGCOMMON["platform-pgcommon/v2\nplatform_db_pool_*, platform_db_queries_total\nplatform_db_query_duration_seconds"]
+        AUDIT["platform-audit\nplatform_audit_* (audit delivery, lag, liveness)"]
+        OTEL["OTel SDK\nOTLP gRPC → otel-collector:4317\ntrace_id in every structured log"]
+        ZAP["platform-gincommon logger (Zap)\nJSON structured logs on stdout\nLOG_LEVEL, LOG_SAMPLING"]
+    end
+
+    subgraph reconciler["cmd/reconciler pod (CronJob)"]
+        REC_APP["reconciler jobs\ncommercial_entitlements_* Tier 3 counters"]
+        PUSHGW["Prometheus Pushgateway\nPROMETHEUS_PUSHGATEWAY_URL\ngrouped by cronjob label"]
+    end
+
+    SCRAPE["Prometheus\n(ServiceMonitor → :9090/metrics)\nscrape interval 30s"]
+    RULES["PrometheusRule\napp-alerts.yml\nslo-rules.yml\nplatform-audit-rules.yml"]
+    AM["Alertmanager\nseverity: page → PagerDuty\nseverity: ticket/warning → Jira"]
+    GRAFANA["Grafana\nbusiness-health.json\ndata-integrity.json\nhttp-latency.json\nplatform-audit.json"]
+    TEMPO["Tempo\ntrace_id lookup"]
+
+    APP --> GINCOMMON
+    EVENTS --> GINCOMMON
+    PGCOMMON --> GINCOMMON
+    AUDIT --> GINCOMMON
+    GINCOMMON -->|/metrics| SCRAPE
+    REC_APP --> PUSHGW
+    PUSHGW --> SCRAPE
+    SCRAPE --> RULES
+    RULES --> AM
+    SCRAPE --> GRAFANA
+    OTEL -->|OTLP| TEMPO
+    ZAP -->|stdout| GRAFANA

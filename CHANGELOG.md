@@ -1,11 +1,33 @@
 # Changelog
 
-All notable changes to `commercial-entitlements` are documented here.
-Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+All notable changes to this service are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning aligned with SemVer.
+
+This service has never been deployed to any environment — there is no released version yet, so everything lives under `[Unreleased]`. Because of that, this file tracks only what is currently true and what is still outstanding, not a phase-by-phase build history; the full development diary is available via `git log` if it's ever needed.
 
 ## [Unreleased]
 
 ### Fixed
+
+- **E-3 read-race fix: conversion-revert recompute** — `membership-entitlements-q`
+  consumer now subscribes to `TenantStateChanged{cause:TrialReactivated}` from
+  iam-org-membership instead of relying on Realm Provisioner's `TrialReactivated`
+  event. Because iam-org-membership publishes via transactional outbox *after* its
+  own DB commit, an I-17 call on receipt always returns the post-revert `trial` state.
+  Dead `TenantConverted` and `TenantOffboarded` case handlers removed from
+  `membership_consumer.go` — those events arrive on `tenant-entitlements-q` from
+  Realm Provisioner, not from iam-org-membership. `dedup.go` `knownEventTypes`
+  updated accordingly.
+
+- **Stale env var names in LLD §14 config table** — `SNS_TOPIC_ARN` →
+  `SNS_TOPIC_ENTITLEMENTS_ARN`; `SQS_BILLING_QUEUE_URL` →
+  `SQS_BILLING_ENTITLEMENTS_QUEUE_URL`; `SQS_TENANT_QUEUE_URL` →
+  `SQS_TENANT_ENTITLEMENTS_QUEUE_URL`; `SQS_CATALOG_QUEUE_URL` →
+  `SQS_CATALOG_ENTITLEMENTS_QUEUE_URL`; `SQS_MEMBERSHIP_QUEUE_URL` →
+  `SQS_MEMBERSHIP_ENTITLEMENTS_QUEUE_URL`. Names now match `.env-example` and
+  `cmd/server/main.go`.
+
+- **ENT-D7 decision note** — corrected incorrect file reference from
+  `membership_consumer.go → handleConverted` to `tenant_consumer.go → handleOffboard`.
 
 - **Consumer event names (BL-OQ-14 / billing gap)** — Billing consumer was
   listening for `BillingSubscriptionActivated`, `BillingSubscriptionUpdated`,
@@ -45,12 +67,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `InboundTenantStateChangedEvent` domain type (`domain/event.go`) — payload for
+  iam-org-membership's `TenantStateChanged` event (fields: `tenant_id`, `status`,
+  `previous_status`, `plan`, `previous_plan`, `changed_at`, `cause`).
+
 - `ErrBillingRefAlreadyClaimed` sentinel error in `domain/errors.go`.
 - Migration `000002_addon_billing_ref` — adds `billing_ref TEXT` column and
   `uq_quota_addons_billing_ref` partial unique index to `quota_addons`
   (E-1 / BL-OQ-4).
 
 ### Changed
+
+- LLD updated to rev 1.20: `TenantStateChanged` consumer row added (§7.2),
+  EVT-10 invariant added (§7.7), package layout updated, ENV var names corrected
+  (§14), ENT-D7 file reference corrected, AsyncAPI bumped to v1.4.0.
 
 - LLD `commercial-lld-entitlements-service.md` updated to rev 1.19: ENUM
   rename, `quota_addons` DDL alignment, migration 000002 documented,

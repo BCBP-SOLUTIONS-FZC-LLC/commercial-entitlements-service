@@ -1,0 +1,35 @@
+sequenceDiagram
+    autonumber
+    participant H as HTTP Handler
+    participant SVC as EntitlementsService
+    participant REPO as EntitlementRepository
+    participant PUB as eventbus.Publisher
+    participant DB as PostgreSQL<br/>(in transaction)
+    participant OUTBOX as outbox_events<br/>(same DB)
+    participant RUNNER as outbox.Runner
+    participant SNS as SNS<br/>commercial-entitlements-events
+
+    H->>SVC: RecomputeEntitlements(ctx, tenantID, cause)
+    SVC->>REPO: begin RunInTx(ctx)
+    REPO->>DB: SELECT … entitlement_snapshots (record_version for CONC-1)
+    DB-->>REPO: current snapshot
+    SVC->>SVC: computeNewSnapshot(plan, addons, overrides, trial)
+    alt snapshot changed (ENT-INV-6)
+        SVC->>REPO: UpsertSnapshot(ctx, newSnapshot)<br/>WHERE record_version = current (CONC-1)
+        REPO->>DB: INSERT … ON CONFLICT DO UPDATE<br/>only if incoming_version > stored_version (ENT-INV-1)
+        SVC->>PUB: Publish(ctx, TenantEntitlementsChanged)
+        PUB->>OUTBOX: EnqueueOrdered(tx, event, orderingKey=tenantID)<br/>(advisory lock per key; plain JSON; EVT-10)
+        REPO->>DB: COMMIT (snapshot + outbox atomic)
+        SVC->>SVC: invalidate cache ent:tenant:{tenantID}
+    else no change (ENT-INV-6)
+        Note over SVC: return early — no DB write, no event
+    end
+    SVC-->>H: result
+
+    loop poll interval (OUTBOX_POLL_INTERVAL=500ms)
+        RUNNER->>OUTBOX: claim next batch (lease = OUTBOX_CLAIM_LEASE)
+        RUNNER->>RUNNER: GlueCodec.Encode(event, schemaVersion)
+        RUNNER->>SNS: sns:Publish(TopicArn, envelope)
+        SNS-->>RUNNER: MessageId
+        RUNNER->>OUTBOX: mark_published
+    end

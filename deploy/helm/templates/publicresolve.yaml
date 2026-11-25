@@ -1,0 +1,68 @@
+{{- $httpRouteEnabled := and .Values.ingress.enabled (eq (.Values.ingress.type | default "Ingress") "HTTPRoute") }}
+{{- if and $httpRouteEnabled .Values.ingress.publicResolve.enabled }}
+{{- if le (.Values.ingress.publicResolve.rateLimit.requests | int) 0 }}
+{{- fail "ingress.publicResolve.rateLimit.requests must be > 0" }}
+{{- end }}
+# Dedicated HTTPRoute + rate limit for the anonymous public-resolve endpoint.
+# This route bypasses the Gateway-level JWT + ext_authz (SecurityPolicy does
+# NOT use mergeType here — it replaces the gateway policy on this route only).
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "commercial-entitlements.fullname" . }}-public
+  labels:
+    {{- include "commercial-entitlements.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.ingress.gateway.name }}
+      {{- with .Values.ingress.gateway.namespace }}
+      namespace: {{ . }}
+      {{- end }}
+      {{- with .Values.ingress.gateway.sectionName }}
+      sectionName: {{ . }}
+      {{- end }}
+  {{- if .Values.ingress.hosts }}
+  hostnames:
+    {{- range .Values.ingress.hosts }}
+    - {{ .host | quote }}
+    {{- end }}
+  {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /api/v1/public/tenants/resolve
+          method: GET
+      backendRefs:
+        - name: {{ include "commercial-entitlements.fullname" . }}
+          port: {{ .Values.service.port }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: {{ include "commercial-entitlements.fullname" . }}-public
+  labels:
+    {{- include "commercial-entitlements.labels" . | nindent 4 }}
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: {{ include "commercial-entitlements.fullname" . }}-public
+  {{- if .Values.ingress.publicResolve.rateLimit.mergeType }}
+  mergeType: {{ .Values.ingress.publicResolve.rateLimit.mergeType }}
+  {{- end }}
+  rateLimit:
+    type: Global
+    global:
+      rules:
+        {{- range .Values.ingress.publicResolve.rateLimit.sourceCIDRs }}
+        - clientSelectors:
+            - sourceCIDR:
+                type: Distinct
+                value: {{ . | quote }}
+          limit:
+            requests: {{ $.Values.ingress.publicResolve.rateLimit.requests }}
+            unit: {{ $.Values.ingress.publicResolve.rateLimit.unit }}
+        {{- end }}
+{{- end }}

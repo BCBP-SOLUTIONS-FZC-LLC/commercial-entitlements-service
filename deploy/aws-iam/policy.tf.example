@@ -1,0 +1,73 @@
+# Terraform snippet — attach the reference policy in deploy/aws-iam/policy.json to
+# an IRSA role. This file is *illustrative*, not applied by the application.
+# Platform Terraform owns the authoritative version of this resource.
+
+# 1. Trust policy — the ServiceAccount `commercial-entitlements` in namespace `commercial`
+#    assumes this role via IRSA.
+data "aws_iam_policy_document" "commercial_entitlements_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:commercial:commercial-entitlements"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "commercial_entitlements" {
+  name               = "commercial-entitlements"
+  assume_role_policy = data.aws_iam_policy_document.commercial_entitlements_trust.json
+}
+
+# 2. Permission policy — templated from deploy/aws-iam/policy.json.
+resource "aws_iam_policy" "commercial_entitlements" {
+  name = "commercial-entitlements"
+  policy = templatefile("${path.module}/policy.json", {
+    # SNS outbound topic.
+    entitlements_events_topic_arn = aws_sns_topic.commercial_entitlements_events.arn
+
+    # SQS inbound queues + their DLQs.
+    billing_entitlements_queue_arn        = aws_sqs_queue.billing_entitlements.arn
+    billing_entitlements_queue_dlq_arn    = aws_sqs_queue.billing_entitlements_dlq.arn
+    tenant_entitlements_queue_arn         = aws_sqs_queue.tenant_entitlements.arn
+    tenant_entitlements_queue_dlq_arn     = aws_sqs_queue.tenant_entitlements_dlq.arn
+    catalog_entitlements_queue_arn        = aws_sqs_queue.catalog_entitlements.arn
+    catalog_entitlements_queue_dlq_arn    = aws_sqs_queue.catalog_entitlements_dlq.arn
+    membership_entitlements_queue_arn     = aws_sqs_queue.membership_entitlements.arn
+    membership_entitlements_queue_dlq_arn = aws_sqs_queue.membership_entitlements_dlq.arn
+
+    # Glue Schema Registry.
+    entitlements_registry_arn        = aws_glue_registry.commercial_entitlements_events.arn
+    entitlements_schema_arn_prefix   = "arn:aws:glue:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:schema/${aws_glue_registry.commercial_entitlements_events.registry_name}"
+
+    aws_region     = data.aws_region.current.name
+    aws_account_id = data.aws_caller_identity.current.account_id
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "commercial_entitlements" {
+  role       = aws_iam_role.commercial_entitlements.name
+  policy_arn = aws_iam_policy.commercial_entitlements.arn
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Schema-gov CI role (register step) — NOT attached to the pod role above.
+# The pod is a read-only Glue consumer. Schema registration happens in the
+# schema-registry GitHub Actions workflow, which assumes a separate CI role.
+#
+# CI-only actions (do NOT add to the pod policy):
+#   glue:CreateSchema
+#   glue:RegisterSchemaVersion
+#   glue:UpdateSchema
+#   glue:PutSchemaVersionMetadata
+# ─────────────────────────────────────────────────────────────────────────────

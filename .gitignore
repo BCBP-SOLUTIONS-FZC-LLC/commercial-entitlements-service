@@ -8,30 +8,14 @@
 *.so
 *.dylib
 
-# Compiled service binaries (produced by make build / go build)
-bin/
-server
-reconciler
-worker
-migrate
-expiry
-catalog-refresh
-
 # Test binary, built with `go test -c`
 *.test
 
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*
-!coverage.go
 *.coverprofile
 profile.cov
-
-# .coverage/ holds per-suite profiles written by test-ci; track the directory
-# via .gitkeep but ignore the generated files.
-.coverage/*.out
-.coverage/*.raw
-.coverage/*.exitcode
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
@@ -42,7 +26,40 @@ go.work.sum
 
 # env file
 .env
+.go_private_token
+
+# Build outputs
+bin/
+
+# .coverage/ holds per-suite profiles written by test-ci; track the directory
+# via .gitkeep but ignore the generated files.
+.coverage/*.out
+.coverage/*.raw
+.coverage/*.exitcode
+
+# Root-anchored service binaries. A bare name (no leading slash) also matches
+# the cmd/<name>/ *directory* at any depth, silently hiding real source files
+# from git. The /name form matches only a root-level binary (e.g. from
+# `go build ./cmd/server` run without -o from the repo root).
+/server
+/reconciler
+/worker
+/migrate
+/expiry
+/catalog-refresh
+
+# macOS
+.DS_Store
 
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Claude Code agent worktrees (temporary, not project code)
+.claude/worktrees/
+
+# Staged PascalCase Glue schema copies (from make schema-register / CI)
+.tmp/
+
+# Temporary files
+.tmp-lld.md

@@ -1,0 +1,96 @@
+{
+  "title": "commercial-entitlements — Business Health",
+  "uid": "commercial-entitlements-business",
+  "tags": ["commercial", "entitlements", "business"],
+  "schemaVersion": 38,
+  "panels": [
+    {
+      "title": "Recompute operations / sec",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(commercial_entitlements_recompute_total{environment=\"$environment\"}[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "title": "Recompute duration p95 (seconds)",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, cause) (rate(commercial_entitlements_recompute_duration_seconds_bucket{environment=\"$environment\"}[5m])))",
+          "legendFormat": "p95 {{cause}}"
+        }
+      ]
+    },
+    {
+      "title": "Drawdown operations / sec",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(commercial_entitlements_drawdown_operations_total{environment=\"$environment\"}[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "title": "Addon grant/expire / sec",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "rate(commercial_entitlements_addon_grant_total{environment=\"$environment\"}[5m])",
+          "legendFormat": "grant"
+        },
+        {
+          "expr": "rate(commercial_entitlements_addon_expire_total{environment=\"$environment\"}[5m])",
+          "legendFormat": "expire"
+        }
+      ]
+    },
+    {
+      "title": "Override set/remove/expire / sec",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (limit_key) (rate(commercial_entitlements_override_set_total{environment=\"$environment\"}[5m]))",
+          "legendFormat": "set {{limit_key}}"
+        },
+        {
+          "expr": "rate(commercial_entitlements_override_expire_total{environment=\"$environment\"}[5m])",
+          "legendFormat": "expire"
+        }
+      ]
+    },
+    {
+      "title": "Shortfall raised / resolved / sec",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (disposition) (rate(commercial_entitlements_shortfall_raised_total{environment=\"$environment\"}[5m]))",
+          "legendFormat": "raised {{disposition}}"
+        },
+        {
+          "expr": "rate(commercial_entitlements_shortfall_resolved_total{environment=\"$environment\"}[5m])",
+          "legendFormat": "resolved"
+        }
+      ]
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "type": "custom",
+        "options": [{"value": "prod"}, {"value": "staging"}, {"value": "dev"}],
+        "current": {"value": "prod"}
+      }
+    ]
+  }
+}

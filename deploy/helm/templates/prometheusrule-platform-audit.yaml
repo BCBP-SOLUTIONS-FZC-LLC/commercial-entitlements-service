@@ -1,0 +1,47 @@
+{{- /*
+platform-audit's reference rules (recording, SLO and alerts for the
+pending_audit_entries outbox Runner, platform-audit LLD §11.4), loaded
+alongside this service's own PrometheusRule. The rule bodies are vendored
+verbatim in files/platform-audit.rules.yml; only the template parameters are
+filled here: <service> = env.APP_NAME, <environment> = env.APP_ENV,
+<mode> = outbox_deliver (this service runs the outbox Runner only).
+deploy/monitoring/platform-audit-rules.yml is the raw twin.
+*/ -}}
+{{- if .Values.serviceMonitor.enabled }}
+{{- $rules := .Files.Get "files/platform-audit.rules.yml" | fromYaml }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "commercial-entitlements.fullname" . }}-platform-audit
+  labels:
+    {{- include "commercial-entitlements.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    {{- range $rules.groups }}
+    - name: {{ .name }}
+      {{- if .interval }}
+      interval: {{ .interval }}
+      {{- end }}
+      rules:
+        {{- range .rules }}
+        - {{- if .record }}
+          record: {{ .record }}
+          expr: {{ .expr | toYaml | nindent 10 }}
+          {{- else }}
+          alert: {{ .alert }}
+          expr: |
+            {{- .expr | replace "<service>" ($.Values.env.APP_NAME | default "commercial-entitlements") | replace "<environment>" ($.Values.env.APP_ENV | default "prod") | replace "<mode>" "outbox_deliver" | nindent 12 }}
+          {{- if .for }}
+          for: {{ .for }}
+          {{- end }}
+          labels:
+            {{- toYaml .labels | nindent 12 }}
+          annotations:
+            {{- toYaml .annotations | nindent 12 }}
+          {{- end }}
+        {{- end }}
+    {{- end }}
+{{- end }}

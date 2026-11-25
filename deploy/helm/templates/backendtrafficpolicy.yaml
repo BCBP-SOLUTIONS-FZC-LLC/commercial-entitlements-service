@@ -1,0 +1,27 @@
+{{- $httpRouteEnabled := and .Values.ingress.enabled (eq (.Values.ingress.type | default "Ingress") "HTTPRoute") }}
+{{- if and $httpRouteEnabled .Values.ingress.rateLimit.enabled }}
+# Envoy Gateway BackendTrafficPolicy — coarse gateway-level rate limit for
+# the main HTTPRoute. The in-process per-user token bucket stays active
+# regardless. Requires Envoy Gateway global rate-limit service (Redis).
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: {{ include "commercial-entitlements.fullname" . }}
+  labels:
+    {{- include "commercial-entitlements.labels" . | nindent 4 }}
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: {{ include "commercial-entitlements.fullname" . }}
+  {{- if .Values.ingress.rateLimit.mergeType }}
+  mergeType: {{ .Values.ingress.rateLimit.mergeType }}
+  {{- end }}
+  rateLimit:
+    type: Global
+    global:
+      rules:
+        - limit:
+            requests: {{ .Values.ingress.rateLimit.requestsPerUnit }}
+            unit: {{ .Values.ingress.rateLimit.unit }}
+{{- end }}

@@ -1,44 +1,72 @@
-{{- range $name, $cj := .Values.cronjobs }}
+{{- range $key, $cj := .Values.cronjobs }}
 ---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ include "commercial-entitlements.fullname" $ }}-{{ $name }}
+  name: {{ include "commercial-entitlements.fullname" $ }}-{{ $key }}
   labels:
     {{- include "commercial-entitlements.labels" $ | nindent 4 }}
-    cronjob: {{ $name }}
+    app.kubernetes.io/component: reconciler
+    reconciler.commercial/job: {{ $cj.job }}
 spec:
   schedule: {{ $cj.schedule | quote }}
-  suspend: {{ $cj.suspend | default false }}
   concurrencyPolicy: Forbid
-  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
   successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      backoffLimit: 2
+      activeDeadlineSeconds: 900
       template:
         spec:
-          serviceAccountName: {{ include "commercial-entitlements.serviceAccountName" $ }}
-          restartPolicy: OnFailure
+          restartPolicy: Never
+          {{- with $.Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          serviceAccountName: {{ $.Values.serviceAccount.name }}
+          securityContext:
+            {{- toYaml $.Values.podSecurityContext | nindent 12 }}
           containers:
             - name: reconciler
-              image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag | default $.Chart.AppVersion }}"
+              image: "{{ $.Values.image.repository }}:{{ include "commercial-entitlements.imageTag" $ }}"
               imagePullPolicy: {{ $.Values.image.pullPolicy }}
-              command: ["/app/reconciler"]
+              command: ["/reconciler"]
               args: ["--job={{ $cj.job }}"]
-              envFrom:
-                - configMapRef:
-                    name: {{ include "commercial-entitlements.fullname" $ }}-config
-                - secretRef:
-                    name: {{ $.Values.secretRef }}
+              securityContext:
+                {{- toYaml $.Values.securityContext | nindent 16 }}
               env:
-                - name: RECONCILER_JOB
-                  value: {{ $cj.job | quote }}
+                {{- range $k, $v := $.Values.env }}
+                - name: {{ $k }}
+                  value: {{ $v | quote }}
+                {{- end }}
+                {{- $secretName := default (printf "%s-secrets" (include "commercial-entitlements.fullname" $)) $.Values.existingSecret }}
+                {{- range $.Values.envFromSecret }}
+                - name: {{ . }}
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $secretName }}
+                      key: {{ . }}
+                {{- end }}
               resources:
                 requests:
-                  cpu: "50m"
-                  memory: "64Mi"
+                  cpu: 100m
+                  memory: 128Mi
                 limits:
-                  cpu: "200m"
-                  memory: "256Mi"
+                  cpu: 500m
+                  memory: 256Mi
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}
+          {{- with $.Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
 {{- end }}

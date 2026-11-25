@@ -1,0 +1,31 @@
+{{- $httpRouteEnabled := and .Values.ingress.enabled (eq (.Values.ingress.type | default "Ingress") "HTTPRoute") }}
+{{- if and $httpRouteEnabled .Values.ingress.securityPolicy.enabled .Values.ingress.securityPolicy.cors.enabled }}
+# Envoy Gateway SecurityPolicy — attaches CORS to the HTTPRoute at the
+# gateway layer. Requires Envoy Gateway v1.8+ (mergeType field;
+# gateway.envoyproxy.io/v1alpha1 CRD).
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ include "commercial-entitlements.fullname" . }}
+  labels:
+    {{- include "commercial-entitlements.labels" . | nindent 4 }}
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: {{ include "commercial-entitlements.fullname" . }}
+  {{- if .Values.ingress.securityPolicy.mergeType }}
+  mergeType: {{ .Values.ingress.securityPolicy.mergeType }}
+  {{- end }}
+  cors:
+    allowOrigins:
+      {{- range .Values.ingress.securityPolicy.cors.allowOrigins }}
+      - type: Exact
+        value: {{ . | quote }}
+      {{- end }}
+    allowMethods:
+      {{- toYaml .Values.ingress.securityPolicy.cors.allowMethods | nindent 6 }}
+    allowHeaders:
+      {{- toYaml .Values.ingress.securityPolicy.cors.allowHeaders | nindent 6 }}
+    maxAge: {{ .Values.ingress.securityPolicy.cors.maxAge | quote }}
+{{- end }}

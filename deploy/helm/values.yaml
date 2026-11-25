@@ -1,79 +1,341 @@
+# Default values for commercial-entitlements.
+# LLD deployment topology: HPA 2-8, 5 CronJobs dispatched by cmd/reconciler --job=<name>.
+
 replicaCount: 2
 
 image:
   repository: ghcr.io/bcbp-solutions-fzc-llc/commercial-entitlements
-  tag: ""
   pullPolicy: IfNotPresent
+  tag: ""  # overridden by CI to the git SHA
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: commercial-entitlements
+  # Annotations for IRSA on EKS:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/commercial-entitlements
+  # When IRSA is configured, remove AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+  # from envFromSecret / secretValues and rely on the pod's ambient IAM role.
+  annotations: {}
 
 service:
   type: ClusterIP
   port: 8080
   metricsPort: 9090
 
+# HPA — 2-8 replicas.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 75
+  targetRPSPerReplica: 500
+
 resources:
   requests:
     cpu: "100m"
-    memory: "128Mi"
+    memory: "256Mi"
   limits:
     cpu: "500m"
     memory: "512Mi"
 
+# Non-secret environment variables — mirrors .env-example.
+# Platform library vars (PG_*, OTEL_*, LOG_*, OUTBOX_*) are read by
+# platform-pgcommon, platform-gincommon, and platform-events respectively.
 env:
-  APP_NAME: commercial-entitlements
-  APP_ENV: production
+  APP_NAME: "commercial-entitlements"
+  # APP_ENV is also the observability environment label; must be one of
+  # local|dev|test|staging|prod (no aliases — "production" fails startup).
+  APP_ENV: "prod"
+  # Domain is hardcoded in main.go (gincommon.Config.Domain = "commercial").
   APP_PORT: "8080"
   METRICS_PORT: "9090"
-  RUN_MIGRATIONS: "false"
-  AWS_REGION: ap-south-1
+  BUILD_VERSION: ""   # overridden by deployment.yaml from imageTag
+
+  # Postgres — read by platform-pgcommon ConfigFromEnv / pgadapter.DSNFromEnv.
+  PG_HOST: ""
+  PG_PORT: "5432"
+  PG_USER: "commercial_entitlements_app"
+  PG_DBNAME: "commercial_entitlements"
+  PG_SSLMODE: "require"
+  PG_MAX_CONNS: "20"
+  PG_MIN_CONNS: "0"
+  PG_BOUNCER_MODE: "true"
+  PG_STATEMENT_TIMEOUT: "5s"
+
+  # AWS region — read directly by cmd/server/main.go via aws-sdk-go-v2.
+  AWS_REGION: "ap-south-1"
+
+  # Glue registry name (non-secret — identifies the registry, not an ARN).
+  # Read in cmd/server/main.go: os.Getenv("GLUE_REGISTRY_ENTITLEMENTS_NAME").
+  GLUE_REGISTRY_ENTITLEMENTS_NAME: "commercial-entitlements-events"
+
+  # Outbox runner — read by platform-events eventcfg.RunnerConfigFromEnv.
   OUTBOX_POLL_INTERVAL: "500ms"
   OUTBOX_CONCURRENCY: "4"
   OUTBOX_CLAIM_LEASE: "10m"
+  OUTBOX_RETENTION_DAYS: "8"
 
-# Secrets — reference a Kubernetes secret.
-secretRef: commercial-entitlements-secrets
+  # SQS consumer concurrency — one per consumer, read by sqspipeline.
+  SQS_BILLING_CONCURRENCY: "2"
+  SQS_TENANT_CONCURRENCY: "2"
+  SQS_CATALOG_CONCURRENCY: "2"
+  SQS_MEMBERSHIP_CONCURRENCY: "2"
 
-serviceAccount:
-  create: true
-  name: ""
-  annotations: {}
+  # processed_events retention (PE-1 strictly > 7-day SQS lifetime).
+  PROCESSED_EVENTS_TTL_DAYS: "8"
+
+  # IAM Catalog client — read by internal/adapter/outbound/iamclient.
+  IAM_CATALOG_BASE_URL: ""
+
+  # Temporal workflow worker — optional; server skips if unset.
+  # Read in cmd/server/main.go: os.Getenv("TEMPORAL_HOST_PORT").
+  TEMPORAL_HOST_PORT: ""
+
+  # Reconciler config — read by cmd/reconciler/main.go.
+  RECONCILER_TIMEOUT: "5m"
+  RECONCILER_BATCH_LIMIT: "500"
+  RECONCILER_STATEMENT_TIMEOUT: "2m"
+
+  # Prometheus pushgateway — reconciler jobs push metrics here when set.
+  PROMETHEUS_PUSHGATEWAY_URL: ""
+
+  # Docs surface — when true, Swagger UI is served at /docs.
+  DOCS_ENABLED: "false"
+
+  # Audit log delivery — platform-audit reads AUDIT_LOG_BASE_URL.
+  AUDIT_LOG_BASE_URL: ""
+  AUDIT_LOG_TIMEOUT_MS: "5000"
+
+# Env vars whose values come from a Kubernetes Secret.
+# Keys must match what the binary reads via os.Getenv / platform libs.
+envFromSecret:
+  - DATABASE_URL
+  - MIGRATION_DATABASE_URL
+  - SYSTEM_DATABASE_URL
+  - VALKEY_URL
+  - SNS_TOPIC_ENTITLEMENTS_ARN
+  - SQS_BILLING_ENTITLEMENTS_QUEUE_URL
+  - SQS_TENANT_ENTITLEMENTS_QUEUE_URL
+  - SQS_CATALOG_ENTITLEMENTS_QUEUE_URL
+  - SQS_MEMBERSHIP_ENTITLEMENTS_QUEUE_URL
+  - AWS_ACCESS_KEY_ID
+  - AWS_SECRET_ACCESS_KEY
+  - IAM_CATALOG_API_KEY
+  - DOCS_AUTH_TOKEN
+
+# existingSecret — preferred for production.
+# Set to the name of a pre-existing Kubernetes Secret whose keys match envFromSecret.
+# When set, the chart will NOT create a Secret resource; secretValues is ignored.
+existingSecret: ""
+
+rotationEpoch: "0"
+
+# secretValues — used ONLY when existingSecret is empty.
+# Pass via --set or a Helm secrets plugin (never commit real values).
+secretValues:
+  DATABASE_URL: ""
+  MIGRATION_DATABASE_URL: ""
+  SYSTEM_DATABASE_URL: ""
+  VALKEY_URL: ""
+  SNS_TOPIC_ENTITLEMENTS_ARN: ""
+  SQS_BILLING_ENTITLEMENTS_QUEUE_URL: ""
+  SQS_TENANT_ENTITLEMENTS_QUEUE_URL: ""
+  SQS_CATALOG_ENTITLEMENTS_QUEUE_URL: ""
+  SQS_MEMBERSHIP_ENTITLEMENTS_QUEUE_URL: ""
+  AWS_ACCESS_KEY_ID: ""
+  AWS_SECRET_ACCESS_KEY: ""
+  IAM_CATALOG_API_KEY: ""
+  DOCS_AUTH_TOKEN: ""
+
+# terminationGracePeriodSeconds: enough for HTTP + SQS + outbox drains + buffer.
+terminationGracePeriodSeconds: 75
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
 
 podAnnotations: {}
+podLabels: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 nodeSelector: {}
 tolerations: []
-affinity: {}
 
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 24   # 24 × 5s = 120s startup budget
+  timeoutSeconds: 3
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  initialDelaySeconds: 0
+  periodSeconds: 15
+  failureThreshold: 3
+  timeoutSeconds: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8080
+  initialDelaySeconds: 0
+  periodSeconds: 10
+  failureThreshold: 3
+  timeoutSeconds: 3
+
+# Schema migrations: pre-install/pre-upgrade hook Job runs cmd/migrate once per
+# release; the Deployment then runs with RUN_MIGRATIONS=false.
+migrations:
+  job:
+    enabled: true
+    backoffLimit: 1
+    timeout: "10m"
+    activeDeadlineSeconds: 900
+
+# CronJobs — 5 reconciler jobs matching cmd/reconciler/jobs/*.go.
+cronjobs:
+  override-expiry:
+    schedule: "0 * * * *"
+    job: override-expiry
+  addon-expiry:
+    schedule: "30 * * * *"
+    job: addon-expiry
+  outbox-prune:
+    schedule: "0 3 * * *"
+    job: outbox-prune
+  processed-events-prune:
+    schedule: "0 4 * * *"
+    job: processed-events-prune
+  quota-reset:
+    schedule: "0 0 1 * *"
+    job: quota-reset
+
+# NetworkPolicy — restricts ingress to gateway + same-namespace + monitoring.
+# Egress permits DNS, AWS (443), Postgres, Valkey, OTel, IAM Catalog (8080),
+# Temporal (7233).
 networkPolicy:
   enabled: true
-
-istio:
-  authzPolicy:
+  ingressControllerNamespaceSelector:
+    kubernetes.io/metadata.name: gateway
+  ingressControllerPodSelector: {}
+  metricsIngress:
     enabled: true
+    namespaceSelector:
+      kubernetes.io/metadata.name: observability
+    podSelector:
+      app.kubernetes.io/name: prometheus
+  additionalIngressRules: []
+  additionalEgressRules: []
 
-# Migration job (pre-install/pre-upgrade hook).
-migrate:
+# Billing Service calls commercial-entitlements for entitlement/quota data.
+# NetworkPolicy: admits pods in the billing namespace to the API port.
+# Istio AuthorizationPolicy: limits them to billing-specific routes.
+billingCaller:
   enabled: true
-  backoffLimit: 4
+  namespace: billing
+  serviceAccountName: commercial-billing
+  namespaceSelector:
+    kubernetes.io/metadata.name: billing
+  podSelector:
+    app.kubernetes.io/name: commercial-billing
 
-# CronJobs for the reconciler.
-cronjobs:
-  overrideExpiry:
-    schedule: "0 * * * *"    # every hour
-    job: override-expiry
-    suspend: false
-  addonExpiry:
-    schedule: "30 * * * *"   # offset from override
-    job: addon-expiry
-    suspend: false
-  outboxPrune:
-    schedule: "0 2 * * *"    # daily at 02:00 UTC
-    job: outbox-prune
-    suspend: false
-  processedEventsPrune:
-    schedule: "30 2 * * *"   # daily at 02:30 UTC
-    job: processed-events-prune
-    suspend: false
-  quotaReset:
-    schedule: "0 0 1 * *"    # monthly at first day 00:00 UTC
-    job: quota-reset
-    suspend: false
+# Callers admission — L7 Istio enforcement toggled per env.
+# Default false; set true in values-staging/prod.yaml once Istio is confirmed.
+callers:
+  enabled: false
+
+  istio:
+    enabled: false
+    trustDomain: cluster.local
+    # Namespaces already admitted by the base NetworkPolicy ingress rules.
+    # Required for ALLOW-policy safety.
+    existingCallerNamespaces: []
+
+# ServiceMonitor — requires kube-prometheus-stack (monitoring.coreos.com/v1 CRD).
+serviceMonitor:
+  enabled: true
+  interval: "30s"
+  scrapeTimeout: "10s"
+  additionalLabels: {}
+  relabelings: []
+  namespaceSelector: {}
+
+# Ingress — disabled by default.
+# type: HTTPRoute  — Envoy Gateway / any Gateway API-compatible controller
+# type: Ingress    — classic nginx / traefik Ingress controller
+ingress:
+  enabled: false
+  type: HTTPRoute
+
+  hosts:
+    - host: commercial-entitlements.internal.example.com
+      paths:
+        - path: /api/v1
+          pathType: PathPrefix
+
+  gateway:
+    name: ""
+    namespace: ""
+    sectionName: ""
+
+  securityPolicy:
+    enabled: false
+    mergeType: StrategicMerge
+    cors:
+      enabled: false
+      allowOrigins: []
+      allowMethods:
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+        - OPTIONS
+      allowHeaders:
+        - Authorization
+        - Content-Type
+        - X-Tenant-ID
+        - X-User-ID
+        - X-Idempotency-Key
+      maxAge: "86400"
+
+  rateLimit:
+    enabled: false
+    requestsPerUnit: 1000
+    unit: Second
+    mergeType: StrategicMerge
+
+  publicResolve:
+    enabled: false
+    rateLimit:
+      requests: 20
+      unit: Hour
+      sourceCIDRs:
+        - 0.0.0.0/0
+        - ::/0
+      mergeType: StrategicMerge
+
+  className: ""
+  annotations: {}
+  tls: []

@@ -1,22 +1,62 @@
-{{- if .Values.istio.authzPolicy.enabled }}
+{{- if and .Values.callers.istio.enabled .Values.callers.enabled }}
+{{- if not .Values.callers.istio.existingCallerNamespaces }}
+{{- fail "callers.istio.existingCallerNamespaces is required when the Istio AuthorizationPolicy renders: it is an ALLOW policy, so every caller not listed (gateway, same-namespace services, monitoring) would be denied." }}
+{{- end }}
+# Istio AuthorizationPolicy for callers of commercial-entitlements.
+#
+# commercial-entitlements is called BY: Billing (quota/entitlement reads).
+# commercial-entitlements calls OUT TO: IAM Catalog (via egress) — that is NOT
+# an ingress rule here and must NOT appear in this policy.
+#
+# ALLOW-policy safety: an Istio ALLOW policy denies every request that matches
+# no rule. The first rule covers all namespaces already admitted by the base
+# NetworkPolicy ingress rules (gateway, same-namespace commercial services,
+# monitoring). Without it, those callers would be silently denied when this
+# policy becomes active.
+#
+# Prerequisites:
+#   - Istio installed in the cluster
+#   - PeerAuthentication STRICT mode active in the commercial namespace
+#   - commercial-billing ServiceAccount exists in billing namespace with
+#     Istio sidecar injection enabled
+#
+# Route suffixes (must stay in sync with commercialSystemAllowedRoutes
+# in internal/adapter/inbound/http/middleware.go):
+#   Billing → GET */effective-set
+#           → GET */quota-ceilings
 apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
 metadata:
-  name: {{ include "commercial-entitlements.fullname" . }}-billing-readonly
+  name: {{ include "commercial-entitlements.fullname" . }}-callers
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "commercial-entitlements.labels" . | nindent 4 }}
+  annotations:
+    app.kubernetes.io/component: "caller-policy"
 spec:
   selector:
     matchLabels:
       {{- include "commercial-entitlements.selectorLabels" . | nindent 6 }}
   action: ALLOW
   rules:
+    # Existing callers — namespace-level allow for every caller currently
+    # admitted by the base NetworkPolicy ingress rules (gateway, all
+    # same-namespace commercial services, monitoring).
+    - from:
+        - source:
+            namespaces:
+              {{- toYaml .Values.callers.istio.existingCallerNamespaces | nindent 14 }}
+    {{- if .Values.billingCaller.enabled }}
+    # Billing service (commercial-billing SA) — entitlement/quota read routes only.
     - from:
         - source:
             principals:
-              - "cluster.local/ns/billing/sa/commercial-billing"
+              - "{{ .Values.callers.istio.trustDomain }}/ns/{{ .Values.billingCaller.namespace }}/sa/{{ .Values.billingCaller.serviceAccountName }}"
       to:
         - operation:
             methods: ["GET"]
-            paths: ["/api/v1/internal/tenants/*/entitlements"]
+            paths:
+              - "*/effective-set"
+              - "*/quota-ceilings"
+    {{- end }}
 {{- end }}

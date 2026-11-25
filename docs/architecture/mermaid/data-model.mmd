@@ -1,0 +1,107 @@
+erDiagram
+    entitlement_snapshots {
+        uuid id PK
+        uuid tenant_id FK
+        int  snapshot_version "ENT-INV-1: monotonically increasing"
+        jsonb effective_set
+        text plan_code
+        text state "active|trial|suspended|cancelled"
+        int  record_version "CONC-1: optimistic lock"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    entitlement_overrides {
+        uuid id PK
+        uuid tenant_id FK
+        text limit_key
+        jsonb override_value
+        timestamptz expires_at "null = permanent; ENT-INV-4"
+        bool is_trial_override "ENT-INV-5"
+        int  record_version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    entitlement_override_history {
+        uuid id PK
+        uuid override_id FK
+        uuid tenant_id
+        text action "set|remove|expire"
+        jsonb snapshot
+        timestamptz actioned_at
+    }
+
+    quota_addons {
+        uuid id PK
+        uuid tenant_id FK
+        text limit_key
+        int  quantity
+        text billing_ref
+        timestamptz expires_at "ENT-INV-4"
+        int  record_version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    quota_addon_drawdowns {
+        uuid id PK
+        uuid addon_id FK
+        uuid request_id "ENT-INV-3: idempotency key"
+        int  quantity
+        bool reversed
+        timestamptz created_at
+    }
+
+    quota_addon_shortfalls {
+        uuid id PK
+        uuid tenant_id FK
+        text limit_key
+        int  requested_qty
+        int  available_qty
+        text status "pending_approval|auto_accepted|rejected"
+        text disposition
+        int  record_version
+        timestamptz created_at
+        timestamptz resolved_at
+    }
+
+    tenant_trial_assignments {
+        uuid id PK
+        uuid tenant_id FK
+        text trial_plan_code
+        timestamptz trial_ends_at
+        int  record_version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    trial_entitlement_overrides {
+        uuid id PK
+        uuid tenant_id FK
+        uuid trial_assignment_id FK
+        text limit_key
+        jsonb trial_value
+        timestamptz created_at
+    }
+
+    plan_catalog_cache {
+        text plan_code PK
+        jsonb plan_definition
+        timestamptz fetched_at
+        timestamptz expires_at
+    }
+
+    processed_events {
+        text consumer_name
+        text event_id
+        timestamptz processed_at
+    }
+
+    entitlement_snapshots ||--o{ entitlement_overrides : "tenant_id"
+    entitlement_snapshots ||--o{ quota_addons : "tenant_id"
+    entitlement_snapshots ||--o{ tenant_trial_assignments : "tenant_id"
+    entitlement_overrides ||--o{ entitlement_override_history : "override_id"
+    quota_addons ||--o{ quota_addon_drawdowns : "addon_id"
+    quota_addons ||--o{ quota_addon_shortfalls : "tenant_id+limit_key"
+    tenant_trial_assignments ||--o{ trial_entitlement_overrides : "trial_assignment_id"

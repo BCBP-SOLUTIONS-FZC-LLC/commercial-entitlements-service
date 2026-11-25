@@ -3,13 +3,18 @@
 package service
 
 import (
+	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 )
 
 // ── min64 ─────────────────────────────────────────────────────────────────
@@ -389,3 +394,137 @@ func TestSortAddonsByExpiry_BothNilStableRelativeOrder(t *testing.T) {
 
 // helper used only in this file
 func int64ptr(v int64) *int64 { return &v }
+
+// ── computeAddonEligibility — non-Active states ────────────────────────────
+// test/unit covers Active (bounded/unlimited), Trial, and Suspended.
+// These tests pin the remaining states to the same "not_active" reason.
+
+func TestComputeAddonEligibility_GracePeriod_NotActive(t *testing.T) {
+	v := int64(1000)
+	limits := map[domain.LimitKey]domain.LimitValue{
+		domain.LimitKeyLLMTokenQuotaMonthly: {Value: &v},
+	}
+	elig := computeAddonEligibility(domain.EntitlementStateGracePeriod, limits)
+	assert.False(t, elig["llm_tokens"].Eligible)
+	require.NotNil(t, elig["llm_tokens"].Reason)
+	assert.Equal(t, "not_active", *elig["llm_tokens"].Reason)
+}
+
+func TestComputeAddonEligibility_Offboarded_NotActive(t *testing.T) {
+	v := int64(1000)
+	limits := map[domain.LimitKey]domain.LimitValue{
+		domain.LimitKeyAPIRequestBudgetMonthly: {Value: &v},
+	}
+	elig := computeAddonEligibility(domain.EntitlementStateOffboarded, limits)
+	assert.False(t, elig["api_requests"].Eligible)
+	require.NotNil(t, elig["api_requests"].Reason)
+	assert.Equal(t, "not_active", *elig["api_requests"].Reason)
+}
+
+func TestComputeAddonEligibility_Provisioning_NotActive(t *testing.T) {
+	limits := map[domain.LimitKey]domain.LimitValue{}
+	elig := computeAddonEligibility(domain.EntitlementStateProvisioning, limits)
+	assert.False(t, elig["llm_tokens"].Eligible)
+	require.NotNil(t, elig["llm_tokens"].Reason)
+	assert.Equal(t, "not_active", *elig["llm_tokens"].Reason)
+}
+
+// ── writeQuotaCeiling — targeted path coverage ─────────────────────────────
+// test/unit tests this indirectly via Recompute. These white-box tests pin
+// the two branches directly: LLM key present vs absent.
+
+func TestWriteQuotaCeiling_LLMKeyPresent_CallsSetQuotaCeiling(t *testing.T) {
+	cache := &trackingCache{}
+	svc := NewEffectiveSetService(nil, nil, nil, nil, nil, nil, cache, nil)
+
+	v := int64(100_000)
+	limits := map[domain.LimitKey]domain.LimitValue{
+		domain.LimitKeyLLMTokenQuotaMonthly: {Value: &v},
+	}
+	tenantID := uuid.New()
+	svc.writeQuotaCeiling(context.Background(), tenantID, limits)
+
+	require.Len(t, cache.ceilingCalls, 1)
+	assert.Equal(t, tenantID, cache.ceilingCalls[0].tenantID)
+	assert.Equal(t, domain.LimitKeyLLMTokenQuotaMonthly, cache.ceilingCalls[0].key)
+	assert.Equal(t, v, *cache.ceilingCalls[0].ceiling)
+}
+
+func TestWriteQuotaCeiling_NoLLMKey_NoCacheCall(t *testing.T) {
+	cache := &trackingCache{}
+	svc := NewEffectiveSetService(nil, nil, nil, nil, nil, nil, cache, nil)
+
+	v := int64(5000)
+	limits := map[domain.LimitKey]domain.LimitValue{
+		domain.LimitKeyAPIRateLimitRPS: {Value: &v}, // non-LLM key
+	}
+	svc.writeQuotaCeiling(context.Background(), uuid.New(), limits)
+	assert.Empty(t, cache.ceilingCalls,
+		"writeQuotaCeiling must not call SetQuotaCeiling for non-LLM keys")
+}
+
+func TestWriteQuotaCeiling_LLMKeyUnlimited_CallsWithNilCeiling(t *testing.T) {
+	cache := &trackingCache{}
+	svc := NewEffectiveSetService(nil, nil, nil, nil, nil, nil, cache, nil)
+
+	limits := map[domain.LimitKey]domain.LimitValue{
+		domain.LimitKeyLLMTokenQuotaMonthly: {}, // nil Value = unlimited
+	}
+	svc.writeQuotaCeiling(context.Background(), uuid.New(), limits)
+	require.Len(t, cache.ceilingCalls, 1)
+	assert.Nil(t, cache.ceilingCalls[0].ceiling,
+		"unlimited LLM quota must pass nil ceiling to Valkey")
+}
+
+func TestWriteQuotaCeiling_CacheError_IsNonFatal(t *testing.T) {
+	cache := &trackingCache{err: errors.New("valkey down")}
+	svc := NewEffectiveSetService(nil, nil, nil, nil, nil, nil, cache, nil)
+
+	v := int64(1000)
+	limits := map[domain.LimitKey]domain.LimitValue{
+		domain.LimitKeyLLMTokenQuotaMonthly: {Value: &v},
+	}
+	// Must not panic or return error — cache errors are non-fatal (CACHE-1).
+	svc.writeQuotaCeiling(context.Background(), uuid.New(), limits)
+}
+
+// ── trackingCache ─────────────────────────────────────────────────────────
+
+type ceilingCall struct {
+	tenantID uuid.UUID
+	key      domain.LimitKey
+	ceiling  *int64
+}
+
+type trackingCache struct {
+	mu           sync.Mutex
+	ceilingCalls []ceilingCall
+	err          error
+}
+
+func (c *trackingCache) GetEffectiveSet(_ context.Context, _ uuid.UUID) (*domain.EffectiveSet, error) {
+	return nil, nil
+}
+func (c *trackingCache) SetEffectiveSet(_ context.Context, _ uuid.UUID, _ *domain.EffectiveSet) error {
+	return nil
+}
+func (c *trackingCache) InvalidateEffectiveSet(_ context.Context, _ uuid.UUID) error { return nil }
+func (c *trackingCache) SetQuotaCeiling(_ context.Context, tenantID uuid.UUID, key domain.LimitKey, ceiling *int64) error {
+	c.mu.Lock()
+	c.ceilingCalls = append(c.ceilingCalls, ceilingCall{tenantID, key, ceiling})
+	c.mu.Unlock()
+	return c.err
+}
+func (c *trackingCache) ResetUsageCounter(_ context.Context, _ uuid.UUID, _ domain.LimitKey, _ string) error {
+	return nil
+}
+func (c *trackingCache) DeleteUsageCounters(_ context.Context, _ domain.LimitKey, _ string) (int64, error) {
+	return 0, nil
+}
+func (c *trackingCache) GetPlan(_ context.Context, _ string) (*domain.Plan, error) { return nil, nil }
+func (c *trackingCache) SetPlan(_ context.Context, _ *domain.Plan) error           { return nil }
+func (c *trackingCache) InvalidatePlan(_ context.Context, _ string) error          { return nil }
+func (c *trackingCache) Health(_ context.Context) error                            { return nil }
+func (c *trackingCache) Close() error                                              { return nil }
+
+var _ port.Cache = (*trackingCache)(nil)

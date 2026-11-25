@@ -22,10 +22,10 @@ export APP_NAME APP_ENV BUILD_VERSION
 
 # Test package groups (explicit to handle per-group build tags cleanly).
 TEST_UNIT_PKGS     := ./test/unit/...
-TEST_POSTGRES_PKGS := ./internal/adapter/outbound/postgres/...
-TEST_INT_PKGS      := ./internal/adapter/inbound/... \
-                      ./internal/adapter/outbound/valkey/... \
-                      ./internal/adapter/temporal/...
+TEST_POSTGRES_PKGS := ./test/postgres/...
+TEST_INT_PKGS      := ./test/integration/...
+TEST_E2E_PKGS      := ./test/e2e/...
+TEST_HELM_PKGS     := ./test/helm/...
 
 # White-box (package-internal) tests included in unit runs.
 TEST_INTERNAL_PKGS := ./cmd/server/... \
@@ -50,7 +50,7 @@ TEST_POSTGRES_PARALLEL ?= 4
 # Every build tag the test/ tree declares. vet and lint run a second pass with
 # all of them — CI's quality gate calls `make vet`/`make lint`, so without it
 # tagged test files are never vetted or linted.
-ALL_TEST_TAGS := integration
+ALL_TEST_TAGS := integration,e2e,helm
 
 # Full package list under coverage measurement — computed once at parse time.
 # No pkg/ in this service (unlike iam-org-membership which has pkg/requestctx).
@@ -308,6 +308,17 @@ _test-postgres-plain:
 	$(GO) test $(TEST_POSTGRES_PKGS) -tags=integration -count=1 -timeout 1500s -parallel $(TEST_POSTGRES_PARALLEL) -v
 _test-integration-plain:
 	$(GO) test $(TEST_INT_PKGS) -tags=integration -count=1 -timeout 300s -v
+
+.PHONY: test-e2e
+test-e2e:
+	$(GO) test $(TEST_E2E_PKGS) -tags=e2e -count=1 -timeout 300s -v
+
+.PHONY: test-helm
+test-helm:
+	$(GO) test $(TEST_HELM_PKGS) -tags=helm -count=1 -timeout 60s -v
+
+.PHONY: helm-access-check
+helm-access-check: test-helm
 
 .PHONY: test-smoke
 test-smoke:

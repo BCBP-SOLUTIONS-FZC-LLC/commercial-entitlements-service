@@ -2,7 +2,7 @@ asyncapi: "3.0.0"
 
 info:
   title: Commercial Entitlements Service — Event Contracts
-  version: "1.3.0"
+  version: "1.4.0"
   description: |
     Publishes `tenant_entitlements_changed` whenever a tenant's effective
     entitlement set is recomputed.
@@ -10,6 +10,10 @@ info:
     `reason: "purchase"` creates a new quota addon pack (expiry = purchased_at + 12 months,
     idempotent on billing_ref); `reason: "refund"` reduces unused tokens on the referenced
     pack (C-5 / BL-OQ-23, E-1 / BL-OQ-4).
+    Consumes O&M's `TenantStateChanged{cause:TrialReactivated}` from
+    `membership-entitlements-q` to trigger a recompute after a conversion revert.
+    Published by iam-org-membership via transactional outbox — receipt guarantees
+    I-17 reflects the post-revert state (E-3 read-race fix).
   contact:
     name: BCBP Solutions Platform Team
     email: platform@bcbpsolutions.com
@@ -37,6 +41,14 @@ channels:
         queue:
           name: billing-entitlements-q
 
+  membershipEntitlementsQueue:
+    address: "arn:aws:sqs:{region}:{account}:membership-entitlements-q"
+    description: "SQS queue receiving IAM Org & Membership lifecycle events."
+    bindings:
+      sqs:
+        queue:
+          name: membership-entitlements-q
+
 operations:
   publishTenantEntitlementsChanged:
     action: send
@@ -48,6 +60,20 @@ operations:
       and addon-balance changes all produce this event.
     messages:
       - $ref: "#/components/messages/TenantEntitlementsChanged"
+
+  consumeTenantStateChanged:
+    action: receive
+    channel:
+      $ref: "#/channels/membershipEntitlementsQueue"
+    summary: "Consume O&M TenantStateChanged to recompute after a conversion revert."
+    description: |
+      iam-org-membership publishes TenantStateChanged via transactional outbox after
+      every tenant state transition. Only cause=TrialReactivated triggers a recompute;
+      all other causes are silently acknowledged (they arrive via dedicated events on
+      tenant-entitlements-q). Because the event is published after O&M's DB commit,
+      a subsequent I-17 call always reflects the post-revert state (E-3 read-race fix).
+    messages:
+      - $ref: "#/components/messages/InboundTenantStateChanged"
 
   consumeTenantQuotaAddOnChanged:
     action: receive
@@ -74,6 +100,14 @@ components:
       contentType: application/json
       payload:
         $ref: "#/components/schemas/TenantEntitlementsChangedPayload"
+
+    InboundTenantStateChanged:
+      name: TenantStateChanged
+      title: Tenant State Changed (inbound from IAM Org & Membership)
+      summary: "O&M's post-commit notification that a tenant's subscription state changed."
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/InboundTenantStateChangedPayload"
 
     InboundTenantQuotaAddOnChanged:
       name: TenantQuotaAddOnChanged
@@ -166,4 +200,38 @@ components:
           type: string
           format: date-time
           description: "Payment-confirmation instant; present on purchase events. Expiry = purchased_at + 12 months (E-1 / BL-OQ-4)."
+      additionalProperties: true
+
+    InboundTenantStateChangedPayload:
+      type: object
+      required:
+        - tenant_id
+        - status
+        - previous_status
+        - cause
+        - changed_at
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          description: "UUID of the tenant whose state changed."
+        status:
+          type: string
+          description: "New subscription status after the change."
+        previous_status:
+          type: string
+          description: "Subscription status before the change."
+        plan:
+          type: string
+          description: "Active plan code after the change."
+        previous_plan:
+          type: string
+          description: "Plan code before the change."
+        changed_at:
+          type: string
+          format: date-time
+          description: "Wall-clock time O&M applied the change (UTC)."
+        cause:
+          type: string
+          description: "What triggered the state change (e.g. TrialReactivated)."
       additionalProperties: true

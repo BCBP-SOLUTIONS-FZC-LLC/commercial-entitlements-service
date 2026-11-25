@@ -44,7 +44,8 @@ commercial-entitlements/
 │   │   │   ├── snapshot.go     # EntitlementSnapshot, EffectiveSetCause constants
 │   │   │   ├── trial.go        # TenantTrialAssignment, TrialEntitlementOverride, TrialProfile
 │   │   │   ├── event.go        # DomainEvent, EventType, TenantEntitlementsChangedPayload,
-│   │   │   │                   # InboundBillingEvent, InboundTenantEvent, InboundMembershipEvent
+│   │   │   │                   # InboundBillingEvent, InboundTenantEvent, InboundMembershipEvent,
+│   │   │   │                   # InboundTenantStateChangedEvent (EVT-10)
 │   │   │   ├── event_helpers.go # NewTenantEvent constructor
 │   │   │   └── errors.go       # ErrSnapshotNotFound, ErrAddonNotFound, ErrOverrideNotFound,
 │   │   │                       # ErrShortfallNotFound, ErrTrialAssignmentNotFound, ErrPlanNotFound,
@@ -83,7 +84,8 @@ commercial-entitlements/
 │       │   │   ├── billing_consumer.go     # billing-entitlements-q
 │       │   │   ├── tenant_consumer.go      # tenant-entitlements-q
 │       │   │   ├── catalog_consumer.go     # catalog-entitlements-q (cache invalidation + Temporal fan-out)
-│       │   │   ├── membership_consumer.go  # membership-entitlements-q (Purge/Converted/Offboarded)
+│       │   │   ├── membership_consumer.go  # membership-entitlements-q: TenantMembershipsPurged,
+│       │   │   │                           #   TenantStateChanged{cause:TrialReactivated} (E-3; EVT-10)
 │       │   │   └── dedup.go               # processOnce / ackUnknown over port.Inbox
 │       │   └── sqspipeline/
 │       │       └── consumer.go            # EnvForQueue defaults, NewConsumer, Handler, RequireDLQ
@@ -160,7 +162,7 @@ require (
 - System pool (`SYSTEM_DATABASE_URL`) used by reconciler's cross-tenant sweeps (BYPASSRLS).
 
 **`platform-events` integration:**
-- **Publish:** single-topic `events.Publisher` via `events.NewSNSPublisher` wired to `SNS_TOPIC_ENTITLEMENTS_ARN`.
+- **Publish:** single-topic `events.Publisher` via `events.NewSNSPublisher` wired to `SNS_TOPIC_ENTITLEMENTS_ARN` (`SQS_*_ENTITLEMENTS_QUEUE_URL` for each consumer).
 - **Enqueue:** `eventbus.Publisher.Enqueue` writes to `outbox_events` via `outbox.EnqueueOrdered`; never a hand-rolled INSERT.
 - **Consume:** every SQS consumer built via `events.NewSQSConsumerWithClient` with `events.GlueDecodeCodec{}` + `events.WithDLQForwarding`. Consumer dedup via `processed_events` / `inbox.Store.Process`.
 - **Prune:** `outbox.Runner.PrunePublished` (outbox-prune job) and `inbox.Store.Prune` (processed-events-prune job).

@@ -119,7 +119,7 @@ Schema governance: `api/asyncapi.yaml` is the design-time source of truth. Schem
 | `SQS_BILLING_ENTITLEMENTS_QUEUE_URL` | `billing-entitlements-q` | `BillingEventConsumer` | `TenantPlanChanged`, `TenantSeatsChanged`, `TenantSubscriptionCancelled`, `TenantReactivated` → Recompute |
 | `SQS_TENANT_ENTITLEMENTS_QUEUE_URL` | `tenant-entitlements-q` | `TenantEventConsumer` | `TenantProvisioned`, `TenantConverted`, `TenantSuspended`, `TenantOffboarded` → Recompute; `TrialExpired` → Recompute + PurgeTrial |
 | `SQS_CATALOG_ENTITLEMENTS_QUEUE_URL` | `catalog-entitlements-q` | `CatalogConsumer` | `PlanCatalogChanged` → InvalidatePlan cache + Temporal fan-out |
-| `SQS_MEMBERSHIP_ENTITLEMENTS_QUEUE_URL` | `membership-entitlements-q` | `MembershipConsumer` | `TenantMembershipsPurged` → Recompute; `TenantConverted` → PurgeTrialForTenant + Recompute; `TenantOffboarded` → PurgeTrialForTenant + Recompute |
+| `SQS_MEMBERSHIP_ENTITLEMENTS_QUEUE_URL` | `membership-entitlements-q` | `MembershipConsumer` | `TenantMembershipsPurged` → Recompute; `TenantStateChanged{cause:TrialReactivated}` → Recompute (E-3 read-race fix; published after O&M commit via EVT-16) |
 
 Each queue has a `-dlq` with `maxReceiveCount = 5` RedrivePolicy. `platform-events` forwards at `SQS_MAX_RECEIVE_COUNT` 4 (one below the RedrivePolicy). Idempotency via `processed_events` / `inbox.Store.Process`.
 

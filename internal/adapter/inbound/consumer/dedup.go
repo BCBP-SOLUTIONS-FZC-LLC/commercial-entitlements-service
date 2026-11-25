@@ -24,7 +24,9 @@ var knownEventTypes = func() map[string]struct{} {
 		// catalog consumer
 		"PlanCatalogChanged",
 		// membership consumer
-		"TenantMembershipsPurged", "TenantConverted",
+		"TenantMembershipsPurged", "TenantStateChanged",
+		// tenant consumer (also handles TenantConverted / TenantOffboarded from RP)
+		"TenantConverted",
 	}
 	m := make(map[string]struct{}, len(types))
 	for _, t := range types {

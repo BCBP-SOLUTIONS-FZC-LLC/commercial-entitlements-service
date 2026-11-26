@@ -124,13 +124,34 @@ func main() {
 		WithCatalogCache(catalogCacheRepo)
 	effectSvc := service.NewEffectiveSetService(snapshotRepo, overrideRepo, addonRepo, trialRepo, catalogSvc, iamClient, cache, txRunner)
 	_ = effectSvc
-	planCodes, err := catalogCacheRepo.ListPlanCodes(context.Background())
+	ctx := context.Background()
+	planCodes, err := catalogCacheRepo.ListPlanCodes(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "list plans: "+err.Error())
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
+	// Bootstrap: when plan_catalog_cache is empty (first deploy / fresh DB),
+	// fetch all plans from iam-catalog-admin via CAT-I2 bulk and seed the DB+Valkey
+	// so the per-code refresh loop below has codes to work with.
+	if len(planCodes) == 0 {
+		rawLog.Info("plan_catalog_cache empty — bootstrapping from IAM catalog", nil)
+		allPlans, fetchErr := iamClient.FetchAllPlans(ctx)
+		if fetchErr != nil {
+			rawLog.Warn("bootstrap FetchAllPlans failed — no plans to refresh", map[string]any{"error": fetchErr.Error()})
+		} else {
+			for _, p := range allPlans {
+				if setErr := catalogCacheRepo.SetPlan(ctx, p); setErr != nil {
+					rawLog.Warn("bootstrap SetPlan DB failed", map[string]any{"plan": p.Code, "error": setErr.Error()})
+					continue
+				}
+				_ = cache.SetPlan(ctx, p)
+				planCodes = append(planCodes, p.Code)
+				rawLog.Info("bootstrapped plan", map[string]any{"plan": p.Code})
+			}
+		}
+	}
+
 	for _, code := range planCodes {
 		if _, err := catalogSvc.RefreshPlan(ctx, code); err != nil {
 			rawLog.Warn("refresh failed", map[string]any{"plan": code, "error": err.Error()})

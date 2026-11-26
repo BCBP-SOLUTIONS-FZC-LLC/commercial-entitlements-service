@@ -1,23 +1,27 @@
 package domain
 
 // Plan is the catalog entry for a subscription tier, fetched from IAM catalog
-// admin service (CatalogService).
+// admin service (CatalogService). JSON tags match iam-catalog-admin's
+// PlanResponse wire shape exactly (snake_case — required for correct decoding
+// since Go's JSON decoder does not strip underscores during case-insensitive
+// matching, so fields like "llm_token_quota_monthly" would silently decode to
+// nil without explicit tags).
 type Plan struct {
-	Code                    string
-	DisplayName             string
-	WorkflowTemplateLimit   *int
-	TenderLimit             *int
-	TrialDurationDays       int
-	SSOEnabled              bool
-	CustomBranding          string
-	AuditQueryWindowDays    int
-	LLMTokenQuotaMonthly    *int64 // nil = unlimited
-	APIRequestBudgetMonthly *int64 // nil = unlimited
-	APIRateLimitRPS         int
-	FeatureSet              map[string]interface{}
-	ModelTier               string
-	RecordVersion           int64
-	TrialProfiles           map[string]TrialProfileLimits
+	Code                    string                        `json:"code"`
+	DisplayName             string                        `json:"display_name"`
+	WorkflowTemplateLimit   *int                          `json:"workflow_template_limit"`
+	TenderLimit             *int                          `json:"tender_limit"`
+	TrialDurationDays       int                           `json:"trial_duration_days"`
+	SSOEnabled              bool                          `json:"sso_enabled"`
+	CustomBranding          string                        `json:"custom_branding"`
+	AuditQueryWindowDays    int                           `json:"audit_query_window_days"`
+	LLMTokenQuotaMonthly    *int64                        `json:"llm_token_quota_monthly"`    // nil = unlimited
+	APIRequestBudgetMonthly *int64                        `json:"api_request_budget_monthly"` // nil = unlimited
+	APIRateLimitRPS         int                           `json:"api_rate_limit_rps"`
+	FeatureSet              map[string]interface{}        `json:"feature_set"`
+	ModelTier               string                        `json:"model_tier"`
+	RecordVersion           int64                         `json:"record_version"`
+	TrialProfiles           map[string]TrialProfileLimits `json:"trial_profiles,omitempty"`
 }
 
 // TrialProfileLimits overrides specific limits when a tenant is in trial mode.

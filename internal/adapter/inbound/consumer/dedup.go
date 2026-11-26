@@ -16,17 +16,18 @@ import (
 // producers (CONS-1 / observability standard).
 var knownEventTypes = func() map[string]struct{} {
 	types := []string{
-		// billing consumer
+		// billing-entitlements-q (billing.events)
 		"TenantPlanChanged", "TenantSubscriptionCancelled", "TenantReactivated",
 		"TenantQuotaAddOnChanged",
-		// tenant consumer
-		"TenantProvisioned", "TenantSuspended", "TenantReactivated", "TenantOffboarded",
-		// catalog consumer
+		// tenant-entitlements-q (iam-tenant-events from iam-realm-provisioner)
+		"TenantIdentityProvisioned", "TenantSubscriptionUpdated",
+		"TenantSuspended", "TenantReactivated", "TenantOffboarded",
+		"TenantConverted", "TenantMembershipsPurged",
+		"TrialExpired", "TrialReactivated",
+		// catalog-entitlements-q (iam-catalog-events)
 		"PlanCatalogChanged",
-		// membership consumer
+		// membership-entitlements-q (iam-membership-events from iam-org-membership)
 		"TenantMembershipsPurged", "TenantStateChanged",
-		// tenant consumer (also handles TenantConverted / TenantOffboarded from RP)
-		"TenantConverted",
 	}
 	m := make(map[string]struct{}, len(types))
 	for _, t := range types {

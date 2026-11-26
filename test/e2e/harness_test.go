@@ -241,6 +241,15 @@ func (f *e2eFakeIAMClient) FetchPlan(_ context.Context, planCode string) (*domai
 	}, nil
 }
 
+func (f *e2eFakeIAMClient) FetchAllPlans(_ context.Context) ([]*domain.Plan, error) {
+	plans := []string{"starter", "pro", "enterprise"}
+	out := make([]*domain.Plan, len(plans))
+	for i, code := range plans {
+		out[i] = &domain.Plan{Code: code, DisplayName: code, ModelTier: "standard", FeatureSet: map[string]any{}}
+	}
+	return out, nil
+}
+
 func (f *e2eFakeIAMClient) FetchTenantSubscription(_ context.Context, tenantID uuid.UUID) (*port.TenantSubscription, error) {
 	return &port.TenantSubscription{
 		TenantID: tenantID, PlanCode: "starter",

@@ -112,25 +112,27 @@ type InboundBillingEvent struct {
 	OccurredAt        time.Time `json:"occurred_at"`
 }
 
-// InboundTenantEvent represents a tenant provisioning / lifecycle event.
+// InboundTenantEvent is the common base for tenant lifecycle events from
+// iam-realm-provisioner on iam-tenant-events. Only tenant_id is read by
+// all handlers; additional fields vary per event type and are ignored here.
 type InboundTenantEvent struct {
-	TenantID   uuid.UUID `json:"tenant_id"`
-	EventType  string    `json:"event_type"`
-	OccurredAt time.Time `json:"occurred_at"`
+	TenantID uuid.UUID `json:"tenant_id"`
 }
 
-// InboundCatalogEvent represents a plan catalog refresh signal.
+// InboundCatalogEvent is the payload of PlanCatalogChanged published by iam-catalog-admin.
+// Field names match catalog-admin's planCatalogChangedData wire shape exactly.
 type InboundCatalogEvent struct {
-	PlanCode      string    `json:"plan_code"`
-	RecordVersion int64     `json:"record_version"`
-	OccurredAt    time.Time `json:"occurred_at"`
+	PlanCode   string         `json:"code"`
+	ChangeType string         `json:"change_type"`
+	FeatureSet map[string]any `json:"feature_set"`
 }
 
-// InboundMembershipEvent represents membership lifecycle events from IAM.
+// InboundMembershipEvent is the payload of TenantMembershipsPurged published by
+// iam-org-membership on iam.membership.events. Field names match
+// TenantMembershipsPurgedPayload wire shape exactly.
 type InboundMembershipEvent struct {
-	TenantID   uuid.UUID `json:"tenant_id"`
-	EventType  string    `json:"event_type"`
-	OccurredAt time.Time `json:"occurred_at"`
+	TenantID uuid.UUID `json:"tenant_id"`
+	ActorID  uuid.UUID `json:"actor_id,omitempty"`
 }
 
 // InboundTenantStateChangedEvent is the payload of TenantStateChanged emitted by

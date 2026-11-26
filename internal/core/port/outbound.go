@@ -88,20 +88,30 @@ type CatalogCacheRepository interface {
 
 // ── Outbound client interfaces ─────────────────────────────────────────────
 
-// IAMClient fetches plan and subscription data from the IAM catalog service.
+// IAMClient fetches plan and subscription data from the IAM services.
+// FetchPlan and FetchAllPlans target iam-catalog-admin (IAM_CATALOG_BASE_URL).
+// FetchTenantSubscription targets iam-org-membership (IAM_ORG_BASE_URL).
 type IAMClient interface {
 	FetchPlan(ctx context.Context, planCode string) (*domain.Plan, error)
+	FetchAllPlans(ctx context.Context) ([]*domain.Plan, error)
 	FetchTenantSubscription(ctx context.Context, tenantID uuid.UUID) (*TenantSubscription, error)
 }
 
-// TenantSubscription is the upstream subscription record for a tenant.
+// TenantSubscription is the upstream subscription record for a tenant,
+// decoded from iam-org-membership's I-17 plan-context response.
+// JSON tags match the I-17 wire shape exactly.
+//
+// Note: trial_profile is NOT included here. commercial-entitlements is the
+// system of record for trial profile assignments (tenant_trial_assignments
+// table, managed via ENT-O3). TrialRepository.GetAssignment reads it
+// directly — there is no need to fetch it from org-membership.
 type TenantSubscription struct {
-	TenantID      uuid.UUID
-	PlanCode      string
-	State         string
-	TrialProfile  *string
-	TrialEndsAt   *time.Time
-	RecordVersion int64
+	TenantID      uuid.UUID  `json:"tenant_id"`
+	PlanCode      string     `json:"plan"`
+	State         string     `json:"status"`
+	FeatureFlags  []string   `json:"feature_flags,omitempty"`
+	TrialEndsAt   *time.Time `json:"trial_ends_at,omitempty"`
+	RecordVersion int64      `json:"record_version"`
 }
 
 // TemporalStarter triggers Temporal workflows for async fanout.

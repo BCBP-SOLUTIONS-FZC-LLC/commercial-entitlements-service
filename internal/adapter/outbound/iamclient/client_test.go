@@ -24,11 +24,13 @@ func (nopIAMLogger) Warn(_ string, _ map[string]any)  {}
 func (nopIAMLogger) Error(_ string, _ map[string]any) {}
 func (nopIAMLogger) Debug(_ string, _ map[string]any) {}
 
+// newTestClient points both catalogBaseURL and orgBaseURL at the same test server
+// (each test only exercises one endpoint at a time).
 func newTestClient(t *testing.T, handler http.Handler) *Client {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return NewWithConfig(srv.URL, "test-key", nopIAMLogger{})
+	return NewWithConfig(srv.URL, srv.URL, nopIAMLogger{})
 }
 
 // ── FetchPlan ─────────────────────────────────────────────────────────────
@@ -40,8 +42,7 @@ func TestFetchPlan_200_DecodesResponse(t *testing.T) {
 		ModelTier:   "standard",
 	}
 	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/internal/v1/plans/starter", r.URL.Path)
-		assert.Equal(t, "test-key", r.Header.Get("x-api-key"))
+		assert.Equal(t, "/api/v1/internal/plans/starter", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(plan)
 	}))
@@ -79,38 +80,93 @@ func TestFetchPlan_InvalidJSON_ReturnsDecodeError(t *testing.T) {
 	assert.Contains(t, err.Error(), "decode plan response")
 }
 
-func TestFetchPlan_NoAPIKey_OmitsHeader(t *testing.T) {
-	c := NewWithConfig("", "", nopIAMLogger{}) // empty key
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Empty(t, r.Header.Get("x-api-key"))
+// ── FetchAllPlans ─────────────────────────────────────────────────────────
+
+func TestFetchAllPlans_200_DecodesAll(t *testing.T) {
+	plans := []domain.Plan{
+		{Code: "starter", ModelTier: "basic"},
+		{Code: "pro", ModelTier: "standard"},
+		{Code: "enterprise", ModelTier: "premium"},
+	}
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/internal/plans", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(domain.Plan{Code: "starter"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"plans": plans})
 	}))
-	c.baseURL = srv.URL
-	defer srv.Close()
-	_, err := c.FetchPlan(context.Background(), "starter")
+	got, err := c.FetchAllPlans(context.Background())
 	require.NoError(t, err)
+	require.Len(t, got, 3)
+	assert.Equal(t, "starter", got[0].Code)
+	assert.Equal(t, "enterprise", got[2].Code)
+}
+
+func TestFetchAllPlans_NonOK_ReturnsError(t *testing.T) {
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	_, err := c.FetchAllPlans(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected status 500")
+}
+
+func TestFetchAllPlans_InvalidJSON_ReturnsDecodeError(t *testing.T) {
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`bad`))
+	}))
+	_, err := c.FetchAllPlans(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode all plans response")
+}
+
+func TestFetchAllPlans_TransportError_ReturnsError(t *testing.T) {
+	c := NewWithConfig("http://127.0.0.1:1", "http://127.0.0.1:1", nopIAMLogger{})
+	_, err := c.FetchAllPlans(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetch all plans")
 }
 
 // ── FetchTenantSubscription ───────────────────────────────────────────────
 
 func TestFetchTenantSubscription_200_DecodesResponse(t *testing.T) {
 	tenantID := uuid.New()
-	sub := port.TenantSubscription{
-		TenantID:      tenantID,
-		PlanCode:      "pro",
-		State:         "active",
-		RecordVersion: 1,
+	// Match iam-org-membership I-17 plan-context wire shape exactly.
+	resp := map[string]any{
+		"tenant_id":      tenantID,
+		"plan":           "pro",
+		"status":         "active",
+		"record_version": 1,
 	}
 	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Contains(t, r.URL.Path, tenantID.String())
+		assert.Equal(t, fmt.Sprintf("/api/v1/internal/tenants/%s/plan-context", tenantID), r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(sub)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	got, err := c.FetchTenantSubscription(context.Background(), tenantID)
 	require.NoError(t, err)
 	assert.Equal(t, "pro", got.PlanCode)
 	assert.Equal(t, "active", got.State)
+}
+
+func TestFetchTenantSubscription_WithTrialEndsAt_DecodesOptionalFields(t *testing.T) {
+	tenantID := uuid.New()
+	trialEnd := "2027-04-01T00:00:00Z"
+	resp := map[string]any{
+		"tenant_id":      tenantID,
+		"plan":           "starter",
+		"status":         "trial",
+		"trial_ends_at":  trialEnd,
+		"record_version": 2,
+	}
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	got, err := c.FetchTenantSubscription(context.Background(), tenantID)
+	require.NoError(t, err)
+	assert.Equal(t, "starter", got.PlanCode)
+	assert.Equal(t, "trial", got.State)
+	require.NotNil(t, got.TrialEndsAt)
 }
 
 func TestFetchTenantSubscription_404_ReturnsErrTenantNotFound(t *testing.T) {
@@ -143,17 +199,17 @@ func TestFetchTenantSubscription_InvalidJSON_ReturnsDecodeError(t *testing.T) {
 // ── New / NewWithConfig ───────────────────────────────────────────────────
 
 func TestNew_ReadsEnvVars(t *testing.T) {
-	t.Setenv("IAM_CATALOG_BASE_URL", "https://iam.example.com")
-	t.Setenv("IAM_CATALOG_API_KEY", "my-key")
+	t.Setenv("IAM_CATALOG_BASE_URL", "https://catalog.example.com")
+	t.Setenv("IAM_ORG_BASE_URL", "https://org.example.com")
 	c := New(nopIAMLogger{})
-	assert.Equal(t, "https://iam.example.com", c.baseURL)
-	assert.Equal(t, "my-key", c.apiKey)
+	assert.Equal(t, "https://catalog.example.com", c.catalogBaseURL)
+	assert.Equal(t, "https://org.example.com", c.orgBaseURL)
 }
 
 func TestNewWithConfig_SetsFields(t *testing.T) {
-	c := NewWithConfig("https://iam.test", "api-key", nopIAMLogger{})
-	assert.Equal(t, "https://iam.test", c.baseURL)
-	assert.Equal(t, "api-key", c.apiKey)
+	c := NewWithConfig("https://catalog.test", "https://org.test", nopIAMLogger{})
+	assert.Equal(t, "https://catalog.test", c.catalogBaseURL)
+	assert.Equal(t, "https://org.test", c.orgBaseURL)
 }
 
 // ── iamTimeout ───────────────────────────────────────────────────────────────
@@ -197,7 +253,7 @@ func TestRoundTrip_TransportError_RecordsSpanError(t *testing.T) {
 // ── FetchPlan — http.Do transport error ──────────────────────────────────
 
 func TestFetchPlan_TransportError_ReturnsError(t *testing.T) {
-	c := NewWithConfig("http://127.0.0.1:1", "", nopIAMLogger{}) // port 1 is always refused
+	c := NewWithConfig("http://127.0.0.1:1", "http://127.0.0.1:1", nopIAMLogger{})
 	_, err := c.FetchPlan(context.Background(), "some_plan")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fetch plan")
@@ -206,8 +262,11 @@ func TestFetchPlan_TransportError_ReturnsError(t *testing.T) {
 // ── FetchTenantSubscription — http.Do transport error ───────────────────
 
 func TestFetchTenantSubscription_TransportError_ReturnsError(t *testing.T) {
-	c := NewWithConfig("http://127.0.0.1:1", "", nopIAMLogger{})
+	c := NewWithConfig("http://127.0.0.1:1", "http://127.0.0.1:1", nopIAMLogger{})
 	_, err := c.FetchTenantSubscription(context.Background(), uuid.New())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fetch subscription")
 }
+
+// Keep port.TenantSubscription in scope so the import is used.
+var _ = port.TenantSubscription{}

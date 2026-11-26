@@ -76,6 +76,11 @@ func TestMapSubscriptionState(t *testing.T) {
 		{"suspended", domain.EntitlementStateSuspended},
 		{"offboarded", domain.EntitlementStateOffboarded},
 		{"provisioning", domain.EntitlementStateProvisioning},
+		// iam-org-membership billing-delinquency states → grace_period
+		{"past_due", domain.EntitlementStateGracePeriod},
+		{"cancelled", domain.EntitlementStateGracePeriod},
+		// iam-org-membership trial that elapsed → suspended
+		{"trial_expired", domain.EntitlementStateSuspended},
 		{"unknown", domain.EntitlementStateSuspended},
 		{"", domain.EntitlementStateSuspended},
 	}
@@ -101,18 +106,34 @@ func TestLimitValEqual(t *testing.T) {
 func TestEffectiveSetUnchanged_SameSets(t *testing.T) {
 	v := int64(1000)
 	es := &domain.EffectiveSet{
-		PlanCode:  "starter",
-		State:     domain.EntitlementStateActive,
-		ModelTier: "standard",
-		Limits:    map[domain.LimitKey]domain.LimitValue{domain.LimitKeyTenderLimit: {Value: &v}},
+		PlanCode:     "starter",
+		State:        domain.EntitlementStateActive,
+		ModelTier:    "standard",
+		FeatureFlags: []string{"sso_enabled"},
+		Limits:       map[domain.LimitKey]domain.LimitValue{domain.LimitKeyTenderLimit: {Value: &v}},
 	}
 	snap := &domain.EntitlementSnapshot{
-		Plan:      "starter",
-		State:     domain.EntitlementStateActive,
-		ModelTier: "standard",
-		Limits:    map[domain.LimitKey]domain.LimitValue{domain.LimitKeyTenderLimit: {Value: &v}},
+		Plan:         "starter",
+		State:        domain.EntitlementStateActive,
+		ModelTier:    "standard",
+		FeatureFlags: []string{"sso_enabled"},
+		Limits:       map[domain.LimitKey]domain.LimitValue{domain.LimitKeyTenderLimit: {Value: &v}},
 	}
 	assert.True(t, effectiveSetUnchanged(es, snap))
+}
+
+func TestEffectiveSetUnchanged_DifferentFeatureFlags(t *testing.T) {
+	es := &domain.EffectiveSet{
+		PlanCode: "pro", State: domain.EntitlementStateActive, ModelTier: "standard",
+		FeatureFlags: []string{"custom_branding", "sso_enabled"},
+		Limits:       map[domain.LimitKey]domain.LimitValue{},
+	}
+	snap := &domain.EntitlementSnapshot{
+		Plan: "pro", State: domain.EntitlementStateActive, ModelTier: "standard",
+		FeatureFlags: []string{"custom_branding"},
+		Limits:       map[domain.LimitKey]domain.LimitValue{},
+	}
+	assert.False(t, effectiveSetUnchanged(es, snap))
 }
 
 func TestEffectiveSetUnchanged_DifferentPlan(t *testing.T) {

@@ -67,6 +67,9 @@ func validateRequiredEnv() {
 	if os.Getenv("IAM_CATALOG_BASE_URL") == "" {
 		missing = append(missing, "IAM_CATALOG_BASE_URL")
 	}
+	if os.Getenv("IAM_ORG_BASE_URL") == "" {
+		missing = append(missing, "IAM_ORG_BASE_URL")
+	}
 	if len(missing) > 0 {
 		fmt.Fprintf(os.Stderr, "startup aborted — required env vars not set: %s\n",
 			strings.Join(missing, ", "))

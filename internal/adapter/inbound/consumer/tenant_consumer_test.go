@@ -25,11 +25,8 @@ func newTenantConsumer() (*TenantEventConsumer, *fakeEffectiveSvc, *fakeTrialSvc
 }
 
 func tenantEnv(id, eventType string, tenantID uuid.UUID) events.Envelope[json.RawMessage] {
-	raw, _ := json.Marshal(map[string]any{
-		"tenant_id":   tenantID.String(),
-		"event_type":  eventType,
-		"occurred_at": time.Now(),
-	})
+	// Payload contains only tenant_id — matching iam-realm-provisioner wire shape.
+	raw, _ := json.Marshal(map[string]any{"tenant_id": tenantID.String()})
 	return events.Envelope[json.RawMessage]{ID: id, Type: eventType, Payload: raw}
 }
 
@@ -116,6 +113,41 @@ func TestTenantConsumer_NilTrialSvc_NoError(t *testing.T) {
 	env := events.Envelope[json.RawMessage]{ID: "t9", Type: "TenantOffboarded", Payload: raw}
 	require.NoError(t, c.Handle(context.Background(), env))
 	assert.Len(t, eff.recomputedWith, 1)
+}
+
+// ── Realm-Provisioner lifecycle events (CD-6, CD-49) ─────────────────────
+
+func TestTenantConsumer_TenantSuspended_TriggersRecompute(t *testing.T) {
+	c, eff, _ := newTenantConsumer()
+	env := tenantEnv("ts1", "TenantSuspended", uuid.New())
+	require.NoError(t, c.Handle(context.Background(), env))
+	assert.Len(t, eff.recomputedWith, 1)
+	assert.Equal(t, domain.CauseTenantLifecycle, eff.recomputedWith[0])
+}
+
+func TestTenantConsumer_TenantReactivated_TriggersRecompute(t *testing.T) {
+	c, eff, _ := newTenantConsumer()
+	env := tenantEnv("tr1", "TenantReactivated", uuid.New())
+	require.NoError(t, c.Handle(context.Background(), env))
+	assert.Len(t, eff.recomputedWith, 1)
+	assert.Equal(t, domain.CauseTenantLifecycle, eff.recomputedWith[0])
+}
+
+func TestTenantConsumer_TrialExpired_TriggersRecompute(t *testing.T) {
+	c, eff, _ := newTenantConsumer()
+	env := tenantEnv("te1", "TrialExpired", uuid.New())
+	require.NoError(t, c.Handle(context.Background(), env))
+	assert.Len(t, eff.recomputedWith, 1)
+	assert.Equal(t, domain.CauseTenantLifecycle, eff.recomputedWith[0])
+}
+
+func TestTenantConsumer_RPLifecycle_MalformedPayload_Acks(t *testing.T) {
+	c, eff, _ := newTenantConsumer()
+	for _, evType := range []string{"TenantSuspended", "TenantReactivated", "TrialExpired"} {
+		env := events.Envelope[json.RawMessage]{ID: evType, Type: evType, Payload: json.RawMessage(`bad`)}
+		require.NoError(t, c.Handle(context.Background(), env), evType)
+	}
+	assert.Empty(t, eff.recomputedWith)
 }
 
 // ── Unknown event ─────────────────────────────────────────────────────────

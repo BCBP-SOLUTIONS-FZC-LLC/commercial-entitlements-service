@@ -6,10 +6,13 @@ package http
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	apispec "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/api"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/gin-gonic/gin"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 )
 
 // Pinger is the health-check interface for dependencies (Postgres, Valkey, outbox, consumers).
@@ -189,20 +192,38 @@ func NewRouter(cfg RouterConfig) *Router {
 	return &Router{engine: engine}
 }
 
-// registerDocsRoutes adds Swagger UI and AsyncAPI Studio endpoints.
+// registerDocsRoutes adds Swagger UI (with BCBP dark theme) and AsyncAPI Studio endpoints.
 func registerDocsRoutes(engine *gin.Engine, docs DocsConfig) {
-	// AsyncAPI Studio and Swagger UI are served conditionally when DOCS_ENABLED=true.
+	// Swagger UI — /swagger/*any.
+	// The docs/swagger package is blank-imported in cmd/server/main.go so its
+	// init() registers the spec with the swag runtime before this runs.
+	// swagger-theme.css and swagger-initializer.js are intercepted here so
+	// the BCBP dark theme and definition-order sorting are applied.
+	stdSwagger := ginSwagger.WrapHandler(swaggerFiles.Handler)
+	engine.GET("/swagger/*any", func(c *gin.Context) {
+		if docs.AuthToken != "" && c.GetHeader("Authorization") != "Bearer "+docs.AuthToken {
+			c.Status(http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case strings.HasSuffix(c.Request.URL.Path, "/swagger-theme.css"):
+			SwaggerThemeHandler(c)
+		case strings.HasSuffix(c.Request.URL.Path, "/swagger-initializer.js"):
+			SwaggerInitializerHandler(c)
+		default:
+			stdSwagger(c)
+		}
+	})
+
+	// AsyncAPI event-contract viewer — /asyncapi.
+	// No CDN dependency: spec is parsed from api/asyncapi.yaml (embedded via
+	// api/embed.go) and rendered as a fully self-contained HTML page by
+	// AsyncAPIHandler (internal/adapter/inbound/http/asyncapi.go).
 	engine.GET("/asyncapi", func(c *gin.Context) {
 		if docs.AuthToken != "" && c.GetHeader("Authorization") != "Bearer "+docs.AuthToken {
 			c.Status(http.StatusUnauthorized)
 			return
 		}
-		// Serve a minimal AsyncAPI Studio HTML page embedding the spec URL.
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, asyncAPIStudioHTML)
+		AsyncAPIHandler(c)
 	})
 }
-
-const asyncAPIStudioHTML = `<!DOCTYPE html><html><head><title>AsyncAPI Studio – Commercial Entitlements</title></head>
-<body><asyncapi-component schemaUrl="/asyncapi.yaml"></asyncapi-component>
-<script src="https://unpkg.com/@asyncapi/react-component@latest/browser/standalone/index.js"></script></body></html>`

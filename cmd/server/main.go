@@ -37,6 +37,9 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/service"
 
+	// Register Swagger spec with the swag runtime so the UI handler can serve it.
+	_ "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/docs/swagger"
+
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/audit"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/auditoutbox"
 	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"

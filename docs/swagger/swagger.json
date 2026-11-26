@@ -1,18 +1,19 @@
 {
     "swagger": "2.0",
     "info": {
-        "description": "Manages per-tenant entitlement sets including plan-based limits, operator overrides, quota addons, trial profiles, and shortfall management.",
+        "description": "Manages per-tenant entitlement sets for the XpertPMS commercial domain.\n\n**Capabilities.** Plan-based limits · manual operator overrides · quota addon packs · trial profile assignment · drawdown recording · shortfall raise/resolve · plan catalog read-through.\n\n**Route prefixes.** `/api/v1/internal/*` — in-mesh services (mTLS, no JWT). `/api/v1/tenants/*` — tenant-scoped JWT callers. `/api/v1/operator/*` — platform operators.\n\n**Tenant isolation.** Every resource is scoped by `x-tenant-id`; cross-tenant reads are blocked by row-level security (RLS-1..RLS-6).\n\nEvery mutation echoes `record_version` for optimistic-locking (CONC-1).",
         "title": "Commercial Entitlements Service",
         "contact": {
             "name": "BCBP Solutions Platform Team",
-            "email": "platform@bcbpsolutions.com"
+            "email": "sharmila.dayalan@bcbpsolutions.com"
         },
         "license": {
             "name": "Proprietary"
         },
         "version": "1.0"
     },
-    "basePath": "/api/v1",
+    "host": "localhost:8080",
+    "basePath": "/",
     "paths": {
         "/api/v1/internal/tenants/{id}/entitlements": {
             "get": {
@@ -42,6 +43,53 @@
                 }
             }
         },
+        "/api/v1/internal/tenants/{id}/entitlements/drawdown": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal"
+                ],
+                "summary": "Record a quota drawdown (internal)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Drawdown request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/http.RecordDrawdownBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/http.DrawdownResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/internal/tenants/{id}/entitlements/recompute": {
             "post": {
                 "produces": [
@@ -65,6 +113,855 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/http.EffectiveSetResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/internal/tenants/{id}/plans/current": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal"
+                ],
+                "summary": "Get plan definition for the tenant's current plan (internal)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Plan code",
+                        "name": "plan_code",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.PlanResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/operator/plans": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "plans"
+                ],
+                "summary": "List all cached plan codes",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/operator/plans/{planCode}/refresh": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "plans"
+                ],
+                "summary": "Refresh a plan definition from IAM and warm local cache",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Plan code",
+                        "name": "planCode",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.PlanResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/operator/tenants/{id}/entitlements/addons": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "addons"
+                ],
+                "summary": "List quota addon packs",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/http.AddonResponse"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "addons"
+                ],
+                "summary": "Grant a quota addon pack",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Addon grant request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/http.AddAddonBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/http.AddonResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/operator/tenants/{id}/entitlements/addons/drawdowns": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "addons"
+                ],
+                "summary": "List quota drawdown records",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by limit key",
+                        "name": "limit_key",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/http.DrawdownResponse"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/operator/tenants/{id}/entitlements/addons/shortfalls": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "shortfalls"
+                ],
+                "summary": "List quota shortfalls",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by status (pending_approval, auto_accepted, approved, rejected, expired)",
+                        "name": "status",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/http.ShortfallResponse"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/operator/tenants/{id}/entitlements/addons/shortfalls/{shortfallId}/resolve": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "shortfalls"
+                ],
+                "summary": "Approve or reject a pending shortfall",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Shortfall UUID",
+                        "name": "shortfallId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Resolution (approve or reject)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/http.ResolveShortfallBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.ShortfallResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/operator/tenants/{id}/entitlements/addons/{addonId}": {
+            "delete": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "addons"
+                ],
+                "summary": "Remove a quota addon pack",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Addon UUID",
+                        "name": "addonId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Optional reason",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/operator/tenants/{id}/entitlements/overrides": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "overrides"
+                ],
+                "summary": "List active overrides for a tenant",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/http.OverrideResponse"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/operator/tenants/{id}/entitlements/overrides/{limitKey}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "overrides"
+                ],
+                "summary": "Get a single active override",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Limit key (e.g. llm_token_quota_monthly)",
+                        "name": "limitKey",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.OverrideResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "overrides"
+                ],
+                "summary": "Set or update a limit override",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Limit key",
+                        "name": "limitKey",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Override value and reason",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/http.SetOverrideBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.OverrideResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "overrides"
+                ],
+                "summary": "Remove a limit override",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Limit key",
+                        "name": "limitKey",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/operator/tenants/{id}/entitlements/overrides/{limitKey}/history": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "overrides"
+                ],
+                "summary": "Get override history for a limit key",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Limit key",
+                        "name": "limitKey",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/http.OverrideHistoryResponse"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/operator/tenants/{id}/entitlements/trial-overrides": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "trial"
+                ],
+                "summary": "List trial-scoped limit overrides",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/http.TrialOverrideResponse"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/operator/tenants/{id}/entitlements/trial-overrides/{limitKey}": {
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "trial"
+                ],
+                "summary": "Set a trial-scoped limit override",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Limit key",
+                        "name": "limitKey",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Override value (null = unlimited)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/http.SetTrialOverrideBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.TrialOverrideResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "trial"
+                ],
+                "summary": "Remove a trial-scoped limit override",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Limit key",
+                        "name": "limitKey",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/operator/tenants/{id}/entitlements/trial-profile": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "trial"
+                ],
+                "summary": "Get the current trial profile assignment",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.TrialAssignmentResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "trial"
+                ],
+                "summary": "Assign or update a trial profile",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Trial profile assignment",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/http.AssignTrialProfileBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.TrialAssignmentResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "trial"
+                ],
+                "summary": "Purge all trial data for a tenant",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     }
                 }
@@ -100,6 +997,28 @@
         }
     },
     "definitions": {
+        "http.AddAddonBody": {
+            "type": "object",
+            "required": [
+                "limit_key",
+                "reason",
+                "total_tokens"
+            ],
+            "properties": {
+                "expires_at": {
+                    "type": "string"
+                },
+                "limit_key": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "total_tokens": {
+                    "type": "integer"
+                }
+            }
+        },
         "http.AddonResourceEligibilityResponse": {
             "type": "object",
             "properties": {
@@ -108,6 +1027,96 @@
                 },
                 "reason": {
                     "type": "string"
+                }
+            }
+        },
+        "http.AddonResponse": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "expires_at": {
+                    "type": "string"
+                },
+                "granted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "limit_key": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "record_version": {
+                    "type": "integer"
+                },
+                "remaining_tokens": {
+                    "type": "integer"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "total_tokens": {
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "http.AssignTrialProfileBody": {
+            "type": "object",
+            "required": [
+                "ends_at",
+                "plan_code",
+                "profile",
+                "starts_at"
+            ],
+            "properties": {
+                "ends_at": {
+                    "type": "string"
+                },
+                "plan_code": {
+                    "type": "string"
+                },
+                "profile": {
+                    "type": "string"
+                },
+                "starts_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "http.DrawdownResponse": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "limit_key": {
+                    "type": "string"
+                },
+                "period_start": {
+                    "type": "string"
+                },
+                "recorded_at": {
+                    "type": "string"
+                },
+                "request_id": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "tokens_consumed": {
+                    "type": "integer"
                 }
             }
         },
@@ -167,6 +1176,265 @@
                     "type": "integer"
                 }
             }
+        },
+        "http.OverrideHistoryResponse": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "actor_id": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "limit_key": {
+                    "type": "string"
+                },
+                "new_value": {
+                    "type": "integer"
+                },
+                "old_value": {
+                    "type": "integer"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "http.OverrideResponse": {
+            "type": "object",
+            "properties": {
+                "expires_at": {
+                    "type": "string"
+                },
+                "limit_key": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "record_version": {
+                    "type": "integer"
+                },
+                "set_by": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "integer"
+                }
+            }
+        },
+        "http.PlanResponse": {
+            "type": "object",
+            "properties": {
+                "api_rate_limit_rps": {
+                    "type": "integer"
+                },
+                "api_request_budget_monthly": {
+                    "type": "integer"
+                },
+                "code": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "llm_token_quota_monthly": {
+                    "type": "integer"
+                },
+                "model_tier": {
+                    "type": "string"
+                },
+                "record_version": {
+                    "type": "integer"
+                },
+                "tender_limit": {
+                    "type": "integer"
+                },
+                "workflow_template_limit": {
+                    "type": "integer"
+                }
+            }
+        },
+        "http.RecordDrawdownBody": {
+            "type": "object",
+            "required": [
+                "limit_key",
+                "period_start",
+                "tokens_consumed"
+            ],
+            "properties": {
+                "limit_key": {
+                    "type": "string"
+                },
+                "period_start": {
+                    "type": "string"
+                },
+                "request_id": {
+                    "description": "idempotency key",
+                    "type": "string"
+                },
+                "tokens_consumed": {
+                    "type": "integer"
+                }
+            }
+        },
+        "http.ResolveShortfallBody": {
+            "type": "object",
+            "required": [
+                "disposition"
+            ],
+            "properties": {
+                "disposition": {
+                    "type": "string"
+                },
+                "disposition_ref": {
+                    "type": "string"
+                },
+                "note": {
+                    "type": "string"
+                }
+            }
+        },
+        "http.SetOverrideBody": {
+            "type": "object",
+            "required": [
+                "reason"
+            ],
+            "properties": {
+                "expires_at": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "value": {
+                    "description": "null = unlimited",
+                    "type": "integer"
+                }
+            }
+        },
+        "http.SetTrialOverrideBody": {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "description": "null = unlimited",
+                    "type": "integer"
+                }
+            }
+        },
+        "http.ShortfallResponse": {
+            "type": "object",
+            "properties": {
+                "available": {
+                    "type": "integer"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "disposition": {
+                    "type": "string"
+                },
+                "disposition_by": {
+                    "type": "string"
+                },
+                "disposition_note": {
+                    "type": "string"
+                },
+                "disposition_ref": {
+                    "type": "string"
+                },
+                "drawdown_id": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "limit_key": {
+                    "type": "string"
+                },
+                "requested": {
+                    "type": "integer"
+                },
+                "resolved_at": {
+                    "type": "string"
+                },
+                "shortfall": {
+                    "type": "integer"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "http.TrialAssignmentResponse": {
+            "type": "object",
+            "properties": {
+                "ends_at": {
+                    "type": "string"
+                },
+                "plan_code": {
+                    "type": "string"
+                },
+                "profile": {
+                    "type": "string"
+                },
+                "record_version": {
+                    "type": "integer"
+                },
+                "set_by": {
+                    "type": "string"
+                },
+                "starts_at": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "http.TrialOverrideResponse": {
+            "type": "object",
+            "properties": {
+                "limit_key": {
+                    "type": "string"
+                },
+                "set_by": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "integer"
+                }
+            }
         }
     },
     "tags": [
@@ -212,10 +1480,22 @@
         }
     ],
     "securityDefinitions": {
-        "BearerAuth": {
-            "description": "JWT bearer token from Keycloak. Prefix with \"Bearer \".",
+        "TenantID": {
+            "description": "Tenant UUID injected by the API gateway. Establishes the RLS scope (RLS-6).",
             "type": "apiKey",
-            "name": "Authorization",
+            "name": "x-tenant-id",
+            "in": "header"
+        },
+        "TenantRoles": {
+            "description": "Comma-separated role list. Operator routes require `platform_operator`; internal routes require `iam-system`.",
+            "type": "apiKey",
+            "name": "x-tenant-roles",
+            "in": "header"
+        },
+        "UserID": {
+            "description": "Authenticated user UUID. Use `iam-system` for in-mesh service calls on `/api/v1/internal/*`.",
+            "type": "apiKey",
+            "name": "x-user-id",
             "in": "header"
         }
     }

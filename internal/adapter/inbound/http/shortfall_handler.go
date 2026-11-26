@@ -25,6 +25,15 @@ func NewShortfallHandler(addonSvc port.AddonService) *ShortfallHandler {
 }
 
 // List handles GET /api/v1/operator/tenants/:id/entitlements/addons/shortfalls (ENT-O6).
+//
+//	@Summary	List quota shortfalls
+//	@Tags		shortfalls
+//	@Produce	json
+//	@Param		id		path		string	true	"Tenant UUID"
+//	@Param		status	query		string	false	"Filter by status (pending_approval, auto_accepted, approved, rejected, expired)"
+//	@Success	200		{array}		ShortfallResponse
+//	@Failure	400		{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/addons/shortfalls [get]
 func (h *ShortfallHandler) List(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 
@@ -52,6 +61,18 @@ func (h *ShortfallHandler) List(c *gin.Context) {
 }
 
 // Resolve handles POST /api/v1/operator/tenants/:id/entitlements/addons/shortfalls/:shortfallId/resolve (ENT-O7).
+//
+//	@Summary	Approve or reject a pending shortfall
+//	@Tags		shortfalls
+//	@Accept		json
+//	@Produce	json
+//	@Param		id				path		string					true	"Tenant UUID"
+//	@Param		shortfallId		path		string					true	"Shortfall UUID"
+//	@Param		body			body		ResolveShortfallBody	true	"Resolution (approve or reject)"
+//	@Success	200				{object}	ShortfallResponse
+//	@Failure	400				{object}	map[string]interface{}
+//	@Failure	404				{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/addons/shortfalls/{shortfallId}/resolve [post]
 func (h *ShortfallHandler) Resolve(c *gin.Context) {
 	actorID := actorFromClaims(c)
 

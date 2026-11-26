@@ -1,11 +1,86 @@
-basePath: /api/v1
+basePath: /
 definitions:
+  http.AddAddonBody:
+    properties:
+      expires_at:
+        type: string
+      limit_key:
+        type: string
+      reason:
+        type: string
+      total_tokens:
+        type: integer
+    required:
+    - limit_key
+    - reason
+    - total_tokens
+    type: object
   http.AddonResourceEligibilityResponse:
     properties:
       eligible:
         type: boolean
       reason:
         type: string
+    type: object
+  http.AddonResponse:
+    properties:
+      created_at:
+        type: string
+      expires_at:
+        type: string
+      granted_by:
+        type: string
+      id:
+        type: string
+      limit_key:
+        type: string
+      reason:
+        type: string
+      record_version:
+        type: integer
+      remaining_tokens:
+        type: integer
+      status:
+        type: string
+      tenant_id:
+        type: string
+      total_tokens:
+        type: integer
+      updated_at:
+        type: string
+    type: object
+  http.AssignTrialProfileBody:
+    properties:
+      ends_at:
+        type: string
+      plan_code:
+        type: string
+      profile:
+        type: string
+      starts_at:
+        type: string
+    required:
+    - ends_at
+    - plan_code
+    - profile
+    - starts_at
+    type: object
+  http.DrawdownResponse:
+    properties:
+      id:
+        type: string
+      limit_key:
+        type: string
+      period_start:
+        type: string
+      recorded_at:
+        type: string
+      request_id:
+        type: string
+      tenant_id:
+        type: string
+      tokens_consumed:
+        type: integer
     type: object
   http.EffectiveSetResponse:
     properties:
@@ -47,12 +122,192 @@ definitions:
         description: null means unlimited
         type: integer
     type: object
+  http.OverrideHistoryResponse:
+    properties:
+      action:
+        type: string
+      actor_id:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: integer
+      limit_key:
+        type: string
+      new_value:
+        type: integer
+      old_value:
+        type: integer
+      reason:
+        type: string
+      tenant_id:
+        type: string
+    type: object
+  http.OverrideResponse:
+    properties:
+      expires_at:
+        type: string
+      limit_key:
+        type: string
+      reason:
+        type: string
+      record_version:
+        type: integer
+      set_by:
+        type: string
+      tenant_id:
+        type: string
+      updated_at:
+        type: string
+      value:
+        type: integer
+    type: object
+  http.PlanResponse:
+    properties:
+      api_rate_limit_rps:
+        type: integer
+      api_request_budget_monthly:
+        type: integer
+      code:
+        type: string
+      display_name:
+        type: string
+      llm_token_quota_monthly:
+        type: integer
+      model_tier:
+        type: string
+      record_version:
+        type: integer
+      tender_limit:
+        type: integer
+      workflow_template_limit:
+        type: integer
+    type: object
+  http.RecordDrawdownBody:
+    properties:
+      limit_key:
+        type: string
+      period_start:
+        type: string
+      request_id:
+        description: idempotency key
+        type: string
+      tokens_consumed:
+        type: integer
+    required:
+    - limit_key
+    - period_start
+    - tokens_consumed
+    type: object
+  http.ResolveShortfallBody:
+    properties:
+      disposition:
+        type: string
+      disposition_ref:
+        type: string
+      note:
+        type: string
+    required:
+    - disposition
+    type: object
+  http.SetOverrideBody:
+    properties:
+      expires_at:
+        type: string
+      reason:
+        type: string
+      value:
+        description: null = unlimited
+        type: integer
+    required:
+    - reason
+    type: object
+  http.SetTrialOverrideBody:
+    properties:
+      value:
+        description: null = unlimited
+        type: integer
+    type: object
+  http.ShortfallResponse:
+    properties:
+      available:
+        type: integer
+      created_at:
+        type: string
+      disposition:
+        type: string
+      disposition_by:
+        type: string
+      disposition_note:
+        type: string
+      disposition_ref:
+        type: string
+      drawdown_id:
+        type: string
+      id:
+        type: string
+      limit_key:
+        type: string
+      requested:
+        type: integer
+      resolved_at:
+        type: string
+      shortfall:
+        type: integer
+      status:
+        type: string
+      tenant_id:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  http.TrialAssignmentResponse:
+    properties:
+      ends_at:
+        type: string
+      plan_code:
+        type: string
+      profile:
+        type: string
+      record_version:
+        type: integer
+      set_by:
+        type: string
+      starts_at:
+        type: string
+      tenant_id:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  http.TrialOverrideResponse:
+    properties:
+      limit_key:
+        type: string
+      set_by:
+        type: string
+      tenant_id:
+        type: string
+      updated_at:
+        type: string
+      value:
+        type: integer
+    type: object
+host: localhost:8080
 info:
   contact:
-    email: platform@bcbpsolutions.com
+    email: sharmila.dayalan@bcbpsolutions.com
     name: BCBP Solutions Platform Team
-  description: Manages per-tenant entitlement sets including plan-based limits, operator
-    overrides, quota addons, trial profiles, and shortfall management.
+  description: |-
+    Manages per-tenant entitlement sets for the XpertPMS commercial domain.
+
+    **Capabilities.** Plan-based limits · manual operator overrides · quota addon packs · trial profile assignment · drawdown recording · shortfall raise/resolve · plan catalog read-through.
+
+    **Route prefixes.** `/api/v1/internal/*` — in-mesh services (mTLS, no JWT). `/api/v1/tenants/*` — tenant-scoped JWT callers. `/api/v1/operator/*` — platform operators.
+
+    **Tenant isolation.** Every resource is scoped by `x-tenant-id`; cross-tenant reads are blocked by row-level security (RLS-1..RLS-6).
+
+    Every mutation echoes `record_version` for optimistic-locking (CONC-1).
   license:
     name: Proprietary
   title: Commercial Entitlements Service
@@ -76,6 +331,37 @@ paths:
       summary: Get effective entitlement set (internal)
       tags:
       - entitlements
+  /api/v1/internal/tenants/{id}/entitlements/drawdown:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Drawdown request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/http.RecordDrawdownBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/http.DrawdownResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Record a quota drawdown (internal)
+      tags:
+      - internal
   /api/v1/internal/tenants/{id}/entitlements/recompute:
     post:
       parameters:
@@ -94,6 +380,572 @@ paths:
       summary: Force recompute entitlement set
       tags:
       - entitlements
+  /api/v1/internal/tenants/{id}/plans/current:
+    get:
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Plan code
+        in: query
+        name: plan_code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.PlanResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get plan definition for the tenant's current plan (internal)
+      tags:
+      - internal
+  /api/v1/operator/plans:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              items:
+                type: string
+              type: array
+            type: object
+      summary: List all cached plan codes
+      tags:
+      - plans
+  /api/v1/operator/plans/{planCode}/refresh:
+    post:
+      parameters:
+      - description: Plan code
+        in: path
+        name: planCode
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.PlanResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Refresh a plan definition from IAM and warm local cache
+      tags:
+      - plans
+  /api/v1/operator/tenants/{id}/entitlements/addons:
+    get:
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/http.AddonResponse'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List quota addon packs
+      tags:
+      - addons
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Addon grant request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/http.AddAddonBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/http.AddonResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Grant a quota addon pack
+      tags:
+      - addons
+  /api/v1/operator/tenants/{id}/entitlements/addons/{addonId}:
+    delete:
+      consumes:
+      - application/json
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Addon UUID
+        in: path
+        name: addonId
+        required: true
+        type: string
+      - description: Optional reason
+        in: body
+        name: body
+        schema:
+          additionalProperties:
+            type: string
+          type: object
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Remove a quota addon pack
+      tags:
+      - addons
+  /api/v1/operator/tenants/{id}/entitlements/addons/drawdowns:
+    get:
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Filter by limit key
+        in: query
+        name: limit_key
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/http.DrawdownResponse'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List quota drawdown records
+      tags:
+      - addons
+  /api/v1/operator/tenants/{id}/entitlements/addons/shortfalls:
+    get:
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Filter by status (pending_approval, auto_accepted, approved,
+          rejected, expired)
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/http.ShortfallResponse'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List quota shortfalls
+      tags:
+      - shortfalls
+  /api/v1/operator/tenants/{id}/entitlements/addons/shortfalls/{shortfallId}/resolve:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Shortfall UUID
+        in: path
+        name: shortfallId
+        required: true
+        type: string
+      - description: Resolution (approve or reject)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/http.ResolveShortfallBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.ShortfallResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Approve or reject a pending shortfall
+      tags:
+      - shortfalls
+  /api/v1/operator/tenants/{id}/entitlements/overrides:
+    get:
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/http.OverrideResponse'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List active overrides for a tenant
+      tags:
+      - overrides
+  /api/v1/operator/tenants/{id}/entitlements/overrides/{limitKey}:
+    delete:
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Limit key
+        in: path
+        name: limitKey
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Remove a limit override
+      tags:
+      - overrides
+    get:
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Limit key (e.g. llm_token_quota_monthly)
+        in: path
+        name: limitKey
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.OverrideResponse'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get a single active override
+      tags:
+      - overrides
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Limit key
+        in: path
+        name: limitKey
+        required: true
+        type: string
+      - description: Override value and reason
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/http.SetOverrideBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.OverrideResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Set or update a limit override
+      tags:
+      - overrides
+  /api/v1/operator/tenants/{id}/entitlements/overrides/{limitKey}/history:
+    get:
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Limit key
+        in: path
+        name: limitKey
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/http.OverrideHistoryResponse'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get override history for a limit key
+      tags:
+      - overrides
+  /api/v1/operator/tenants/{id}/entitlements/trial-overrides:
+    get:
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/http.TrialOverrideResponse'
+            type: array
+      summary: List trial-scoped limit overrides
+      tags:
+      - trial
+  /api/v1/operator/tenants/{id}/entitlements/trial-overrides/{limitKey}:
+    delete:
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Limit key
+        in: path
+        name: limitKey
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Remove a trial-scoped limit override
+      tags:
+      - trial
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Limit key
+        in: path
+        name: limitKey
+        required: true
+        type: string
+      - description: Override value (null = unlimited)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/http.SetTrialOverrideBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.TrialOverrideResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Set a trial-scoped limit override
+      tags:
+      - trial
+  /api/v1/operator/tenants/{id}/entitlements/trial-profile:
+    delete:
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Purge all trial data for a tenant
+      tags:
+      - trial
+    get:
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.TrialAssignmentResponse'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get the current trial profile assignment
+      tags:
+      - trial
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Trial profile assignment
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/http.AssignTrialProfileBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.TrialAssignmentResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Assign or update a trial profile
+      tags:
+      - trial
   /api/v1/tenants/{id}/entitlements:
     get:
       parameters:
@@ -134,9 +986,22 @@ tags:
 - description: Health checks and operational endpoints (unauthenticated).
   name: infra
 securityDefinitions:
-  BearerAuth:
-    description: JWT bearer token from Keycloak. Prefix with "Bearer ".
+  TenantID:
+    description: Tenant UUID injected by the API gateway. Establishes the RLS scope
+      (RLS-6).
     in: header
-    name: Authorization
+    name: x-tenant-id
+    type: apiKey
+  TenantRoles:
+    description: Comma-separated role list. Operator routes require `platform_operator`;
+      internal routes require `iam-system`.
+    in: header
+    name: x-tenant-roles
+    type: apiKey
+  UserID:
+    description: Authenticated user UUID. Use `iam-system` for in-mesh service calls
+      on `/api/v1/internal/*`.
+    in: header
+    name: x-user-id
     type: apiKey
 swagger: "2.0"

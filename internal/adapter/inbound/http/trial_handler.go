@@ -23,6 +23,16 @@ func NewTrialHandler(trialSvc port.TrialService) *TrialHandler {
 }
 
 // AssignProfile handles PUT /api/v1/operator/tenants/:id/entitlements/trial-profile (ENT-O3).
+//
+//	@Summary	Assign or update a trial profile
+//	@Tags		trial
+//	@Accept		json
+//	@Produce	json
+//	@Param		id		path		string					true	"Tenant UUID"
+//	@Param		body	body		AssignTrialProfileBody	true	"Trial profile assignment"
+//	@Success	200		{object}	TrialAssignmentResponse
+//	@Failure	400		{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/trial-profile [put]
 func (h *TrialHandler) AssignProfile(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	actorID := actorFromClaims(c)
@@ -50,6 +60,17 @@ func (h *TrialHandler) AssignProfile(c *gin.Context) {
 }
 
 // SetOverride handles PUT /api/v1/operator/tenants/:id/entitlements/trial-overrides/:limitKey (ENT-O4).
+//
+//	@Summary	Set a trial-scoped limit override
+//	@Tags		trial
+//	@Accept		json
+//	@Produce	json
+//	@Param		id			path		string					true	"Tenant UUID"
+//	@Param		limitKey	path		string					true	"Limit key"
+//	@Param		body		body		SetTrialOverrideBody	true	"Override value (null = unlimited)"
+//	@Success	200			{object}	TrialOverrideResponse
+//	@Failure	400			{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/trial-overrides/{limitKey} [put]
 func (h *TrialHandler) SetOverride(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	actorID := actorFromClaims(c)
@@ -75,6 +96,14 @@ func (h *TrialHandler) SetOverride(c *gin.Context) {
 }
 
 // RemoveOverride handles DELETE /api/v1/operator/tenants/:id/entitlements/trial-overrides/:limitKey.
+//
+//	@Summary	Remove a trial-scoped limit override
+//	@Tags		trial
+//	@Param		id			path	string	true	"Tenant UUID"
+//	@Param		limitKey	path	string	true	"Limit key"
+//	@Success	204
+//	@Failure	404	{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/trial-overrides/{limitKey} [delete]
 func (h *TrialHandler) RemoveOverride(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	key := domain.LimitKey(c.Param("limitKey"))
@@ -91,6 +120,14 @@ func (h *TrialHandler) RemoveOverride(c *gin.Context) {
 }
 
 // GetAssignment handles GET /api/v1/operator/tenants/:id/entitlements/trial-profile.
+//
+//	@Summary	Get the current trial profile assignment
+//	@Tags		trial
+//	@Produce	json
+//	@Param		id	path		string	true	"Tenant UUID"
+//	@Success	200	{object}	TrialAssignmentResponse
+//	@Failure	404	{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/trial-profile [get]
 func (h *TrialHandler) GetAssignment(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	a, err := h.trialSvc.GetTrialAssignment(c.Request.Context(), tenantID)
@@ -103,6 +140,13 @@ func (h *TrialHandler) GetAssignment(c *gin.Context) {
 
 // PurgeTrial handles DELETE /api/v1/operator/tenants/:id/entitlements/trial-profile.
 // Removes all trial data (assignment + overrides) for the tenant.
+//
+//	@Summary	Purge all trial data for a tenant
+//	@Tags		trial
+//	@Param		id	path	string	true	"Tenant UUID"
+//	@Success	204
+//	@Failure	404	{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/trial-profile [delete]
 func (h *TrialHandler) PurgeTrial(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	if err := h.trialSvc.PurgeTrialForTenant(c.Request.Context(), tenantID); err != nil {
@@ -113,6 +157,13 @@ func (h *TrialHandler) PurgeTrial(c *gin.Context) {
 }
 
 // ListOverrides handles GET /api/v1/operator/tenants/:id/entitlements/trial-overrides.
+//
+//	@Summary	List trial-scoped limit overrides
+//	@Tags		trial
+//	@Produce	json
+//	@Param		id	path		string	true	"Tenant UUID"
+//	@Success	200	{array}		TrialOverrideResponse
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/trial-overrides [get]
 func (h *TrialHandler) ListOverrides(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	overrides, err := h.trialSvc.ListTrialOverrides(c.Request.Context(), tenantID)

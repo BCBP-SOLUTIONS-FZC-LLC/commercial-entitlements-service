@@ -1,32 +1,42 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "TenantEntitlementsChanged",
+  "title": "TenantEntitlementsChangedPayload",
   "type": "object",
-  "required": ["tenant_id", "version", "cause", "computed_at"],
+  "required": [
+    "tenant_id",
+    "version",
+    "cause",
+    "computed_at"
+  ],
+  "additionalProperties": false,
   "properties": {
     "tenant_id": {
       "type": "string",
-      "format": "uuid",
-      "description": "The tenant whose entitlements were recomputed."
+      "format": "uuid"
     },
     "version": {
       "type": "integer",
-      "minimum": 1,
-      "description": "Monotonically increasing snapshot version."
+      "minimum": 1
     },
     "cause": {
       "type": "string",
       "enum": [
-        "plan_change", "override_change", "addon_change", "trial_change",
-        "catalog_refresh", "billing_event", "manual_recompute",
-        "tenant_lifecycle", "shortfall_resolution"
-      ],
-      "description": "What triggered this recomputation."
+        "plan_change",
+        "override_change",
+        "addon_change",
+        "trial_change",
+        "catalog_refresh",
+        "billing_event",
+        "manual_recompute",
+        "tenant_lifecycle",
+        "shortfall_resolution"
+      ]
     },
     "changed_keys": {
       "type": "array",
-      "items": {"type": "string"},
-      "description": "Limit keys whose values changed in this version (empty = full refresh)."
+      "items": {
+        "type": "string"
+      }
     },
     "previous_version": {
       "type": "integer",
@@ -36,6 +46,5 @@
       "type": "string",
       "format": "date-time"
     }
-  },
-  "additionalProperties": true
+  }
 }

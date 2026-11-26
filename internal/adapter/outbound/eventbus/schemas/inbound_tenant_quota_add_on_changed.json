@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "InboundTenantQuotaAddOnChangedPayload",
+  "type": "object",
+  "required": [
+    "tenant_id",
+    "resource",
+    "delta",
+    "reason",
+    "billing_ref"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "resource": {
+      "type": "string"
+    },
+    "delta": {
+      "type": "integer",
+      "not": {
+        "const": 0
+      }
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "purchase",
+        "refund"
+      ]
+    },
+    "billing_ref": {
+      "type": "string"
+    },
+    "purchase_ref": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "purchased_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

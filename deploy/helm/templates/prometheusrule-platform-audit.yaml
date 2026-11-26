@@ -29,7 +29,7 @@ spec:
         {{- range .rules }}
         - {{- if .record }}
           record: {{ .record }}
-          expr: {{ .expr | toYaml | nindent 10 }}
+          expr: {{ .expr | quote }}
           {{- else }}
           alert: {{ .alert }}
           expr: |

@@ -183,12 +183,17 @@ func setupIntegrationDB(t *testing.T, ctx context.Context, tenantID uuid.UUID) (
 	port, _ := ctr.MappedPort(ctx, "5432")
 	dsn := fmt.Sprintf("postgres://postgres:password@%s:%s/entitlements_int_test?sslmode=disable", host, port.Port())
 
-	// Create entitlements_app role BEFORE migrations (migrations contain
-	// GRANT statements referencing this role — same fix as postgres tests).
+	// Create both roles BEFORE migrations (mirrors scripts/init-db.sql):
+	//   commercial_entitlements_app — target of GRANT statements in 000003/000004.
+	//   entitlements_app            — placeholder required because migration 000002
+	//     (on main, immutable per MIG-1) contains an unconditional bare GRANT to this
+	//     old name; without it MigrateSchema aborts on a fresh database.
 	superSeed, seedErr := dbseed.New(ctx, dsn)
 	require.NoError(t, seedErr)
 	require.NoError(t, superSeed.Exec(ctx,
-		"CREATE ROLE entitlements_app LOGIN PASSWORD 'apppassword' NOBYPASSRLS"))
+		"CREATE ROLE commercial_entitlements_app NOLOGIN"))
+	require.NoError(t, superSeed.Exec(ctx,
+		"CREATE ROLE entitlements_app NOLOGIN"))
 	superSeed.Close()
 
 	require.NoError(t, pgadapter.MigrateSchema(ctx, dsn, nil))

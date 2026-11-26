@@ -56,8 +56,27 @@ var buildVersion = "dev"
 
 const requestTimeout = 30 * time.Second
 
+// validateRequiredEnv exits with code 1 when critical env vars are absent,
+// before the server attempts any network connections. This keeps the smoke
+// test dependency-free: run the container with no env vars, expect exit 1.
+func validateRequiredEnv() {
+	var missing []string
+	if os.Getenv("DATABASE_URL") == "" && os.Getenv("PG_HOST") == "" {
+		missing = append(missing, "DATABASE_URL (or PG_HOST)")
+	}
+	if os.Getenv("IAM_CATALOG_BASE_URL") == "" {
+		missing = append(missing, "IAM_CATALOG_BASE_URL")
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(os.Stderr, "startup aborted — required env vars not set: %s\n",
+			strings.Join(missing, ", "))
+		os.Exit(1)
+	}
+}
+
 func main() {
 	appEnv := resolveAppEnv()
+	validateRequiredEnv()
 	if !isDevLikeAppEnv(appEnv) {
 		gin.SetMode(gin.ReleaseMode)
 	}

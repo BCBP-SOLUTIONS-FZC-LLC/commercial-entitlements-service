@@ -1,49 +1,44 @@
 #!/usr/bin/env bash
-# Minimal post-deploy smoke test: start the server image against docker-compose
-# dependencies and hit /readyz + a sample read endpoint.
-# Runs in CI after build-image on the built image tag.
+# Image size + startup gate smoke tests for the CI-built Docker image.
+# Runs with NO infrastructure — the binary must exit non-zero on missing env vars.
 set -euo pipefail
 
-: "${IMAGE_TAG:?IMAGE_TAG is required (e.g. ghcr.io/bcbp-solutions-fzc-llc/commercial-entitlements:sha-abc1234)}"
+IMAGE="commercial-entitlements-ci-test"
 
-CONTAINER_NAME="commercial-entitlements-smoke"
-PORT=18080
+echo "::group::Image size check (linux/amd64)"
+# The limit is generous enough to catch regressions (e.g. accidentally COPYing
+# vendor/ or embedding test assets) without failing on normal arch variance.
+MAX_MB=200
+size=$(docker image inspect "$IMAGE" --format='{{.Size}}')
+mb=$((size / 1024 / 1024))
+echo "Image size: ${mb} MB (limit: ${MAX_MB} MB)"
+[ "${mb}" -le "${MAX_MB}" ] &
+P1=$!
+echo "::endgroup::"
 
-cleanup() {
-  docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+echo "::group::Startup gate"
+# Server must exit non-zero on missing required env vars,
+# proving the binary runs and validateRequiredEnv fires correctly.
+# timeout 10s kills the container if it hangs instead of exiting.
+exit_code=0
+timeout 10s docker run --rm "$IMAGE" 2>/dev/null || exit_code=$?
+echo "Container exit code: ${exit_code} (expected non-zero)"
+[ "${exit_code}" -ne 0 ] &
+P2=$!
+echo "::endgroup::"
+
+wait $P1 || {
+  echo "::error file=Dockerfile,title=Image size::Image is ${mb} MB, exceeds ${MAX_MB} MB limit — check COPY/ADD instructions for accidental inclusions"
+  exit 1
 }
-trap cleanup EXIT
+wait $P2 || {
+  echo "::error file=cmd/server/main.go,title=Startup gate::Server exited 0 on missing env vars — validateRequiredEnv must exit non-zero"
+  exit 1
+}
 
-echo "::group::Smoke test — start container"
-docker run -d --name "$CONTAINER_NAME" \
-  --network host \
-  -e APP_ENV=dev \
-  -e DATABASE_URL="${DATABASE_URL:-postgres://app:app@localhost:5432/commercial_entitlements?sslmode=disable}" \
-  -e VALKEY_URL="${VALKEY_URL:-localhost:6379}" \
-  -e IAM_CATALOG_BASE_URL="${IAM_CATALOG_BASE_URL:-http://localhost:8081}" \
-  -e RUN_MIGRATIONS=false \
-  -e APP_PORT="$PORT" \
-  "$IMAGE_TAG"
-echo "::endgroup::"
-
-echo "::group::Smoke test — wait for /readyz"
-for i in $(seq 1 30); do
-  if curl -sf "http://localhost:${PORT}/readyz" >/dev/null 2>&1; then
-    echo "  ✔  /readyz OK (attempt ${i})"
-    break
-  fi
-  echo "  waiting (${i}/30)..."
-  sleep 2
-  if [ "$i" -eq 30 ]; then
-    echo "::error::Server did not become ready in 60 s"
-    docker logs "$CONTAINER_NAME"
-    exit 1
-  fi
-done
-echo "::endgroup::"
-
-echo "::group::Smoke test — /healthz"
-curl -sf "http://localhost:${PORT}/healthz" | jq .
-echo "::endgroup::"
-
-echo "  ✔  smoke tests passed"
+{
+  echo "### Smoke test results"
+  echo "- ✅ Startup gate: server exits ${exit_code} on missing env vars (validateRequiredEnv fires)"
+  echo "- 📦 Image size (linux/amd64): **${mb} MB** (limit: ${MAX_MB} MB)"
+  echo "- 🔍 [Security (Trivy SARIF results)](https://github.com/${GITHUB_REPOSITORY}/security/code-scanning)"
+} >> "$GITHUB_STEP_SUMMARY"

@@ -58,11 +58,14 @@ func setupTestDB(t *testing.T) (*pgcommon.Pool, *dbseed.Pool, *pgcommon.Pool, uu
 	superDSN, err := ctr.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
 
-	// Create the application role BEFORE running migrations.
-	// Migrations (000002, 000003) contain GRANT statements that reference
-	// commercial_entitlements_app — the role must already exist when they run.
-	// This matches production: the DBA pre-creates the role and the migration
-	// only grants permissions to it. (Pattern from iam-org-membership §rls_test.go)
+	// Create roles BEFORE running migrations (mirrors scripts/init-db.sql).
+	// Two roles are needed:
+	//   commercial_entitlements_app  — the runtime app role (appRole); used by
+	//     the app pool and GRANTed to by migrations 000003 and 000004.
+	//   entitlements_app             — placeholder NOLOGIN role required because
+	//     migration 000002 (on main) contains an unconditional GRANT to this old
+	//     name; without it the migration hard-fails on a fresh database. Migrations
+	//     000003 and 000004 revoke from it and re-grant to commercial_entitlements_app.
 	seedPool, err := dbseed.New(ctx, superDSN)
 	require.NoError(t, err)
 	t.Cleanup(seedPool.Close)
@@ -71,6 +74,8 @@ func setupTestDB(t *testing.T) (*pgcommon.Pool, *dbseed.Pool, *pgcommon.Pool, uu
 		`CREATE ROLE %s LOGIN PASSWORD '%s' NOBYPASSRLS`,
 		appRole, appRolePassword,
 	))
+	require.NoError(t, err)
+	err = seedPool.Exec(ctx, `CREATE ROLE entitlements_app NOLOGIN`)
 	require.NoError(t, err)
 
 	// Run migrations (now that the role exists, GRANTs inside migrations succeed).

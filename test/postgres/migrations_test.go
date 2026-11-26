@@ -23,10 +23,15 @@ import (
 // Feature:           Schema migration idempotency
 // Scenario:          Running MigrateSchema twice on the same database succeeds
 // Expected Result:   Second call returns no error
-// createRoleForMigration creates the commercial_entitlements_app role using the
-// superuser DSN before migrations run. Required because migrations 000002–000004
-// contain GRANT statements referencing this role (matches production setup
-// where scripts/init-db.sql pre-creates the role before the migrate Job runs).
+// createRoleForMigration mirrors scripts/init-db.sql: creates both the
+// production app role (commercial_entitlements_app) and the legacy placeholder
+// role (entitlements_app) before migrations run.
+//
+// Two roles are needed because migration 000002 (on main, immutable per MIG-1)
+// contains an unconditional GRANT to the old name "entitlements_app". Without
+// this placeholder role the migration hard-fails on a fresh database.
+// Migrations 000003 and 000004 revoke from entitlements_app and re-grant to
+// commercial_entitlements_app.
 func createRoleForMigration(t *testing.T, ctx context.Context, superDSN string) {
 	t.Helper()
 	raw, err := dbseedNew(ctx, superDSN)
@@ -34,6 +39,8 @@ func createRoleForMigration(t *testing.T, ctx context.Context, superDSN string) 
 	t.Cleanup(raw.Close)
 	err = raw.Exec(ctx, "CREATE ROLE "+appRole+" LOGIN PASSWORD '"+appRolePassword+"' NOBYPASSRLS")
 	require.NoError(t, err, "create "+appRole+" role before migrations")
+	err = raw.Exec(ctx, "CREATE ROLE entitlements_app NOLOGIN")
+	require.NoError(t, err, "create entitlements_app placeholder before migrations")
 }
 
 func TestP5Mig001_MigrateSchemaIdempotent(t *testing.T) {

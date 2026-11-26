@@ -19,6 +19,13 @@ BEGIN
     CREATE ROLE commercial_entitlements_migrator LOGIN PASSWORD 'devpassword' BYPASSRLS;
     GRANT ALL PRIVILEGES ON DATABASE commercial_entitlements TO commercial_entitlements_migrator;
   END IF;
+  -- Migration 000002 (on main) contains an unconditional GRANT … TO entitlements_app
+  -- (the original stale role name). Without this placeholder the migration fails on
+  -- a fresh database. 000003 and 000004 revoke from entitlements_app and re-grant to
+  -- commercial_entitlements_app, so this role never needs LOGIN access.
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'entitlements_app') THEN
+    CREATE ROLE entitlements_app NOLOGIN;
+  END IF;
 END
 $$;
 

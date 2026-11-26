@@ -106,6 +106,8 @@ components:
       title: Tenant State Changed (inbound from IAM Org & Membership)
       summary: "O&M's post-commit notification that a tenant's subscription state changed."
       contentType: application/json
+      x-lifecycle:
+        status: active
       payload:
         $ref: "#/components/schemas/InboundTenantStateChangedPayload"
 
@@ -114,6 +116,8 @@ components:
       title: Tenant Quota Add-On Changed (inbound from Billing)
       summary: "Billing's event for purchase and refund of quota add-on packs."
       contentType: application/json
+      x-lifecycle:
+        status: active
       payload:
         $ref: "#/components/schemas/InboundTenantQuotaAddOnChangedPayload"
 
@@ -160,7 +164,7 @@ components:
           type: string
           format: date-time
           description: "Wall-clock time the recomputation completed (UTC)."
-      additionalProperties: false
+      additionalProperties: true
 
     InboundTenantQuotaAddOnChangedPayload:
       type: object

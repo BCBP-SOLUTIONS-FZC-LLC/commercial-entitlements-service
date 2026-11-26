@@ -1,0 +1,73 @@
+{
+  "title": "commercial-entitlements — Platform Audit",
+  "uid": "commercial-entitlements-audit",
+  "tags": ["commercial", "entitlements", "audit", "platform-audit"],
+  "schemaVersion": 38,
+  "panels": [
+    {
+      "title": "Audit delivery rate by outcome",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (outcome, reason) (rate(platform_audit_deliveries_total{service=\"commercial-entitlements\", environment=\"$environment\"}[5m]))",
+          "legendFormat": "{{outcome}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "title": "Pending audit entries",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 8},
+      "targets": [
+        {
+          "expr": "max(platform_audit_pending_entries{service=\"commercial-entitlements\", environment=\"$environment\"})",
+          "legendFormat": "pending"
+        }
+      ]
+    },
+    {
+      "title": "Failed audit entries",
+      "type": "stat",
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 8},
+      "targets": [
+        {
+          "expr": "max(platform_audit_failed_entries{service=\"commercial-entitlements\", environment=\"$environment\"})",
+          "legendFormat": "failed"
+        }
+      ]
+    },
+    {
+      "title": "Audit delivery lag p99 (seconds)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "platform_audit:delivery_lag_seconds:p99_5m{service=\"commercial-entitlements\", environment=\"$environment\"}",
+          "legendFormat": "p99 delivery lag"
+        }
+      ]
+    },
+    {
+      "title": "Oldest pending entry age (seconds)",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "platform_audit:oldest_pending_age_seconds:max{service=\"commercial-entitlements\", environment=\"$environment\"}",
+          "legendFormat": "oldest pending"
+        }
+      ]
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "type": "custom",
+        "options": [{"value": "prod"}, {"value": "staging"}, {"value": "dev"}],
+        "current": {"value": "prod"}
+      }
+    ]
+  }
+}

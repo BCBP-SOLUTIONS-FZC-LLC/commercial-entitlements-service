@@ -1,134 +1,183 @@
-name: Validate — quality
+# Reusable workflow — quality gate.
+# fmt · tidy · vet · lint (golangci-lint) · vuln-check · Helm (lint + template + kubeconform).
+# Called by ci.yml and release.yml. Must pass before push/release; does NOT
+# gate coverage, trivy, or smoke (those only need validate-test.yml).
+# Helm validation runs inline here (not as a separate job) to keep the parallel
+# job count flat.
+name: Validate / Quality
 
 "on":
-  pull_request:
-  push:
-    branches: [main]
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref to check out (leave empty to use the caller ref)'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
-  pull-requests: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-  GOPRIVATE: github.com/BCBP-SOLUTIONS-FZC-LLC/*
-  GONOSUMDB: github.com/BCBP-SOLUTIONS-FZC-LLC/*
 
 jobs:
-  static-checks:
-    name: static checks
+  quality:
+    name: quality
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
         with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
           token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
 
-      - uses: actions/setup-go@v5
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache-dependency-path: |
+            go.sum
+            go.mod
 
       - name: Configure private module access
-        run: git config --global url."https://x-access-token:${{ secrets.CI_REPO_READ_TOKEN }}@github.com/".insteadOf "https://github.com/"
+        run: |
+          git config --global credential.helper store
+          echo "https://x-access-token:${{ secrets.GO_PRIVATE_TOKEN }}@github.com" > ~/.git-credentials
+          chmod 600 ~/.git-credentials
 
-      - name: go mod tidy
-        run: make tidy
+      - name: Download modules
+        env:
+          GOPRIVATE: github.com/BCBP-SOLUTIONS-FZC-LLC/*
+          GONOSUMDB: github.com/BCBP-SOLUTIONS-FZC-LLC/*
+        run: go mod download
 
-      - name: gofmt
-        run: make fmt-check
+      - name: Verify modules
+        run: go mod verify
 
-      - name: go vet
-        run: make vet
+      # Workflow files must use literal operators, not HTML entity encodings.
+      - name: Reject HTML-escaped operators in workflow files
+        run: |
+          if grep -REn '&(gt|lt|amp)' .github/workflows/ .github/scripts/; then
+            echo "::error::Workflow or script files contain HTML entities. Use literal operators instead."
+            exit 1
+          fi
 
-      - name: golangci-lint
-        run: make lint
+      # RLS-6 CI gate: reject any non-LOCAL SET app.tenant_id in Go/SQL source.
+      # The only legitimate way to bind the GUC is via pgcommon.WithGUCSet /
+      # GUCSetFromContext, which emits SET LOCAL inside a transaction. A
+      # session-scoped SET would persist across pooled backends and leak across
+      # tenants under PgBouncer — the exact breach RLS-6 exists to prevent.
+      - name: Reject non-LOCAL SET app.tenant_id (RLS-6)
+        run: |
+          hits=$(grep -REn '\bSET[[:space:]]+("?app\.tenant_id"?)[[:space:]]*=' \
+                   --include='*.go' --include='*.sql' \
+                   cmd/ internal/ | grep -v 'SET LOCAL' | grep -v 'set_config' || true)
+          if [ -n "$hits" ]; then
+            echo "::error::Non-LOCAL SET app.tenant_id detected (RLS-6). Use pgcommon.WithGUCSet + RunInTx which emits SET LOCAL inside a tx."
+            echo "$hits"
+            exit 1
+          fi
+          echo "RLS-6 non-LOCAL SET check passed."
 
-      - name: arch-lint
-        run: make arch-lint
+      # Enterprise Platform Observability Standard: every registered Prometheus
+      # collector must follow the commercial_entitlements_*/platform_* naming
+      # hierarchy, the _total/_seconds suffix rules.
+      - name: Metric naming convention check
+        run: bash .github/scripts/check-metric-naming.sh
 
-      - name: Swagger staleness
-        run: bash .github/scripts/check-swagger-stale.sh
+      # Validates the Prometheus metrics registry for commercial-entitlements:
+      # prefix conformance, duplicate names, counter/histogram suffix rules.
+      - name: Metrics registry ratification check
+        run: bash .github/scripts/metrics-registry-lint.sh
 
-      - name: Database access
-        run: bash .github/scripts/check-database-access.sh
+      # platform-gincommon's own metricslint: registry compliance and label
+      # vocabulary on a real scrape, plus legacy/unregistered names in alert
+      # rules, dashboards and runbooks.
+      - name: Observability standard lint (metricslint)
+        run: bash .github/scripts/metricslint.sh
 
-      - name: Events platform isolation
-        run: bash .github/scripts/check-events-platform.sh
-
-      - name: Forbidden events bypass
+      # Every SNS publish / SQS consume must go through platform-events
+      # (events.NewSNSPublisher / events.NewSQSConsumerWithClient), never a
+      # raw aws-sdk-go-v2 SNS/SQS call or a hand-built events.Envelope{}.
+      - name: Events bypass check
         run: bash .github/scripts/check-forbidden-events-bypass.sh
 
-      - name: Outbox access
+      # Structural isolation of the platform-events seams: outbox writes only
+      # in eventbus/publisher.go; inbox.NewStore and store.Process only in
+      # postgres/idempotency_repository.go; events.InitMetrics in composition roots.
+      - name: Events platform isolation check
+        run: bash .github/scripts/check-events-platform.sh
+
+      # Every outbox_events write/read/prune must go through platform-events
+      # (outbox.Enqueue / outbox.Runner.PrunePublished), never hand-rolled SQL.
+      - name: Outbox access check
         run: bash .github/scripts/check-outbox-access.sh
 
-      - name: Metric naming
-        run: bash .github/scripts/metricslint.sh
+      # All DB connections/configuration/operations must pass through
+      # platform-pgcommon (pgcommon.NewPool, RunInTx*, ConfigFromEnv).
+      - name: Database access check
+        run: bash .github/scripts/check-database-access.sh
+
+      - name: Format check
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "${unformatted}" ]; then
+            echo "${unformatted}" | while IFS= read -r f; do
+              echo "::error file=${f},title=Format check::Not formatted — run 'make fmt'"
+            done
+            exit 1
+          fi
+
+      - name: Tidy check
+        run: |
+          make tidy
+          if ! git diff --exit-code go.mod go.sum; then
+            echo "::error file=go.mod,title=Module drift::go.mod or go.sum is stale — run 'go mod tidy' and commit the result."
+            exit 1
+          fi
+
+      - name: Vet
+        run: make vet
+
+      - name: Lint
+        run: make lint
+
+      - name: Vulnerability check
+        run: |
+          if ! make vuln-check; then
+            echo "::error file=go.mod,title=Vulnerability found::govulncheck detected vulnerabilities — run 'make vuln-check' locally to view details."
+            exit 1
+          fi
+
+      # Enforce digest-pinned FROM lines in the Dockerfile. Floating tags (e.g.
+      # golang:1.26-alpine without @sha256:...) can be silently overwritten by
+      # upstream maintainers, breaking supply-chain guarantees.
+      - name: Dockerfile base image digest check
+        run: |
+          if grep -E '^FROM [^ @]+:[^ @]+( AS .+)?$' Dockerfile; then
+            echo "::error file=Dockerfile,title=Unpinned base image::Dockerfile FROM lines must use digest-pinned references (e.g. golang:1.26-alpine@sha256:...). Run 'make pin-base-images' to update."
+            exit 1
+          fi
+          echo "Dockerfile base images are digest-pinned."
+
+      # Helm lint (--strict) + helm template × 3 values combos + kubeconform.
+      # Runs inline here (same job as the Go quality checks) so there is no
+      # extra parallel job slot.
+      #
+      # Values combinations exercised:
+      #   base only | base+values-dev.yaml | base+values-prod.yaml
+      #
+      # kubeconform validates standard K8s resources (K8s 1.31.0 schemas).
+      # CRD kinds (ServiceMonitor, PrometheusRule, HTTPRoute, SecurityPolicy,
+      # AuthorizationPolicy) are skipped via -ignore-missing-schemas.
+      - name: Cache helm + kubeconform binaries
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/go/bin
+          key: helm-check-tools-${{ runner.os }}-helm3.16.3-kubeconform0.6.7
 
       - name: Helm lint + template + kubeconform
         run: bash .github/scripts/helm-check.sh
-
-  coverage:
-    name: coverage gate
-    runs-on: ubuntu-latest
-    needs: static-checks
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: commercial_entitlements
-          POSTGRES_USER: app
-          POSTGRES_PASSWORD: app
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U app -d commercial_entitlements"
-          --health-interval 5s --health-timeout 3s --health-retries 10
-      valkey:
-        image: valkey/valkey:7-alpine
-        ports: ["6379:6379"]
-        options: >-
-          --health-cmd "valkey-cli ping"
-          --health-interval 5s --health-timeout 3s --health-retries 10
-    env:
-      DATABASE_URL: postgres://app:app@localhost:5432/commercial_entitlements?sslmode=disable
-      SYSTEM_DATABASE_URL: postgres://app:app@localhost:5432/commercial_entitlements?sslmode=disable
-      VALKEY_URL: localhost:6379
-      IAM_CATALOG_BASE_URL: http://localhost:8081
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Configure private module access
-        run: git config --global url."https://x-access-token:${{ secrets.CI_REPO_READ_TOKEN }}@github.com/".insteadOf "https://github.com/"
-
-      - name: Run all test suites with coverage
-        run: make test-ci
-
-      - name: Coverage gate
-        id: coverage
-        run: bash .github/scripts/coverage-gate.sh
-        env:
-          COVERAGE_THRESHOLD: '95'
-
-      - name: PR summary comment
-        if: github.event_name == 'pull_request'
-        run: node .github/scripts/pr-summary.js
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          COVERAGE_PCT: ${{ steps.coverage.outputs.pct }}
-          COVERAGE_THRESHOLD: '95'
-
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: |
-            coverage.out
-            .coverage/
-          retention-days: 7

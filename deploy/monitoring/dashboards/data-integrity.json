@@ -1,0 +1,73 @@
+{
+  "title": "commercial-entitlements — Data Integrity",
+  "uid": "commercial-entitlements-integrity",
+  "tags": ["commercial", "entitlements", "integrity", "rls"],
+  "schemaVersion": 38,
+  "panels": [
+    {
+      "title": "RLS violations / sec",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (violation_type) (rate(commercial_entitlements_rls_violations_total{environment=\"$environment\"}[5m]))",
+          "legendFormat": "{{violation_type}}"
+        }
+      ]
+    },
+    {
+      "title": "Outbox: pending events",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 8},
+      "targets": [
+        {
+          "expr": "max(platform_outbox_pending_events{job=\"commercial-entitlements\", environment=\"$environment\"})",
+          "legendFormat": "pending"
+        }
+      ]
+    },
+    {
+      "title": "Outbox: oldest pending age (seconds)",
+      "type": "stat",
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 8},
+      "targets": [
+        {
+          "expr": "max(platform_outbox_oldest_pending_age_seconds{job=\"commercial-entitlements\", environment=\"$environment\"})",
+          "legendFormat": "oldest age"
+        }
+      ]
+    },
+    {
+      "title": "DB pool utilisation",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "max by (pool) (sum by (pool, instance) (platform_db_pool_connections{job=\"commercial-entitlements\", state=\"acquired\", environment=\"$environment\"}) / (sum by (pool, instance) (platform_db_pool_max_connections{job=\"commercial-entitlements\", environment=\"$environment\"}) > 0))",
+          "legendFormat": "{{pool}}"
+        }
+      ]
+    },
+    {
+      "title": "Cache hit/miss ratio",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (kind) (rate(commercial_entitlements_cache_hit_total{environment=\"$environment\"}[5m])) / (sum by (kind) (rate(commercial_entitlements_cache_hit_total{environment=\"$environment\"}[5m])) + sum by (kind) (rate(commercial_entitlements_cache_miss_total{environment=\"$environment\"}[5m])))",
+          "legendFormat": "hit ratio {{kind}}"
+        }
+      ]
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "type": "custom",
+        "options": [{"value": "prod"}, {"value": "staging"}, {"value": "dev"}],
+        "current": {"value": "prod"}
+      }
+    ]
+  }
+}

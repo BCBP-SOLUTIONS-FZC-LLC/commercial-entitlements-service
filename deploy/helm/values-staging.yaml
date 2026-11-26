@@ -1,0 +1,22 @@
+# Staging environment overrides for commercial-entitlements.
+# Merge with base values.yaml: helm upgrade ... -f values.yaml -f values-staging.yaml
+
+env:
+  APP_ENV: "staging"
+  LOG_LEVEL: "info"
+  OTEL_TRACES_SAMPLER_RATIO: "0.5"
+
+# Admit callers in staging with both NetworkPolicy (L3/L4) AND Istio
+# AuthorizationPolicy (L7 mTLS) — same as prod so the first staging deployment
+# exercises the same mesh rules as production.
+# Prerequisite: Istio installed and PeerAuthentication STRICT active in the
+# commercial namespace before deploying.
+callers:
+  enabled: true
+  istio:
+    enabled: true
+    trustDomain: cluster.local
+    existingCallerNamespaces:
+      - commercial      # commercial namespace: same-namespace services
+      - gateway         # Ingress controller / Envoy Gateway data plane
+      - observability   # Prometheus scrape (port 9090 only)

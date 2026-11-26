@@ -25,6 +25,15 @@ func NewAddonHandler(addonSvc port.AddonService) *AddonHandler {
 }
 
 // List handles GET /api/v1/operator/tenants/:id/entitlements/addons (ENT-O5).
+//
+//	@Summary	List quota addon packs
+//	@Tags		addons
+//	@Produce	json
+//	@Param		id	path		string	true	"Tenant UUID"
+//	@Success	200	{array}		AddonResponse
+//	@Failure	400	{object}	map[string]interface{}
+//	@Failure	404	{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/addons [get]
 func (h *AddonHandler) List(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	addons, err := h.addonSvc.ListAddons(c.Request.Context(), tenantID)
@@ -40,6 +49,16 @@ func (h *AddonHandler) List(c *gin.Context) {
 }
 
 // Add handles POST /api/v1/operator/tenants/:id/entitlements/addons.
+//
+//	@Summary	Grant a quota addon pack
+//	@Tags		addons
+//	@Accept		json
+//	@Produce	json
+//	@Param		id		path		string			true	"Tenant UUID"
+//	@Param		body	body		AddAddonBody	true	"Addon grant request"
+//	@Success	201		{object}	AddonResponse
+//	@Failure	400		{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/addons [post]
 func (h *AddonHandler) Add(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	actorID := actorFromClaims(c)
@@ -67,6 +86,17 @@ func (h *AddonHandler) Add(c *gin.Context) {
 }
 
 // Remove handles DELETE /api/v1/operator/tenants/:id/entitlements/addons/:addonId.
+//
+//	@Summary	Remove a quota addon pack
+//	@Tags		addons
+//	@Accept		json
+//	@Param		id		path	string							true	"Tenant UUID"
+//	@Param		addonId	path	string							true	"Addon UUID"
+//	@Param		body	body	map[string]string				false	"Optional reason"
+//	@Success	204
+//	@Failure	400		{object}	map[string]interface{}
+//	@Failure	404		{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/addons/{addonId} [delete]
 func (h *AddonHandler) Remove(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	actorID := actorFromClaims(c)
@@ -94,15 +124,29 @@ func (h *AddonHandler) Remove(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
+	metrics.IncAddonRemove()
 	c.Status(http.StatusNoContent)
 }
 
 // ListDrawdowns handles GET /api/v1/operator/tenants/:id/entitlements/addons/drawdowns.
+//
+//	@Summary	List quota drawdown records
+//	@Tags		addons
+//	@Produce	json
+//	@Param		id			path		string	true	"Tenant UUID"
+//	@Param		limit_key	query		string	false	"Filter by limit key"
+//	@Success	200			{array}		DrawdownResponse
+//	@Failure	400			{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/addons/drawdowns [get]
 func (h *AddonHandler) ListDrawdowns(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	limitKey := domain.LimitKey(c.Query("limit_key"))
 	if limitKey == "" {
 		limitKey = domain.LimitKeyLLMTokenQuotaMonthly
+	} else if !domain.KnownLimitKeys[limitKey] {
+		gincommon.AbortWithProblem(c, problem.NewBadRequestError(
+			"limit_key must be one of the recognised limit keys"))
+		return
 	}
 	drawdowns, err := h.addonSvc.ListDrawdowns(c.Request.Context(), tenantID, limitKey)
 	if err != nil {
@@ -118,6 +162,16 @@ func (h *AddonHandler) ListDrawdowns(c *gin.Context) {
 
 // RecordDrawdownInternal handles ENT-I3: POST /api/v1/internal/tenants/:id/entitlements/drawdown
 // Called by billing or usage services to deduct quota from addon packs.
+//
+//	@Summary	Record a quota drawdown (internal)
+//	@Tags		internal
+//	@Accept		json
+//	@Produce	json
+//	@Param		id		path		string				true	"Tenant UUID"
+//	@Param		body	body		RecordDrawdownBody	true	"Drawdown request"
+//	@Success	201		{object}	DrawdownResponse
+//	@Failure	400		{object}	map[string]interface{}
+//	@Router		/api/v1/internal/tenants/{id}/entitlements/drawdown [post]
 func (h *AddonHandler) RecordDrawdownInternal(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 

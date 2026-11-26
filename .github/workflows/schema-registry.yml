@@ -1,0 +1,267 @@
+# Auto-registers JSON schemas in AWS Glue Schema Registry.
+# commercial-entitlements produces one event type registered in a single registry:
+#   commercial-entitlements-events (1 schema: TenantEntitlementsChanged)
+#
+# Source of truth for schemas
+# ────────────────────────────
+# api/asyncapi.yaml  →  make extract-schemas  →  internal/adapter/outbound/eventbus/schemas/*.json
+#
+# Triggers:
+#   pull_request → main (schema files changed)    → pr-check  (validate + diff; read-only)
+#   push → main  (schema files changed)           → staging   (validate + diff + register)
+#   release published                             → production
+#   workflow_dispatch                             → chosen environment
+#
+# Step order — staging / production jobs (full pipeline):
+#   1. Validate schemas        — JSON syntax, draft-07 meta-schema, enum semantic
+#                                drift, lifecycle annotations, open-schema guard,
+#                                strict-mode scan, AsyncAPI↔schema coverage, AsyncAPI structure
+#   2. Check schema freeze     — blocks AWS steps when SCHEMA_FREEZE=true
+#   3. Configure credentials   — AWS IAM credentials for Glue
+#   4. Detect orphaned schemas — warn on Glue schemas without a repo file
+#   5. Diff vs. registry       — fail on breaking changes before any upload
+#   6. Register schemas        — idempotent create/update
+#   7. Update schema changelog — prepend dated entry; commit + push
+#   8. Emit metrics            — CloudWatch + logs (always runs)
+#
+# Step order — pr-check job (read-only):
+#   1. Validate schemas
+#   2. Configure credentials   — read-only access to staging registry
+#   3. Diff vs. registry
+name: Schema Registry
+
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/adapter/outbound/eventbus/schemas/**'
+      - 'api/asyncapi.yaml'
+  push:
+    branches: [main]
+    paths:
+      - 'internal/adapter/outbound/eventbus/schemas/**'
+      - 'api/asyncapi.yaml'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target registry environment'
+        required: true
+        type: choice
+        options: [staging, production]
+        default: staging
+
+permissions:
+  contents: write
+  pull-requests: read
+
+env:
+  SCHEMA_GOV_IMAGE: ghcr.io/bcbp-solutions-fzc-llc/platform-schemagov:0.4
+
+jobs:
+  # ── PR check (read-only) ──────────────────────────────────────────────────
+  pr-check:
+    name: Schema validate + diff (PR)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    environment: staging
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 2
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - name: Set up Python (schema-gov)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install schema-gov
+        run: |
+          pip install --no-cache-dir "git+https://x-access-token:${{ secrets.GO_PRIVATE_TOKEN }}@github.com/BCBP-SOLUTIONS-FZC-LLC/platform-schemagov.git@v0.4.0"
+
+      - name: Validate schemas (all passes)
+        run: |
+          schema-gov validate \
+            --asyncapi   api/asyncapi.yaml \
+            --schema-dir internal/adapter/outbound/eventbus/schemas
+
+      - name: Configure AWS credentials (read-only staging)
+        if: vars.AWS_REGION != ''
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Diff schemas vs. registry
+        if: vars.AWS_REGION != ''
+        env:
+          GLUE_REGISTRY_ENTITLEMENTS_NAME: ${{ vars.GLUE_REGISTRY_ENTITLEMENTS_NAME || 'commercial-entitlements-events' }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          schema-gov diff \
+            --registry "${GLUE_REGISTRY_ENTITLEMENTS_NAME}" \
+            --schema-dir internal/adapter/outbound/eventbus/schemas \
+            --env staging
+
+  # ── Staging registration ──────────────────────────────────────────────────
+  staging:
+    name: Register schemas → staging
+    runs-on: ubuntu-latest
+    if: |
+      vars.AWS_REGION != '' && (
+        github.event_name == 'push' ||
+        (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging'))
+    environment: staging
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 2
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - name: Set up Python (schema-gov)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install schema-gov
+        run: |
+          pip install --no-cache-dir "git+https://x-access-token:${{ secrets.GO_PRIVATE_TOKEN }}@github.com/BCBP-SOLUTIONS-FZC-LLC/platform-schemagov.git@v0.4.0"
+
+      - name: Validate schemas (all passes)
+        run: |
+          schema-gov validate \
+            --asyncapi   api/asyncapi.yaml \
+            --schema-dir internal/adapter/outbound/eventbus/schemas
+
+      - name: Check schema freeze
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          FREEZE=$(gh api "repos/${REPO}/environments/staging/variables/SCHEMA_FREEZE" \
+            2>/dev/null | jq -r '.value // ""' || true)
+          if [ "${FREEZE}" = "true" ]; then
+            echo "::error::SCHEMA_FREEZE=true for staging — schema registration is blocked. Lift the freeze first: gh variable delete SCHEMA_FREEZE --env staging"
+            exit 1
+          fi
+          echo "  ✔  no schema freeze active"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Diff schemas vs. registry
+        env:
+          GLUE_REGISTRY_ENTITLEMENTS_NAME: ${{ vars.GLUE_REGISTRY_ENTITLEMENTS_NAME || 'commercial-entitlements-events' }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          schema-gov diff \
+            --registry "${GLUE_REGISTRY_ENTITLEMENTS_NAME}" \
+            --schema-dir internal/adapter/outbound/eventbus/schemas \
+            --env staging
+
+      - name: Register schemas
+        env:
+          GLUE_REGISTRY_ENTITLEMENTS_NAME: ${{ vars.GLUE_REGISTRY_ENTITLEMENTS_NAME || 'commercial-entitlements-events' }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: bash .github/scripts/stage-produced-event-schemas.sh
+
+      - name: Update schema changelog
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          DATE=$(date -u +%Y-%m-%d)
+          if [ -f docs/schema-changelog.md ]; then
+            ENTRY="## ${DATE} — staged (staging)\n\nSchemas registered to commercial-entitlements-events registry."
+            sed -i "1s/^/${ENTRY}\n\n/" docs/schema-changelog.md
+            git add docs/schema-changelog.md
+            if ! git diff --cached --quiet; then
+              git commit -m "chore(schema): update schema changelog for staging registration [skip ci]"
+              git push origin HEAD
+            fi
+          fi
+
+  # ── Production registration ───────────────────────────────────────────────
+  production:
+    name: Register schemas → production
+    runs-on: ubuntu-latest
+    if: |
+      vars.AWS_REGION != '' && (
+        github.event_name == 'release' ||
+        (github.event_name == 'workflow_dispatch' && inputs.environment == 'production'))
+    environment: production
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 2
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - name: Set up Python (schema-gov)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install schema-gov
+        run: |
+          pip install --no-cache-dir "git+https://x-access-token:${{ secrets.GO_PRIVATE_TOKEN }}@github.com/BCBP-SOLUTIONS-FZC-LLC/platform-schemagov.git@v0.4.0"
+
+      - name: Validate schemas (all passes)
+        run: |
+          schema-gov validate \
+            --asyncapi   api/asyncapi.yaml \
+            --schema-dir internal/adapter/outbound/eventbus/schemas
+
+      - name: Check schema freeze
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          FREEZE=$(gh api "repos/${REPO}/environments/production/variables/SCHEMA_FREEZE" \
+            2>/dev/null | jq -r '.value // ""' || true)
+          if [ "${FREEZE}" = "true" ]; then
+            echo "::error::SCHEMA_FREEZE=true for production — schema registration is blocked. Lift the freeze first: gh variable delete SCHEMA_FREEZE --env production"
+            exit 1
+          fi
+          echo "  ✔  no schema freeze active"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Diff schemas vs. registry
+        env:
+          GLUE_REGISTRY_ENTITLEMENTS_NAME: ${{ vars.GLUE_REGISTRY_ENTITLEMENTS_NAME || 'commercial-entitlements-events' }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          schema-gov diff \
+            --registry "${GLUE_REGISTRY_ENTITLEMENTS_NAME}" \
+            --schema-dir internal/adapter/outbound/eventbus/schemas \
+            --env production
+
+      - name: Register schemas
+        env:
+          GLUE_REGISTRY_ENTITLEMENTS_NAME: ${{ vars.GLUE_REGISTRY_ENTITLEMENTS_NAME || 'commercial-entitlements-events' }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: bash .github/scripts/stage-produced-event-schemas.sh
+
+      - name: Emit metrics
+        if: always()
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          GLUE_REGISTRY_ENTITLEMENTS_NAME: ${{ vars.GLUE_REGISTRY_ENTITLEMENTS_NAME || 'commercial-entitlements-events' }}
+        run: |
+          echo "Schema registration completed for commercial-entitlements-events (production)"
+          echo "Registry: ${GLUE_REGISTRY_ENTITLEMENTS_NAME}"
+          echo "Schemas: TenantEntitlementsChanged"

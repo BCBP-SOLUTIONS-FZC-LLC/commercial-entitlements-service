@@ -1,0 +1,101 @@
+# SLO recording + burn-rate alerts for commercial-entitlements.
+#
+# Two SLOs are declared:
+#
+#  SLO-1  Recompute hot-path latency
+#         Target: 99% of entitlement recompute operations complete within
+#         500ms (snapshot lookup + cache write).
+#
+#  SLO-2  Write-path error rate
+#         Target: 99.9% of mutating requests on /api/v1/tenants/* return a
+#         non-5xx status (excludes intentional 4xx like optimistic-lock 409).
+#
+# metric_status: proposed — HTTP SLIs read platform_http_request_duration_seconds /
+# platform_http_requests_total (platform-gincommon). Alerts carry metric_status: proposed.
+
+groups:
+  # ── SLI recording ───────────────────────────────────────────────────────────
+  - name: commercial-entitlements.slo.records
+    interval: 30s
+    rules:
+      # Write-path error ratio.
+      - record: commercial_entitlements:write_error_ratio:rate5m
+        expr: |
+          sum by (domain, service, environment) (
+            rate(platform_http_requests_total{job="commercial-entitlements", status_class="5xx",
+              route=~"/api/v1/tenants/.*"}[5m])
+          )
+            /
+          sum by (domain, service, environment) (
+            rate(platform_http_requests_total{job="commercial-entitlements",
+              route=~"/api/v1/tenants/.*"}[5m])
+          )
+
+      - record: commercial_entitlements:write_error_ratio:rate30m
+        expr: |
+          sum by (domain, service, environment) (
+            rate(platform_http_requests_total{job="commercial-entitlements", status_class="5xx",
+              route=~"/api/v1/tenants/.*"}[30m])
+          )
+            /
+          sum by (domain, service, environment) (
+            rate(platform_http_requests_total{job="commercial-entitlements",
+              route=~"/api/v1/tenants/.*"}[30m])
+          )
+
+      - record: commercial_entitlements:write_error_ratio:rate1h
+        expr: |
+          sum by (domain, service, environment) (
+            rate(platform_http_requests_total{job="commercial-entitlements", status_class="5xx",
+              route=~"/api/v1/tenants/.*"}[1h])
+          )
+            /
+          sum by (domain, service, environment) (
+            rate(platform_http_requests_total{job="commercial-entitlements",
+              route=~"/api/v1/tenants/.*"}[1h])
+          )
+
+      - record: commercial_entitlements:write_error_ratio:rate6h
+        expr: |
+          sum by (domain, service, environment) (
+            rate(platform_http_requests_total{job="commercial-entitlements", status_class="5xx",
+              route=~"/api/v1/tenants/.*"}[6h])
+          )
+            /
+          sum by (domain, service, environment) (
+            rate(platform_http_requests_total{job="commercial-entitlements",
+              route=~"/api/v1/tenants/.*"}[6h])
+          )
+
+  # ── SLO burn-rate alerts ─────────────────────────────────────────────────────
+  - name: commercial-entitlements.slo.alerts
+    rules:
+      - alert: CommercialEntitlementsSLOWriteErrorBudgetFastBurn
+        expr: |
+          commercial_entitlements:write_error_ratio:rate1h > 14.4 * 0.001
+          and
+          commercial_entitlements:write_error_ratio:rate5m > 14.4 * 0.001
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+          slo: SLO-2
+          metric_status: proposed
+        annotations:
+          summary: "commercial-entitlements is burning write SLO error budget fast (14.4×)"
+          description: "More than 1.44% of write-path requests failed in the last hour and 5 min (SLO 99.9%)."
+
+      - alert: CommercialEntitlementsSLOWriteErrorBudgetSlowBurn
+        expr: |
+          commercial_entitlements:write_error_ratio:rate6h > 6 * 0.001
+          and
+          commercial_entitlements:write_error_ratio:rate30m > 6 * 0.001
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+          slo: SLO-2
+          metric_status: proposed
+        annotations:
+          summary: "commercial-entitlements is burning write SLO error budget (6×)"
+          description: "More than 0.6% of write-path requests failed over the last 6h and 30m (SLO 99.9%)."

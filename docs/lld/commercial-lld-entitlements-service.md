@@ -7,7 +7,7 @@
 | Document type | Low-Level Design (LLD) |
 | Service | Entitlements Service (`commercial-entitlements`) |
 | Go module | `github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements` |
-| Version | 1.15 |
+| Version | 1.20 |
 | Date | November 2026 |
 | Status | Draft for review |
 | Owner | Commercial Team |
@@ -22,7 +22,8 @@
 |---|---|---|
 | 1.19 | 2026-11-24 | **LLD gap closure — sync with actual implementation.** (1) ENUM renamed `addon_status` → `quota_addon_status`; values `exhausted`/`forfeited` → `consumed`/`revoked` to match migration 000001 and domain code. (2) `quota_addons` DDL aligned: `set_by` → `granted_by`; `limit_key` column added; `purchased_at`, `expiry_deferred_since`, `expiry_attempts` removed (not in schema). FIFO ordering corrected from `purchased_at` to `expires_at ASC NULLS LAST, created_at ASC`. (3) Migration `000002_addon_billing_ref` documented (adds `billing_ref` column + `uq_quota_addons_billing_ref` unique index; E-1/BL-OQ-4). (4) QA-5 updated — unique index is a second-line idempotency guard; QA-6 updated to reflect `consumed`/`revoked` semantics. (5) §8.4 refund sequence: `GetByID(purchase_ref)` → `GetByBillingRef(tenant_id, purchase_ref)` (E-2/BL-OQ-20); new edge-case table covering malformed-event NACK (Review-1), cross-tenant billing_ref alert+ack (Review-4), recompute-retry (Review-2), refund-before-purchase retry (Review-5). (6) ENT-I1 response: `addon_eligibility` per-resource field added (E-4/BL-OQ-3). (7) §13.1 CronJobs: replaced 2 entries (`cmd/expiry`, `cmd/catalog-refresh`) with 5 reconciler jobs via `cmd/reconciler --job=<name>`; added `AuthorizationPolicy` Helm resource (E-5/BL-OQ-3). (8) §17 error taxonomy: `billing_ref_already_claimed` added (Review-4). (9) EVT-8: removed "Sequential at MVP; ENT-D1 open" — ENT-D1 resolved via `CatalogFanoutWorkflow` (§8.6). |
 | 1.18 | 2026-11-24 | **BL-OQ-4 / BL-OQ-20 (W-7): add-on event ownership and AL-5 audit path documented.** §7.1: explicit no-event statement — Entitlements never publishes an add-on-specific event; operator corrections and pack expiry are audited exclusively via AL-5 (`billing.token_addon.granted`, `.revoked`, `.expired`). §7.2: `TenantQuotaAddOnChanged` consumer row expanded with `reason` enum (`purchase` \| `refund`) and both code paths. §8.4: flow diagram updated to show purchase and refund dispatch, `billing_ref`-based idempotency for purchase, and `purchase_ref` lookup for refund. |
-| 1.17 | 2026-11-22 | **ENT-D7 closed.** `TenantConverted` trial-deletion code confirmed complete (`membership_consumer.go` → `handleConverted`); "approved pending Product confirmation" caveat removed from §16.2. ENT-D6 trial profile limit numbers remain the only Product/Finance decision outstanding. |
+| 1.20 | 2026-11-25 | **E-3 read-race fix: subscribe to `TenantStateChanged` from iam-org-membership.** `TenantStateChanged{cause:TrialReactivated}` added to `membership-entitlements-q` consumer (§3.3.3, §7.2, §7.7 EVT-10). `InboundTenantStateChangedEvent` domain type added (`domain/event.go`). Dead `TenantConverted` and `TenantOffboarded` case handlers removed from `membership_consumer.go` — those events arrive from Realm Provisioner on `tenant-entitlements-q`, not on `membership-entitlements-q`. `dedup.go` `knownEventTypes` updated. AsyncAPI bumped to v1.4.0. ENT-D7 decision note corrected: trial-deletion on conversion is in `tenant_consumer.go → handleOffboard`, not `membership_consumer.go`. Config env var names aligned (§14 table). |
+| 1.17 | 2026-11-22 | **ENT-D7 closed.** `TenantConverted` trial-deletion code confirmed complete (`tenant_consumer.go` → `handleOffboard`); "approved pending Product confirmation" caveat removed from §16.2. ENT-D6 trial profile limit numbers remain the only Product/Finance decision outstanding. |
 | 1.16 | 2026-11-22 | **Workflow team response incorporated; Commercial confirmations recorded.** Five LLD wording corrections: §5.2 adds `x-tenant-roles` to ENT-I1 internal-route header check; fail-closed row scoped to gated limits with W-4 queue-grant exception; freshness row updated to actual built behaviour (60 s TTL, stale-while-revalidate up to 2× TTL, 10-minute fallback, configurable via `ENTITLEMENTS_STALE_TTL`); `dedicated_workflow_queue` sentence corrected to pick-start-queue-and-register-as-side-effect; §7.1.2 Workflow subscriber rows removed (not needed at Phase 1, note added). ENT-D10 updated with: Workflow confirmation of non-conflicting queue names and Go SDK v1.46.0; Commercial confirmations of port 8080 (final, `deploy/helm/values.yaml`), pod label `app.kubernetes.io/name: commercial-entitlements` (final, `deployment.yaml`), 10-min freshness fallback accepted, and Commercial SDK currently v1.30.0 (upgrade path noted). §16.3 Workflow Team sign-off updated to Conditionally Ready. Only remaining Commercial action: publish LLD v1.15 to design repository. |
 | 1.15 | 2026-11-18 | **ENT-D3 framed as Product decision PD-LLM-1 (Commercial HLD v0.62).** Nine principles recorded (tiers differ only for draft and judge; common platform models elsewhere; sole `bge-m3` and `bge-reranker-v2-m3`; cross-family judge; Sonnet default with Opus for defined scenarios; fixed-task aliases mapped to exact Bedrock IDs by configuration; English and Arabic evaluation before any replacement) and four confirmations required before approval (ap-south-1 availability, Arabic evaluation, Finance quota validation, `draft-premium-max` routing rules). No Entitlements change. |
 | 1.14 | 2026-11-18 | **ENT-D3 proposed model table recorded (Product decision memo; Commercial HLD v0.61).** §16.1 ENT-D3 now carries the proposed models per `model_tier` and task class, the virtual model names and the approval steps. Status: proposed, pending Product. No Entitlements change: the service serves the tier label only. |
@@ -163,7 +164,9 @@ commercial-entitlements/
 │   │   │   │                     #   Reason, BillingRef, Status, ExpiresAt, RecordVersion},
 │   │   │   │                     #   QuotaAddonDrawdown{ID, AddonID, TenantID, LimitKey, TokensConsumed, PeriodStart, RequestID},
 │   │   │   │                     #   QuotaAddonStatus enum (active/consumed/expired/revoked)
-│   │   │   ├── event.go          # TenantEntitlementsChangedPayload, EffectiveSetCause enum
+│   │   │   ├── event.go          # TenantEntitlementsChangedPayload, EffectiveSetCause enum,
+│   │   │   │                     #   InboundBillingEvent, InboundTenantEvent, InboundMembershipEvent,
+│   │   │   │                     #   InboundTenantStateChangedEvent (EVT-10)
 │   │   │   └── errors.go         # DomainError catalogue (ErrTenantNotFound, ErrUpstreamUnavailable, …)
 │   │   ├── port/
 │   │   │   ├── override_repository.go       # CRUD for entitlement_overrides + history rows
@@ -210,7 +213,8 @@ commercial-entitlements/
 │       │       │                           #   TenantReactivated (source=operator), TenantOffboarded, TrialExpired
 │       │       ├── catalog_consumer.go     # catalog-entitlements-q: PlanCatalogChanged — validate, re-fetch CAT-I2,
 │       │       │                           #   start CatalogFanoutWorkflow; ack only after start succeeds (§8.6, §9.7)
-│       │       ├── membership_consumer.go  # membership-entitlements-q: TenantMembershipsPurged
+│       │       ├── membership_consumer.go  # membership-entitlements-q: TenantMembershipsPurged,
+│       │       │                           #   TenantStateChanged{cause:TrialReactivated} (E-3; EVT-10)
 │       │       └── dedup.go               # processOnce / ackUnknown over port.Inbox
 │       └── temporal/
 │           ├── catalog_fanout_workflow.go  # CatalogFanoutWorkflow — page, bounded parallel activities, continue-as-new
@@ -308,11 +312,11 @@ Outbox (`outbox.Enqueue`, `outbox.Runner`, `PrunePublished`), inbox (`pkg/inbox 
 - **`billing-entitlements-q`** — `TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated` (source=billing)
 - **`tenant-entitlements-q`** — `TenantConverted`, `TenantSuspended`, `TenantReactivated` (source=operator), `TenantOffboarded`, `TrialExpired`
 - **`catalog-entitlements-q`** — `PlanCatalogChanged`
-- **`membership-entitlements-q`** — `TenantMembershipsPurged`
+- **`membership-entitlements-q`** — `TenantMembershipsPurged`; `TenantStateChanged` (cause=`TrialReactivated`) — published by iam-org-membership via transactional outbox after DB commit, eliminating the I-17 read race on conversion revert (E-3, EVT-10)
 
 All queues follow the `<topic-short>-<consumer>-q` naming convention (HLD §9.1). DLQs are `<queue>-dlq` with `maxReceiveCount=5`; the consumer forwards to the DLQ at receive 4. Idempotency via `processed_events` through `pkg/inbox`. The service does **not** self-consume — produce/consume sets are disjoint.
 
-The outbox publisher uses `events.WithCodec(ValidatingCodec(GlueCodec))` for `entitlement-events`. Glue schema version resolved once at startup by definition (`glue:GetSchemaByDefinition`); an unregistered definition fails startup. When `SNS_TOPIC_ARN` is unset (dev), `NoopEventPublisher` is wired; no outbox drain runs for SNS. The library's `outbox.Runner` polls every `OUTBOX_POLL_INTERVAL_MS` (500 ms), batch `OUTBOX_BATCH_SIZE` (50), max attempts `OUTBOX_MAX_ATTEMPTS` (5).
+The outbox publisher uses `events.WithCodec(ValidatingCodec(GlueCodec))` for `entitlement-events`. Glue schema version resolved once at startup by definition (`glue:GetSchemaByDefinition`); an unregistered definition fails startup. When `SNS_TOPIC_ENTITLEMENTS_ARN` is unset (dev), `NoopEventPublisher` is wired; no outbox drain runs for SNS. The library's `outbox.Runner` polls every `OUTBOX_POLL_INTERVAL_MS` (500 ms), batch `OUTBOX_BATCH_SIZE` (50), max attempts `OUTBOX_MAX_ATTEMPTS` (5).
 
 ### 3.4 Key invariants
 
@@ -1740,6 +1744,7 @@ Each queue has a DLQ (`<queue>-dlq`, `maxReceiveCount: 5`). SNS filter policies 
 | `tenant-entitlements-q` | `TrialExpired` | Recompute; if not converted → state → `suspended` |
 | `catalog-entitlements-q` | `PlanCatalogChanged` | Invalidate `plan_catalog_cache`; re-fetch CAT-I2; **start `CatalogFanoutWorkflow`** (§8.6), which recomputes only the tenants on the changed plan; acknowledge after the start succeeds. **Field validation:** the event's plan identifier field is `code`, not `plan_code` — the consumer must validate against the registered schema (HLD §5.2 warning; Core's own copy had this mismatch and dead-lettered every event) |
 | `membership-entitlements-q` | `TenantMembershipsPurged` | Forfeit all `quota_addons`; delete snapshot, Valkey key, trial assignments |
+| `membership-entitlements-q` | `TenantStateChanged` (cause=`TrialReactivated`) | Recompute with current I-17 subscription state; published by iam-org-membership via transactional outbox — read is safe on receipt (E-3 read-race fix, EVT-10). Other causes silently acked (arrive via dedicated events on `tenant-entitlements-q`). |
 
 ### 7.3 Outbox pattern
 
@@ -1802,6 +1807,7 @@ Schema version on outbound publishes: resolved from Glue at startup via `glue:Ge
 | EVT-7 | **`TenantEntitlementsChanged` is a push notification, not a data carrier.** The payload carries only `tenant_id`, `version`, `cause`, `changed_keys`, `previous_version`, `computed_at`. Consumers call ENT-I1 for the full effective set — they must never derive enforcement decisions from the event payload alone. |
 | EVT-8 | **Catalog refresh is fan-out safe.** On `PlanCatalogChanged`, affected tenants are recomputed in parallel via the `CatalogFanoutWorkflow` Temporal workflow (ENT-D1, resolved). Only tenants on the changed plan are recomputed; concurrency is capped at `FANOUT_MAX_PARALLEL`; continue-as-new paging prevents history overflow. See §8.6. |
 | EVT-9 | **`TenantMembershipsPurged` deletes all add-on packs.** All `quota_addons` rows are deleted in the purge transaction; no drawdown or expiry path can run after purge. `TenantEntitlementsChanged` is not emitted post-purge. |
+| EVT-10 | **`TenantStateChanged` from iam-org-membership resolves the I-17 read race on conversion revert (E-3).** O&M publishes `TenantStateChanged` via transactional outbox *after* its own DB commit. Entitlements subscribes on `membership-entitlements-q` and only acts when `cause == "TrialReactivated"` — an I-17 call made after receipt always observes the post-revert `trial` state. All other causes are silently acked because they arrive via dedicated events on `tenant-entitlements-q`. `TenantConverted` and `TenantOffboarded` are **not** produced by iam-org-membership and must never be expected on this queue. |
 
 ---
 
@@ -2237,7 +2243,7 @@ All `/api/v1/operator/*` handlers re-check `x-tenant-roles` contains `platform_o
 |---|---|
 | `DATABASE_URL` | AWS Secrets Manager; injected by Helm `ExternalSecret` |
 | `VALKEY_URL` | Same |
-| `AWS_REGION` / `SNS_TOPIC_ARN` / SQS queue URLs | Helm values (not secret) |
+| `AWS_REGION` / `SNS_TOPIC_ENTITLEMENTS_ARN` / SQS queue URLs | Helm values (not secret) |
 | mTLS certificates | Istio auto-rotate; not application-managed |
 
 ---
@@ -2340,11 +2346,11 @@ All configuration is via environment variables. Loaded at startup; no runtime re
 | `AUDIT_SOURCE_SERVICE` | `commercial-entitlements` | platform-audit: identifies this service in AL-5 entries |
 | `AUDIT_LOG_BASE_URL` | required | `http://iam-audit-log.iam.svc.cluster.local:8080` — platform-audit AL-5 endpoint |
 | `AUDIT_CALLER_DOMAIN` | `commercial` | platform-audit: caller domain stamped on every AL-5 entry |
-| `SNS_TOPIC_ARN` | — | Entitlement events topic; empty = NoopPublisher |
-| `SQS_BILLING_QUEUE_URL` | required | `billing-entitlements-q` URL |
-| `SQS_TENANT_QUEUE_URL` | required | `tenant-entitlements-q` URL |
-| `SQS_CATALOG_QUEUE_URL` | required | `catalog-entitlements-q` URL |
-| `SQS_MEMBERSHIP_QUEUE_URL` | required | `membership-entitlements-q` URL |
+| `SNS_TOPIC_ENTITLEMENTS_ARN` | — | Entitlement events topic; empty = NoopPublisher |
+| `SQS_BILLING_ENTITLEMENTS_QUEUE_URL` | required | `billing-entitlements-q` URL |
+| `SQS_TENANT_ENTITLEMENTS_QUEUE_URL` | required | `tenant-entitlements-q` URL |
+| `SQS_CATALOG_ENTITLEMENTS_QUEUE_URL` | required | `catalog-entitlements-q` URL |
+| `SQS_MEMBERSHIP_ENTITLEMENTS_QUEUE_URL` | required | `membership-entitlements-q` URL |
 | `IAM_CORE_BASE_URL` | required | Core service base URL for I-17 |
 | `IAM_CATALOG_BASE_URL` | required | Catalog service base URL for CAT-I2 |
 | `AUDIT_LOG_BASE_URL` | required | Audit Log service base URL for AL-5 |
@@ -2683,7 +2689,7 @@ Tender Service namespace, ServiceAccount, and pod label are needed to admit Tend
 | CD-55 | Token add-on balance via `quota_addons` + `quota_addon_drawdowns`; FIFO draw; 12-month expiry | Commercial Team | 2026-11-14 |
 | ENT-D1 | `PlanCatalogChanged` fan-out as a Temporal workflow from Phase 1: affected tenants only, parallel activities under configurable concurrency, platform Temporal cluster (§8.6) | Commercial Team (TL discussion) | 2026-11-17 |
 | ENT-D4 | Override expiry as a dedicated Temporal workflow (`OverrideExpiryFanoutWorkflow`) in Phase 1, same batching, concurrency, retry and observability model as ENT-D1 (§8.7) | Commercial Team (resolved by the ENT-D1 decision) | 2026-11-17 |
-| ENT-D7 | On `TenantConverted`, `tenant_trial_assignments` and `trial_entitlement_overrides` are deleted; commercial `entitlement_overrides` stay in effect. A trial benefit meant to persist must be re-created as a commercial override before or during conversion (ENT-INV-7). Separates trial incentives from contractual entitlements. **Code complete** (`membership_consumer.go` → `handleConverted`, single transaction, ENT-INV-7 enforced) | Commercial Team | 2026-11-22 |
+| ENT-D7 | On `TenantConverted`, `tenant_trial_assignments` and `trial_entitlement_overrides` are deleted; commercial `entitlement_overrides` stay in effect. A trial benefit meant to persist must be re-created as a commercial override before or during conversion (ENT-INV-7). Separates trial incentives from contractual entitlements. **Code complete** (`tenant_consumer.go` → `handleOffboard`, single transaction, ENT-INV-7 enforced; `TenantConverted` arrives from Realm Provisioner on `tenant-entitlements-q`) | Commercial Team | 2026-11-22 |
 | ENT-D9 | Drawdown shortfalls are recorded, not silently absorbed: drain all balances, persist the uncovered amount as a reconciliation record, emit an audit event, increment metrics and alert above configurable thresholds; silent absorption rejected. Resolution policy → ENT-D11 | Commercial + Product | 2026-11-18 |
 | ENT-D11 | Every shortfall gets a formal disposition: at or below tolerance auto-accepted as commercial loss; above it operator review resolving as accepted loss, entitlement correction, metering correction or billing escalation; all audited and linked to the shortfall; Commercial owns loss acceptance and billing escalation, Entitlements balance corrections, Usage & Metering usage corrections; repeated or high-value shortfalls escalated regardless (QAS-5 to QAS-7) | Commercial + Product | 2026-11-18 |
 | ENT-D12 | Shortfall defaults approved: tolerance 10,000 tokens and 1 %, high-value 250,000 tokens, repetition 2 within 3 periods; configuration-driven, adjustable after production review; high-value or repeated shortfalls always go to operator review and Commercial escalation | Commercial | 2026-11-18 |

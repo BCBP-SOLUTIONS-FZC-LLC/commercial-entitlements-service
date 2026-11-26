@@ -23,9 +23,19 @@ linters:
         - name: error-return
         - name: error-strings
         - name: error-naming
+    # Every DB connection/pool in this service — production and test alike —
+    # must go through pgcommon.NewPool (internal/adapter/outbound/postgres/db.go)
+    # so GUC binding (RLS-6), tracing, and slow-query logging can never be
+    # silently bypassed. This bans the raw construction *functions*, not the
+    # pgxpool/pgx *types* — pgcommon's own WithConn/RunInTx callbacks legitimately
+    # need *pgxpool.Conn/pgx.Tx as parameter types, so a blanket import ban
+    # (depguard) would false-positive on those.
     forbidigo:
       analyze-types: true
       forbid:
+        # With analyze-types: true, forbidigo matches the resolved qualified
+        # identifier (e.g. "pgxpool.New"), NOT the call-with-parens source
+        # text — a trailing \( here would silently never match anything.
         - pattern: 'pgxpool\.(New|NewWithConfig|Connect)$'
           msg: "construct pools only via pgcommon.NewPool (internal/adapter/outbound/postgres/db.go) — never pgxpool directly"
         - pattern: 'pgx\.Connect(Config)?$'
@@ -43,6 +53,15 @@ issues:
     - path: '^cmd/'
       linters:
         - revive
+    - path: '^test/'
+      linters:
+        - revive
+        - unparam
+        - noctx
+    - path: 'test/'
+      linters:
+        - unparam
+        - noctx
     - path: '.*_test\.go'
       linters:
         - unparam

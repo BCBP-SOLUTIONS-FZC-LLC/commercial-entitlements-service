@@ -7,11 +7,20 @@
 --   reconciler bypasses this.
 
 -- ── Utility trigger ────────────────────────────────────────────────────────
+-- touch_row() updates updated_at and increments record_version on tables
+-- that carry it (entitlement_overrides, quota_addons, tenant_trial_assignments).
 
 CREATE OR REPLACE FUNCTION touch_row()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-    NEW.updated_at = now();
+    IF TG_TABLE_NAME = ANY(ARRAY[
+        'entitlement_overrides',
+        'quota_addons',
+        'tenant_trial_assignments'
+    ]) THEN
+        NEW.record_version := OLD.record_version + 1;
+    END IF;
+    NEW.updated_at := now();
     RETURN NEW;
 END;
 $$;
@@ -68,10 +77,10 @@ CREATE TABLE IF NOT EXISTS entitlement_snapshots (
     CONSTRAINT entitlement_snapshots_version_positive CHECK (version > 0)
 );
 
-CREATE INDEX IF NOT EXISTS idx_entitlement_snapshots_plan
-    ON entitlement_snapshots (plan);
-
--- ── Row-level security on snapshots ───────────────────────────────────────
+-- Composite index supports CatalogFanoutWorkflow keyset pagination:
+--   SELECT tenant_id FROM entitlement_snapshots WHERE plan = $1 AND tenant_id > $after
+CREATE INDEX IF NOT EXISTS idx_snapshots_plan
+    ON entitlement_snapshots (plan, tenant_id);
 
 ALTER TABLE entitlement_snapshots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE entitlement_snapshots FORCE ROW LEVEL SECURITY;
@@ -93,7 +102,12 @@ CREATE TABLE IF NOT EXISTS entitlement_overrides (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    PRIMARY KEY (tenant_id, limit_key)
+    PRIMARY KEY (tenant_id, limit_key),
+
+    CONSTRAINT chk_override_value_positive          CHECK (value IS NULL OR value > 0),
+    CONSTRAINT chk_rps_never_null                   CHECK (limit_key <> 'api_rate_limit_rps' OR value IS NOT NULL),
+    CONSTRAINT chk_override_record_version_positive CHECK (record_version > 0),
+    CONSTRAINT chk_override_reason_nonempty         CHECK (reason <> '')
 );
 
 CREATE INDEX IF NOT EXISTS idx_entitlement_overrides_expires
@@ -143,23 +157,30 @@ CREATE TABLE IF NOT EXISTS quota_addons (
     remaining_tokens BIGINT             NOT NULL,
     granted_by       UUID               NOT NULL,
     reason           TEXT               NOT NULL,
+    billing_ref      TEXT,              -- nullable; set only for billing-sourced packs
     status           quota_addon_status NOT NULL DEFAULT 'active',
     expires_at       TIMESTAMPTZ,
     record_version   BIGINT             NOT NULL DEFAULT 1,
     created_at       TIMESTAMPTZ        NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ        NOT NULL DEFAULT now(),
 
-    CONSTRAINT quota_addons_tokens_positive  CHECK (total_tokens > 0),
-    CONSTRAINT quota_addons_remaining_valid  CHECK (remaining_tokens >= 0 AND remaining_tokens <= total_tokens)
+    CONSTRAINT quota_addons_tokens_positive CHECK (total_tokens > 0),
+    CONSTRAINT quota_addons_remaining_valid CHECK (remaining_tokens >= 0 AND remaining_tokens <= total_tokens)
 );
 
-CREATE INDEX IF NOT EXISTS idx_quota_addons_tenant_key_status
-    ON quota_addons (tenant_id, limit_key, status)
+-- FIFO drawdown ordering: soonest-expiring first, then insertion order.
+CREATE INDEX IF NOT EXISTS idx_quota_addons_tenant_active
+    ON quota_addons (tenant_id, limit_key, expires_at ASC NULLS LAST, created_at ASC)
     WHERE status = 'active';
 
 CREATE INDEX IF NOT EXISTS idx_quota_addons_expires
     ON quota_addons (expires_at)
     WHERE expires_at IS NOT NULL AND status = 'active';
+
+-- Billing idempotency: prevents duplicate grants for the same billing event.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_quota_addons_billing_ref
+    ON quota_addons (billing_ref)
+    WHERE billing_ref IS NOT NULL;
 
 CREATE TRIGGER quota_addons_touch
     BEFORE UPDATE ON quota_addons
@@ -192,6 +213,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_quota_drawdowns_request
 
 CREATE INDEX IF NOT EXISTS idx_quota_drawdowns_tenant_key
     ON quota_addon_drawdowns (tenant_id, limit_key, recorded_at DESC);
+
+-- Supports FK lifecycle queries (expiry/revocation checks on addon_id).
+CREATE INDEX IF NOT EXISTS idx_quota_addon_drawdowns_addon_id
+    ON quota_addon_drawdowns (addon_id);
 
 ALTER TABLE quota_addon_drawdowns ENABLE ROW LEVEL SECURITY;
 ALTER TABLE quota_addon_drawdowns FORCE ROW LEVEL SECURITY;
@@ -237,15 +262,15 @@ CREATE POLICY tenant_isolation_shortfalls ON quota_addon_shortfalls
 -- ── tenant_trial_assignments ──────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS tenant_trial_assignments (
-    tenant_id      UUID         PRIMARY KEY,
-    plan_code      TEXT         NOT NULL,
+    tenant_id      UUID          PRIMARY KEY,
+    plan_code      TEXT          NOT NULL,
     profile        trial_profile NOT NULL,
-    starts_at      TIMESTAMPTZ  NOT NULL,
-    ends_at        TIMESTAMPTZ  NOT NULL,
-    set_by         UUID         NOT NULL,
-    record_version BIGINT       NOT NULL DEFAULT 1,
-    created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    updated_at     TIMESTAMPTZ  NOT NULL DEFAULT now()
+    starts_at      TIMESTAMPTZ   NOT NULL,
+    ends_at        TIMESTAMPTZ   NOT NULL,
+    set_by         UUID          NOT NULL,
+    record_version BIGINT        NOT NULL DEFAULT 1,
+    created_at     TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ   NOT NULL DEFAULT now()
 );
 
 CREATE TRIGGER tenant_trial_assignments_touch
@@ -268,7 +293,10 @@ CREATE TABLE IF NOT EXISTS trial_entitlement_overrides (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    PRIMARY KEY (tenant_id, limit_key)
+    PRIMARY KEY (tenant_id, limit_key),
+
+    CONSTRAINT chk_trial_override_value_positive CHECK (value IS NULL OR value > 0),
+    CONSTRAINT chk_trial_rps_never_null          CHECK (limit_key <> 'api_rate_limit_rps' OR value IS NOT NULL)
 );
 
 CREATE TRIGGER trial_entitlement_overrides_touch
@@ -307,3 +335,25 @@ CREATE TABLE IF NOT EXISTS processed_events (
 
 CREATE INDEX IF NOT EXISTS idx_processed_events_cleanup
     ON processed_events (processed_at);
+
+-- ── GRANT statements for entitlements_app ─────────────────────────────────
+-- IF EXISTS guard makes this idempotent: local dev creates the role via
+-- docker-compose init-db.sql; CI testcontainers create it in helpers_test.go.
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'entitlements_app') THEN
+        GRANT SELECT, INSERT, UPDATE         ON entitlement_snapshots             TO entitlements_app;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON entitlement_overrides             TO entitlements_app;
+        GRANT SELECT, INSERT                 ON entitlement_override_history      TO entitlements_app;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON tenant_trial_assignments          TO entitlements_app;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON trial_entitlement_overrides       TO entitlements_app;
+        GRANT SELECT, INSERT, UPDATE         ON quota_addons                      TO entitlements_app;
+        GRANT SELECT, INSERT                 ON quota_addon_drawdowns             TO entitlements_app;
+        GRANT SELECT, INSERT, UPDATE         ON quota_addon_shortfalls            TO entitlements_app;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON plan_catalog_cache                TO entitlements_app;
+        GRANT SELECT, INSERT                 ON processed_events                  TO entitlements_app;
+        GRANT USAGE, SELECT ON SEQUENCE entitlement_override_history_id_seq       TO entitlements_app;
+    END IF;
+END
+$$;

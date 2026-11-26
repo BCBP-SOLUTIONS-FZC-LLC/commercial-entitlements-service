@@ -11,14 +11,15 @@ import (
 	"os"
 	"time"
 
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-
 	"github.com/google/uuid"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 )
 
+// defaultTimeout is the per-request HTTP timeout for IAM catalog calls.
+// Override with IAM_CATALOG_TIMEOUT (e.g. "5s", "15s") — LLD §12.
 const defaultTimeout = 10 * time.Second
 
 // Client is a plain net/http-based client for the IAM catalog service.
@@ -30,6 +31,7 @@ type Client struct {
 }
 
 // New returns a Client. baseURL and apiKey are read from env vars when empty.
+// IAM_CATALOG_TIMEOUT overrides the default 10 s per-request HTTP deadline.
 func New(log port.Logger) *Client {
 	baseURL := os.Getenv("IAM_CATALOG_BASE_URL")
 	apiKey := os.Getenv("IAM_CATALOG_API_KEY")
@@ -37,8 +39,8 @@ func New(log port.Logger) *Client {
 		baseURL: baseURL,
 		apiKey:  apiKey,
 		http: &http.Client{
-			Timeout:   defaultTimeout,
-			Transport: otelhttp.NewTransport(http.DefaultTransport),
+			Timeout:   iamTimeout(),
+			Transport: traceInjectTransport{http.DefaultTransport},
 		},
 		log: log,
 	}
@@ -50,11 +52,45 @@ func NewWithConfig(baseURL, apiKey string, log port.Logger) *Client {
 		baseURL: baseURL,
 		apiKey:  apiKey,
 		http: &http.Client{
-			Timeout:   defaultTimeout,
-			Transport: otelhttp.NewTransport(http.DefaultTransport),
+			Timeout:   iamTimeout(),
+			Transport: traceInjectTransport{http.DefaultTransport},
 		},
 		log: log,
 	}
+}
+
+// iamTimeout reads IAM_CATALOG_TIMEOUT; falls back to defaultTimeout.
+func iamTimeout() time.Duration {
+	if s := os.Getenv("IAM_CATALOG_TIMEOUT"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultTimeout
+}
+
+// traceInjectTransport wraps every outbound IAM HTTP call in an OTel child
+// span via gincommon.NewTracer (OBS-9) and propagates the W3C traceparent
+// header so the IAM service can link to the caller's trace.
+//
+// This replaces otelhttp.NewTransport: gincommon is the platform's single
+// entry point for OTel, so we do not import go.opentelemetry.io packages
+// directly in internal adapter code.
+type traceInjectTransport struct{ http.RoundTripper }
+
+func (t traceInjectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	spanName := req.Method + " " + req.URL.Path
+	ctx, span := gincommon.NewTracer("iamclient").Start(req.Context(), spanName)
+	defer span.End()
+
+	// Inject W3C traceparent so IAM can link its spans to ours.
+	gincommon.InjectTraceContext(ctx, req.Header)
+
+	resp, err := t.RoundTripper.RoundTrip(req.WithContext(ctx))
+	if err != nil {
+		gincommon.RecordSpanError(ctx, err, "IAM request failed")
+	}
+	return resp, err
 }
 
 var _ port.IAMClient = (*Client)(nil)
@@ -74,7 +110,7 @@ func (c *Client) FetchPlan(ctx context.Context, planCode string) (*domain.Plan, 
 	if err != nil {
 		return nil, fmt.Errorf("iam: fetch plan %q: %w", planCode, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	switch resp.StatusCode {
 	case http.StatusNotFound:
@@ -107,7 +143,7 @@ func (c *Client) FetchTenantSubscription(ctx context.Context, tenantID uuid.UUID
 	if err != nil {
 		return nil, fmt.Errorf("iam: fetch subscription for %s: %w", tenantID, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	switch resp.StatusCode {
 	case http.StatusNotFound:

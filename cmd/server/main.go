@@ -37,6 +37,9 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/service"
 
+	// Register Swagger spec with the swag runtime so the UI handler can serve it.
+	_ "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/docs/swagger"
+
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/audit"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/auditoutbox"
 	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
@@ -53,8 +56,27 @@ var buildVersion = "dev"
 
 const requestTimeout = 30 * time.Second
 
+// validateRequiredEnv exits with code 1 when critical env vars are absent,
+// before the server attempts any network connections. This keeps the smoke
+// test dependency-free: run the container with no env vars, expect exit 1.
+func validateRequiredEnv() {
+	var missing []string
+	if os.Getenv("DATABASE_URL") == "" && os.Getenv("PG_HOST") == "" {
+		missing = append(missing, "DATABASE_URL (or PG_HOST)")
+	}
+	if os.Getenv("IAM_CATALOG_BASE_URL") == "" {
+		missing = append(missing, "IAM_CATALOG_BASE_URL")
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(os.Stderr, "startup aborted — required env vars not set: %s\n",
+			strings.Join(missing, ", "))
+		os.Exit(1)
+	}
+}
+
 func main() {
 	appEnv := resolveAppEnv()
+	validateRequiredEnv()
 	if !isDevLikeAppEnv(appEnv) {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -69,7 +91,7 @@ func main() {
 		Logger:         log,
 		ServiceName:    envOr("APP_NAME", "commercial-entitlements"),
 		BuildVersion:   envOr("BUILD_VERSION", buildVersion),
-		Domain:         "commercial",
+		Domain:         envOr("OBSERVABILITY_DOMAIN", "commercial"),
 		Environment:    appEnv,
 		RequestTimeout: requestTimeout,
 	}
@@ -87,6 +109,7 @@ func main() {
 	}
 
 	sqspipeline.InstallTracingHooks(cfg.ServiceName)
+	installOTelHooks(cfg.ServiceName)
 
 	_ = gincommon.ObservabilityMiddlewares(cfg)
 	metrics.Register(appEnv)
@@ -289,6 +312,7 @@ func main() {
 	overrideSvc := service.NewOverrideService(overrideRepo, effectSvc, txRunner).WithLogger(log)
 	addonSvc := service.NewAddonService(addonRepo, drawdownRepo, shortfallRepo, effectSvc, txRunner).
 		WithLogger(log).
+		WithShortfallConfig(loadShortfallConfig()).
 		WithAddonMetricsHooks(
 			func(key domain.LimitKey, hadShortfall bool) { metrics.IncDrawdown(key, hadShortfall) },
 			func(key domain.LimitKey, status domain.ShortfallStatus) { metrics.IncShortfallRaised(key, status) },
@@ -488,7 +512,16 @@ func main() {
 	}
 	drain.Wait()
 
+	// Drain outbox and audit runners in parallel, tracked in a WaitGroup so the
+	// pool is not released until both runners have finished flushing (LLD §7.3).
 	var runners sync.WaitGroup
+	runners.Add(1)
+	go func() {
+		defer runners.Done()
+		if err := outboxRunner.Stop(); err != nil {
+			log.Error("outbox runner drain error", map[string]interface{}{"error": err.Error()})
+		}
+	}()
 	if auditRunner != nil {
 		runners.Add(1)
 		go func() {
@@ -499,9 +532,6 @@ func main() {
 				log.Error("audit runner stop error", map[string]interface{}{"error": err.Error()})
 			}
 		}()
-	}
-	if err := outboxRunner.Stop(); err != nil {
-		log.Error("outbox runner drain error", map[string]interface{}{"error": err.Error()})
 	}
 	runners.Wait()
 	cancelBackground()

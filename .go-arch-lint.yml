@@ -1,104 +1,182 @@
-# go-arch-lint rules for commercial-entitlements.
-# Component boundaries: core (domain + port + service) may not import adapters.
-# Adapters may import core. Adapters must not import each other.
-version: 1
-
+version: 3
 workdir: .
 
 allow:
-  depOnly: true
+  depOnAnyVendor: true
+  # Deep-scan follows method calls through the composition root and flags every
+  # DI wire (cmd passing an outbound adapter to a service constructor) as a
+  # cross-layer dependency. That is correct Clean Architecture behaviour in
+  # main.go — keep import-level checks only.
+  deepScan: false
+
+# Tests, dev scripts, and deploy manifests are not part of the runtime
+# architecture. Excluding them keeps the linter focused on production code.
+exclude:
+  - test
+  - scripts
+  - deploy
+  - tools
+
+excludeFiles:
+  - '.*_test\.go$'
 
 components:
-  core_domain:
-    in: internal/core/domain/**
-  core_port:
-    in: internal/core/port/**
-  core_service:
-    in: internal/core/service/**
-  adapters_inbound_http:
-    in: internal/adapter/inbound/http/**
-  adapters_inbound_consumer:
-    in: internal/adapter/inbound/consumer/**
-  adapters_inbound_sqspipeline:
-    in: internal/adapter/inbound/sqspipeline/**
-  adapters_outbound_postgres:
-    in: internal/adapter/outbound/postgres/**
-  adapters_outbound_valkey:
-    in: internal/adapter/outbound/valkey/**
-  adapters_outbound_eventbus:
-    in: internal/adapter/outbound/eventbus/**
-  adapters_outbound_metrics:
-    in: internal/adapter/outbound/metrics/**
-  adapters_outbound_auditrecorder:
-    in: internal/adapter/outbound/auditrecorder/**
-  adapters_outbound_iamclient:
-    in: internal/adapter/outbound/iamclient/**
-  adapters_temporal:
-    in: internal/adapter/temporal/**
+  domain:
+    in: internal/core/domain
+
+  port:
+    in: internal/core/port
+
+  service:
+    in: internal/core/service
+
+  # Embedded JSON schemas for produced domain events (used by eventbus
+  # validating codec — one file: tenant_entitlements_changed.json).
+  eventschema:
+    in: internal/adapter/outbound/eventbus/schemas
+
+  # Embedded AsyncAPI spec asset (api/asyncapi.yaml, api/embed.go) — single
+  # source of truth for the event contract, served at /asyncapi.yaml.
+  apispec:
+    in: api
+
+  # Cross-cutting Prometheus counters/histograms. Imported by inbound
+  # handlers and consumers (commercial_entitlements_* Tier 3 metrics).
+  observability:
+    in: internal/adapter/outbound/metrics
+
+  adapters_inbound:
+    in:
+      - internal/adapter/inbound/http
+      - internal/adapter/inbound/consumer
+
+  # The inbound SQS pipeline wrapped around every consumer's Handle:
+  # DLQ shortcut, consumed-schema validation, consumer span, inbox claim.
+  inbound_pipeline:
+    in: internal/adapter/inbound/sqspipeline
+
+  adapters_outbound:
+    in:
+      - internal/adapter/outbound/postgres
+      - internal/adapter/outbound/valkey
+      - internal/adapter/outbound/eventbus
+      - internal/adapter/outbound/iamclient
+      - internal/adapter/outbound/auditrecorder
+
+  # Temporal workflow worker + activities + catalog fan-out workflow.
+  # Separate component because it imports domain + port + service directly
+  # (the worker executes service-layer logic inside activity functions).
+  temporal:
+    in: internal/adapter/temporal
+
+  # Write-side reconciler jobs dispatched by cmd/reconciler --job=<name>.
+  # Jobs call outbound adapters via cmd's own wiring, not the other way round.
+  reconciler_jobs:
+    in: cmd/reconciler/jobs
+
+  # Generated Swagger docs — output of `make swag`. Declared as a component
+  # so arch-lint doesn't fail on the blank import in cmd/server/main.go.
+  docs_swagger:
+    in: docs/swagger
+
   cmd:
-    in: cmd/**
+    in:
+      - cmd/server
+      - cmd/reconciler
+      - cmd/worker
+      - cmd/migrate
+      - cmd/expiry
+      - cmd/catalog-refresh
 
 deps:
-  core_domain:
-    canUse: []
-  core_port:
-    canUse:
-      - core_domain
-  core_service:
-    canUse:
-      - core_domain
-      - core_port
-  adapters_inbound_http:
-    canUse:
-      - core_domain
-      - core_port
-  adapters_inbound_consumer:
-    canUse:
-      - core_domain
-      - core_port
-      - adapters_outbound_metrics
-  adapters_inbound_sqspipeline:
-    canUse:
-      - core_port
-  adapters_outbound_postgres:
-    canUse:
-      - core_domain
-      - core_port
-  adapters_outbound_valkey:
-    canUse:
-      - core_domain
-      - core_port
-  adapters_outbound_eventbus:
-    canUse:
-      - core_domain
-      - core_port
-  adapters_outbound_metrics:
-    canUse:
-      - core_domain
-  adapters_outbound_auditrecorder:
-    canUse:
-      - core_port
-  adapters_outbound_iamclient:
-    canUse:
-      - core_domain
-      - core_port
-  adapters_temporal:
-    canUse:
-      - core_domain
-      - core_port
-      - core_service
+  # domain: no internal imports — pure value types only.
+  domain:
+    anyVendorDeps: true
+
+  # port: only domain.
+  port:
+    mayDependOn:
+      - domain
+
+  # service: domain + port + observability (metrics helpers called inline in
+  # service methods for recompute, drawdown, override, shortfall, trial).
+  service:
+    mayDependOn:
+      - domain
+      - port
+      - observability
+
+  # eventschema: pure embedded assets, no internal deps.
+  eventschema:
+    anyVendorDeps: true
+
+  # apispec: pure embedded asset, no internal deps.
+  apispec:
+    anyVendorDeps: true
+
+  # observability: instrumentation only — domain types used as label values.
+  observability:
+    mayDependOn:
+      - domain
+
+  # inbound adapters: service + port + domain + observability +
+  # apispec (router serves /asyncapi.yaml from api/embed.go).
+  adapters_inbound:
+    mayDependOn:
+      - service
+      - port
+      - domain
+      - observability
+      - apispec
+
+  inbound_pipeline:
+    mayDependOn:
+      - adapters_inbound
+      - port
+      - domain
+      - observability
+
+  # outbound adapters: port + domain + eventschema + observability.
+  # No httptransport component (iamclient wraps its own http.Client inline).
+  adapters_outbound:
+    mayDependOn:
+      - port
+      - domain
+      - eventschema
+      - observability
+
+  # temporal: domain + port + service (activity functions execute service-
+  # layer logic and need the port interfaces for dependency injection).
+  temporal:
+    mayDependOn:
+      - domain
+      - port
+      - service
+
+  # reconciler_jobs: domain + port + observability (jobs call repositories via
+  # port interfaces and record metrics; no requestctx in this service).
+  reconciler_jobs:
+    mayDependOn:
+      - domain
+      - port
+      - observability
+
+  # docs_swagger: pure generated assets, no internal deps.
+  docs_swagger:
+    anyVendorDeps: true
+
+  # composition root: wires everything.
   cmd:
-    canUse:
-      - core_domain
-      - core_port
-      - core_service
-      - adapters_inbound_http
-      - adapters_inbound_consumer
-      - adapters_inbound_sqspipeline
-      - adapters_outbound_postgres
-      - adapters_outbound_valkey
-      - adapters_outbound_eventbus
-      - adapters_outbound_metrics
-      - adapters_outbound_auditrecorder
-      - adapters_outbound_iamclient
-      - adapters_temporal
+    mayDependOn:
+      - domain
+      - port
+      - service
+      - eventschema
+      - observability
+      - adapters_inbound
+      - inbound_pipeline
+      - adapters_outbound
+      - temporal
+      - docs_swagger
+      - reconciler_jobs
+      - apispec

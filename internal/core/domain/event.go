@@ -132,3 +132,17 @@ type InboundMembershipEvent struct {
 	EventType  string    `json:"event_type"`
 	OccurredAt time.Time `json:"occurred_at"`
 }
+
+// InboundTenantStateChangedEvent is the payload of TenantStateChanged emitted by
+// iam-org-membership via transactional outbox on iam.membership.events (EVT-16).
+// Because it is published after O&M's DB commit, an I-17 read made after receipt
+// always reflects the new state — eliminating the read race described in E-3.
+type InboundTenantStateChangedEvent struct {
+	TenantID       uuid.UUID `json:"tenant_id"`
+	Status         string    `json:"status"`
+	PreviousStatus string    `json:"previous_status"`
+	Plan           string    `json:"plan"`
+	PreviousPlan   string    `json:"previous_plan"`
+	ChangedAt      time.Time `json:"changed_at"`
+	Cause          string    `json:"cause"`
+}

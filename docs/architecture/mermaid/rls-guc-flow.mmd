@@ -1,0 +1,21 @@
+sequenceDiagram
+    autonumber
+    participant MW as BindPathTenant<br/>middleware
+    participant CTX as request context<br/>(pkg/requestctx)
+    participant REPO as Repository
+    participant PGCOMMON as pgcommon.RunInTx<br/>(GUCProvider)
+    participant DB as PostgreSQL
+
+    MW->>CTX: store tenantID in context
+    REPO->>PGCOMMON: RunInTx(ctx, fn)
+    PGCOMMON->>DB: BEGIN
+    PGCOMMON->>DB: SET LOCAL app.tenant_id = '{tenantID}'
+    Note over PGCOMMON,DB: RLS-6: SET LOCAL — transaction-scoped only.<br/>Never session-scoped. Never leaks across<br/>PgBouncer pooled backends.
+    PGCOMMON->>DB: SET LOCAL app.tenant_id executed
+    REPO->>DB: SELECT … (tenant_id via RLS policy)
+    DB->>DB: RLS CHECK: current_setting('app.tenant_id') = tenant_id
+    DB-->>REPO: filtered rows (own tenant only)
+    PGCOMMON->>DB: COMMIT
+    Note over DB: GUC cleared — pooled connection is safe<br/>to return to PgBouncer pool.
+
+    Note over MW,DB: RLS-1: RLS enabled + forced on every tenant-scoped table.<br/>Cross-tenant reads return 0 rows (not an error) — CONC-1<br/>optimistic lock detects the resulting 0-row update.

@@ -23,6 +23,16 @@ func NewPlansHandler(catalogSvc port.CatalogService) *PlansHandler {
 
 // GetCurrentPlan handles GET /api/v1/internal/tenants/:id/plans/current (ENT-I2).
 // Returns the plan definition for the tenant's current plan.
+//
+//	@Summary	Get plan definition for the tenant's current plan (internal)
+//	@Tags		internal
+//	@Produce	json
+//	@Param		id			path		string	true	"Tenant UUID"
+//	@Param		plan_code	query		string	true	"Plan code"
+//	@Success	200			{object}	PlanResponse
+//	@Failure	400			{object}	map[string]interface{}
+//	@Failure	404			{object}	map[string]interface{}
+//	@Router		/api/v1/internal/tenants/{id}/plans/current [get]
 func (h *PlansHandler) GetCurrentPlan(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	planCode := c.Query("plan_code")
@@ -41,6 +51,12 @@ func (h *PlansHandler) GetCurrentPlan(c *gin.Context) {
 }
 
 // ListPlans handles GET /api/v1/operator/plans — lists all plan codes cached locally.
+//
+//	@Summary	List all cached plan codes
+//	@Tags		plans
+//	@Produce	json
+//	@Success	200	{object}	map[string][]string
+//	@Router		/api/v1/operator/plans [get]
 func (h *PlansHandler) ListPlans(c *gin.Context) {
 	codes, err := h.catalogSvc.ListPlans(c.Request.Context())
 	if err != nil {
@@ -55,6 +71,15 @@ func (h *PlansHandler) ListPlans(c *gin.Context) {
 
 // RefreshCatalog handles POST /api/v1/operator/plans/:planCode/refresh —
 // re-fetches the plan from IAM and warms the local cache.
+//
+//	@Summary	Refresh a plan definition from IAM and warm local cache
+//	@Tags		plans
+//	@Produce	json
+//	@Param		planCode	path		string	true	"Plan code"
+//	@Success	200			{object}	PlanResponse
+//	@Failure	400			{object}	map[string]interface{}
+//	@Failure	404			{object}	map[string]interface{}
+//	@Router		/api/v1/operator/plans/{planCode}/refresh [post]
 func (h *PlansHandler) RefreshCatalog(c *gin.Context) {
 	planCode := c.Param("planCode")
 	if planCode == "" {

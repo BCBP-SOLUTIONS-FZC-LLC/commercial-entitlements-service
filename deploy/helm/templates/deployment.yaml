@@ -5,85 +5,98 @@ metadata:
   labels:
     {{- include "commercial-entitlements.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "commercial-entitlements.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   template:
     metadata:
       labels:
         {{- include "commercial-entitlements.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       annotations:
-        {{- toYaml .Values.podAnnotations | nindent 8 }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.existingSecret }}
+        rotationEpoch: {{ .Values.rotationEpoch | default "0" | quote }}
+        {{- else }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       serviceAccountName: {{ include "commercial-entitlements.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: {{ .Chart.Name }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.image.repository }}:{{ include "commercial-entitlements.imageTag" . }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
+              protocol: TCP
             - name: metrics
               containerPort: {{ .Values.service.metricsPort }}
-          envFrom:
-            - configMapRef:
-                name: {{ include "commercial-entitlements.fullname" . }}-config
-            - secretRef:
-                name: {{ .Values.secretRef }}
-          readinessProbe:
-            httpGet:
-              path: /readyz
-              port: http
-            initialDelaySeconds: 10
-            periodSeconds: 10
+              protocol: TCP
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: BUILD_VERSION
+              value: {{ include "commercial-entitlements.imageTag" . | quote }}
+            - name: RUN_MIGRATIONS
+              value: {{ (not .Values.migrations.job.enabled) | quote }}
+            {{- range $key, $val := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
+            {{- end }}
+            {{- $secretName := default (printf "%s-secrets" (include "commercial-entitlements.fullname" .)) .Values.existingSecret }}
+            {{- range .Values.envFromSecret }}
+            - name: {{ . }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ . }}
+            {{- end }}
+          startupProbe:
+            {{- toYaml .Values.startupProbe | nindent 12 }}
           livenessProbe:
-            httpGet:
-              path: /livez
-              port: http
-            initialDelaySeconds: 30
-            periodSeconds: 30
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
       nodeSelector:
-        {{- toYaml .Values.nodeSelector | nindent 8 }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
       tolerations:
-        {{- toYaml .Values.tolerations | nindent 8 }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       affinity:
-        {{- toYaml .Values.affinity | nindent 8 }}
-
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ include "commercial-entitlements.fullname" . }}-config
-  labels:
-    {{- include "commercial-entitlements.labels" . | nindent 4 }}
-data:
-  {{- range $k, $v := .Values.env }}
-  {{ $k }}: {{ $v | quote }}
-  {{- end }}
-
-{{- define "commercial-entitlements.fullname" -}}
-{{ .Release.Name }}-commercial-entitlements
-{{- end }}
-
-{{- define "commercial-entitlements.labels" -}}
-app.kubernetes.io/name: commercial-entitlements
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-{{- end }}
-
-{{- define "commercial-entitlements.selectorLabels" -}}
-app.kubernetes.io/name: commercial-entitlements
-app.kubernetes.io/instance: {{ .Release.Name }}
-{{- end }}
-
-{{- define "commercial-entitlements.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create -}}
-{{ default (include "commercial-entitlements.fullname" .) .Values.serviceAccount.name }}
-{{- else -}}
-{{ default "default" .Values.serviceAccount.name }}
-{{- end -}}
-{{- end }}
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "commercial-entitlements.selectorLabels" . | nindent 18 }}
+              topologyKey: kubernetes.io/hostname

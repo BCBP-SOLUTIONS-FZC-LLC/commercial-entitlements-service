@@ -13,6 +13,46 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 )
 
+// ShortfallConfig holds the ENT-D11/D12 thresholds approved in the LLD
+// (§12 configuration table). All five values are configurable without a code
+// change per the ENT-D12 resolution. Defaults match the approved LLD values.
+//
+//	SHORTFALL_TOLERANCE_TOKENS = 10000
+//	SHORTFALL_TOLERANCE_PCT    = 1
+//	SHORTFALL_HIGH_VALUE_TOKENS = 250000
+//	SHORTFALL_REPEAT_COUNT     = 2
+//	SHORTFALL_REPEAT_WINDOW_MONTHS = 3
+type ShortfallConfig struct {
+	// ToleranceTokens: auto-accept shortfalls at or below this many tokens.
+	// ENV: SHORTFALL_TOLERANCE_TOKENS. Default: 10000.
+	ToleranceTokens int64
+	// TolerancePct: auto-accept shortfalls at or below this % of reported
+	// consumption (both ToleranceTokens AND TolerancePct must hold).
+	// ENV: SHORTFALL_TOLERANCE_PCT. Default: 1.0.
+	TolerancePct float64
+	// HighValueTokens: escalate any shortfall at or above this size regardless
+	// of tolerance. ENV: SHORTFALL_HIGH_VALUE_TOKENS. Default: 250000.
+	HighValueTokens int64
+	// RepeatCount: escalate when a tenant has at least this many shortfalls
+	// within RepeatWindowMonths. ENV: SHORTFALL_REPEAT_COUNT. Default: 2.
+	RepeatCount int
+	// RepeatWindowMonths: sliding window for repeat detection (approximate —
+	// converted to days as 30 × months).
+	// ENV: SHORTFALL_REPEAT_WINDOW_MONTHS. Default: 3.
+	RepeatWindowMonths int
+}
+
+// DefaultShortfallConfig returns the LLD §12 / ENT-D12 approved defaults.
+func DefaultShortfallConfig() ShortfallConfig {
+	return ShortfallConfig{
+		ToleranceTokens:    10_000,
+		TolerancePct:       1.0,
+		HighValueTokens:    250_000,
+		RepeatCount:        2,
+		RepeatWindowMonths: 3,
+	}
+}
+
 // AddonService manages quota addon packs and drawdowns with full shortfall lifecycle.
 type AddonService struct {
 	addons     port.AddonRepository
@@ -21,6 +61,8 @@ type AddonService struct {
 	effectSvc  *EffectiveSetService
 	txRunner   port.TxRunner
 	log        port.Logger
+
+	sfCfg ShortfallConfig
 
 	// Observability hooks injected by the wiring layer so the core service
 	// stays free of adapter imports.
@@ -31,7 +73,8 @@ type AddonService struct {
 // Ensure AddonService implements port.AddonService at compile time.
 var _ port.AddonService = (*AddonService)(nil)
 
-// NewAddonService wires up the AddonService.
+// NewAddonService wires up the AddonService. Shortfall thresholds default to
+// the LLD §12 / ENT-D12 approved values; call WithShortfallConfig to override.
 func NewAddonService(
 	addons port.AddonRepository,
 	drawdowns port.DrawdownRepository,
@@ -45,7 +88,15 @@ func NewAddonService(
 		shortfalls: shortfalls,
 		effectSvc:  effectSvc,
 		txRunner:   txRunner,
+		sfCfg:      DefaultShortfallConfig(),
 	}
+}
+
+// WithShortfallConfig injects configurable ENT-D11/D12 thresholds. Called by
+// cmd/server/main.go after reading the five SHORTFALL_* env vars (LLD §12).
+func (s *AddonService) WithShortfallConfig(cfg ShortfallConfig) *AddonService {
+	s.sfCfg = cfg
+	return s
 }
 
 // WithLogger attaches a logger.
@@ -225,7 +276,6 @@ func (s *AddonService) RecordDrawdown(ctx context.Context, req port.RecordDrawdo
 	sortAddonsByExpiry(activeAddons)
 
 	remaining := req.TokensConsumed
-	var packDraws []domain.PackDraw
 	var updatedAddons []*domain.QuotaAddon
 
 	now := time.Now().UTC()
@@ -238,7 +288,6 @@ func (s *AddonService) RecordDrawdown(ctx context.Context, req port.RecordDrawdo
 			continue
 		}
 		draw := min64(a.RemainingTokens, remaining)
-		packDraws = append(packDraws, domain.PackDraw{AddonID: a.ID, Drawn: draw})
 		a.RemainingTokens -= draw
 		remaining -= draw
 		if a.RemainingTokens == 0 {
@@ -264,10 +313,7 @@ func (s *AddonService) RecordDrawdown(ctx context.Context, req port.RecordDrawdo
 
 	var sfRecord *domain.QuotaAddonShortfall
 	if shortfall > 0 {
-		sfRecord, err = s.buildShortfall(ctx, drawdown.ID, req.TenantID, req.LimitKey, req.TokensConsumed, tokensDrawn, shortfall)
-		if err != nil {
-			return nil, err
-		}
+		sfRecord = s.buildShortfall(ctx, drawdown.ID, req.TenantID, req.LimitKey, req.TokensConsumed, tokensDrawn, shortfall)
 	}
 
 	txErr := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
@@ -306,8 +352,18 @@ func (s *AddonService) RecordDrawdown(ctx context.Context, req port.RecordDrawdo
 	return drawdown, nil
 }
 
-// buildShortfall applies ENT-D11/D12: auto-accept within tolerance or raise for review.
-func (s *AddonService) buildShortfall(ctx context.Context, drawdownID, tenantID uuid.UUID, limitKey domain.LimitKey, requested, drawn, shortfallTokens int64) (*domain.QuotaAddonShortfall, error) {
+// buildShortfall applies ENT-D11/D12 using the configurable thresholds from
+// ShortfallConfig (env-var driven per LLD §12 and ENT-D12 resolution).
+//
+// Escalation (QAS-7): a shortfall is ALWAYS escalated — and therefore never
+// auto-accepted — when it meets either condition:
+//   - shortfallTokens >= cfg.HighValueTokens  (reason: "high_value")
+//   - recentCount     >= cfg.RepeatCount      (reason: "repeated")
+//
+// Auto-accept (QAS-5): when NOT escalated AND both tolerance conditions hold:
+//   - shortfallTokens <= cfg.ToleranceTokens
+//   - shortfallPct    <= cfg.TolerancePct
+func (s *AddonService) buildShortfall(ctx context.Context, drawdownID, tenantID uuid.UUID, limitKey domain.LimitKey, requested, drawn, shortfallTokens int64) *domain.QuotaAddonShortfall {
 	now := time.Now().UTC()
 	sf := &domain.QuotaAddonShortfall{
 		ID:         uuid.New(),
@@ -321,16 +377,18 @@ func (s *AddonService) buildShortfall(ctx context.Context, drawdownID, tenantID 
 		UpdatedAt:  now,
 	}
 
-	// ENT-D11: auto-accept if shortfall is small relative to request.
-	// Count recent shortfalls for this tenant (ENT-D12).
-	recentCount, _ := s.shortfalls.CountRecentForTenant(ctx, tenantID, 30 /* rolling 30-day window */)
+	cfg := s.sfCfg
+	// Count recent shortfalls using the configured window (months → days approximation).
+	windowDays := cfg.RepeatWindowMonths * 30
+	recentCount, _ := s.shortfalls.CountRecentForTenant(ctx, tenantID, windowDays)
 
 	shortfallPct := float64(shortfallTokens) / float64(requested) * 100
-	const autoAcceptMaxPct = 5.0  // 5% shortfall threshold
-	const autoAcceptMaxAbs = 1000 // 1000 tokens absolute
 
-	if shortfallPct <= autoAcceptMaxPct && shortfallTokens <= autoAcceptMaxAbs && recentCount == 0 {
-		// ENT-D11: auto-accept.
+	// ENT-D12 / QAS-7: escalation check — overrides tolerance.
+	escalated := shortfallTokens >= cfg.HighValueTokens || recentCount >= cfg.RepeatCount
+
+	if !escalated && shortfallTokens <= cfg.ToleranceTokens && shortfallPct <= cfg.TolerancePct {
+		// ENT-D11 / QAS-5: auto-accept as commercial loss.
 		disp := domain.DispositionApprove
 		sf.Status = domain.ShortfallStatusAutoAccepted
 		sf.Disposition = &disp
@@ -339,9 +397,11 @@ func (s *AddonService) buildShortfall(ctx context.Context, drawdownID, tenantID 
 				"tenant_id":        tenantID,
 				"shortfall_tokens": shortfallTokens,
 				"pct":              shortfallPct,
+				"tolerance_tokens": cfg.ToleranceTokens,
+				"tolerance_pct":    cfg.TolerancePct,
 			})
 	} else {
-		// ENT-D12: escalate for operator review.
+		// ENT-D12 / QAS-7: escalate for operator review.
 		sf.Status = domain.ShortfallStatusPendingApproval
 		s.logger().Warn("shortfall escalated for review (ENT-D12)",
 			map[string]interface{}{
@@ -349,10 +409,13 @@ func (s *AddonService) buildShortfall(ctx context.Context, drawdownID, tenantID 
 				"shortfall_tokens": shortfallTokens,
 				"pct":              shortfallPct,
 				"recent_count":     recentCount,
+				"escalated":        escalated,
+				"high_value":       shortfallTokens >= cfg.HighValueTokens,
+				"repeated":         recentCount >= cfg.RepeatCount,
 			})
 	}
 
-	return sf, nil
+	return sf
 }
 
 // ListDrawdowns returns drawdown records for a tenant+key.

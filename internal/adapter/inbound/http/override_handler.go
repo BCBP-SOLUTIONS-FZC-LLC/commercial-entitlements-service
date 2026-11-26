@@ -24,6 +24,14 @@ func NewOverrideHandler(overrideSvc port.OverrideService) *OverrideHandler {
 }
 
 // List handles GET /api/v1/operator/tenants/:id/entitlements/overrides (ENT-O1).
+//
+//	@Summary	List active overrides for a tenant
+//	@Tags		overrides
+//	@Produce	json
+//	@Param		id	path		string	true	"Tenant UUID"
+//	@Success	200	{array}		OverrideResponse
+//	@Failure	400	{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/overrides [get]
 func (h *OverrideHandler) List(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	overrides, err := h.overrideSvc.ListOverrides(c.Request.Context(), tenantID)
@@ -39,6 +47,15 @@ func (h *OverrideHandler) List(c *gin.Context) {
 }
 
 // Get handles GET /api/v1/operator/tenants/:id/entitlements/overrides/:limitKey.
+//
+//	@Summary	Get a single active override
+//	@Tags		overrides
+//	@Produce	json
+//	@Param		id			path		string	true	"Tenant UUID"
+//	@Param		limitKey	path		string	true	"Limit key (e.g. llm_token_quota_monthly)"
+//	@Success	200			{object}	OverrideResponse
+//	@Failure	404			{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/overrides/{limitKey} [get]
 func (h *OverrideHandler) Get(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	key := domain.LimitKey(c.Param("limitKey"))
@@ -51,6 +68,17 @@ func (h *OverrideHandler) Get(c *gin.Context) {
 }
 
 // Set handles PUT /api/v1/operator/tenants/:id/entitlements/overrides/:limitKey (ENT-O2).
+//
+//	@Summary	Set or update a limit override
+//	@Tags		overrides
+//	@Accept		json
+//	@Produce	json
+//	@Param		id			path		string			true	"Tenant UUID"
+//	@Param		limitKey	path		string			true	"Limit key"
+//	@Param		body		body		SetOverrideBody	true	"Override value and reason"
+//	@Success	200			{object}	OverrideResponse
+//	@Failure	400			{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/overrides/{limitKey} [put]
 func (h *OverrideHandler) Set(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	key := domain.LimitKey(c.Param("limitKey"))
@@ -79,13 +107,22 @@ func (h *OverrideHandler) Set(c *gin.Context) {
 }
 
 // Remove handles DELETE /api/v1/operator/tenants/:id/entitlements/overrides/:limitKey.
+//
+//	@Summary	Remove a limit override
+//	@Tags		overrides
+//	@Param		id			path	string	true	"Tenant UUID"
+//	@Param		limitKey	path	string	true	"Limit key"
+//	@Success	204
+//	@Failure	404	{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/overrides/{limitKey} [delete]
 func (h *OverrideHandler) Remove(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	key := domain.LimitKey(c.Param("limitKey"))
 	actorID := actorFromClaims(c)
 
 	var body RemoveOverrideBody
-	_ = c.ShouldBindJSON(&body) // reason is optional on DELETE
+	// Reason is optional on DELETE; ignore any parsing error from an absent body.
+	_ = c.ShouldBindJSON(&body)
 
 	err := h.overrideSvc.RemoveOverride(c.Request.Context(), port.RemoveOverrideRequest{
 		TenantID:  tenantID,
@@ -102,6 +139,15 @@ func (h *OverrideHandler) Remove(c *gin.Context) {
 }
 
 // History handles GET /api/v1/operator/tenants/:id/entitlements/overrides/:limitKey/history.
+//
+//	@Summary	Get override history for a limit key
+//	@Tags		overrides
+//	@Produce	json
+//	@Param		id			path		string	true	"Tenant UUID"
+//	@Param		limitKey	path		string	true	"Limit key"
+//	@Success	200			{array}		OverrideHistoryResponse
+//	@Failure	400			{object}	map[string]interface{}
+//	@Router		/api/v1/operator/tenants/{id}/entitlements/overrides/{limitKey}/history [get]
 func (h *OverrideHandler) History(c *gin.Context) {
 	tenantID := tenantIDFromContext(c)
 	key := domain.LimitKey(c.Param("limitKey"))

@@ -1,0 +1,35 @@
+commercial-entitlements {{ .Chart.Version }} deployed.
+
+━━ REQUIRED ACTIONS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{{ if not .Values.existingSecret -}}
+⚠  Credentials are stored in Helm release history (base64, not encrypted).
+   Migrate to External Secrets Operator or AWS Secrets Manager CSI:
+     existingSecret: "commercial-entitlements-secrets"
+   Then remove secretValues from your values file.
+
+{{ end -}}
+{{ if not .Values.networkPolicy.enabled -}}
+⚠  networkPolicy.enabled is false. The /metrics endpoint is unauthenticated
+   and the outbound connections (Postgres, Valkey, SNS/SQS) are unrestricted.
+   Enable NetworkPolicy in production.
+
+{{ end -}}
+{{ if not .Values.serviceMonitor.enabled -}}
+⚠  serviceMonitor.enabled is false. Prometheus will not scrape this service.
+   Alerting rules (PrometheusRule) are also disabled.
+
+{{ end -}}
+
+━━ ENDPOINTS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Health:    http://{{ include "commercial-entitlements.fullname" . }}:{{ .Values.service.port }}/healthz
+  Readiness: http://{{ include "commercial-entitlements.fullname" . }}:{{ .Values.service.port }}/readyz
+  Metrics:   http://{{ include "commercial-entitlements.fullname" . }}:{{ .Values.service.metricsPort }}/metrics
+
+━━ IRSA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Wire the IRSA role ARN into serviceAccount.annotations before deploying
+  to staging/production (see deploy/aws-iam/README.md):
+
+    helm upgrade ... --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::ACCOUNT:role/commercial-entitlements

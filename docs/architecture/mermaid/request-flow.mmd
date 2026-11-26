@@ -1,0 +1,32 @@
+sequenceDiagram
+    autonumber
+    participant GW as Gateway / Caller
+    participant H as HTTP Handler<br/>(http/handlers.go)
+    participant MW as Middleware<br/>(BindPathTenant + Auth)
+    participant SVC as EntitlementsService
+    participant REPO as EntitlementRepository<br/>(postgres)
+    participant CACHE as ValkeyCache
+    participant DB as PostgreSQL
+
+    GW->>H: GET /api/v1/tenants/:id/effective-set
+    H->>MW: BindPathTenant → set tenant_id in ctx
+    MW->>H: ctx with tenant_id + auth claims
+    H->>SVC: GetEffectiveSet(ctx, tenantID)
+
+    SVC->>CACHE: Get(ent:tenant:{tenantID})
+    alt cache hit
+        CACHE-->>SVC: EffectiveSet (TTL 300s)
+        SVC-->>H: EffectiveSet
+    else cache miss
+        CACHE-->>SVC: miss
+        SVC->>REPO: GetLatestSnapshot(ctx, tenantID)
+        REPO->>DB: SELECT … FROM entitlement_snapshots<br/>WHERE tenant_id=$1 (RLS enforced, GUC=tenantID)
+        DB-->>REPO: EntitlementSnapshot row
+        REPO-->>SVC: EntitlementSnapshot
+        SVC->>SVC: computeEffectiveSet(snapshot, overrides, addons, trial)
+        SVC->>CACHE: Set(ent:tenant:{tenantID}, effectiveSet, TTL=300s)
+        SVC-->>H: EffectiveSet
+    end
+    H-->>GW: 200 OK { effective_set: … }
+
+    Note over SVC,DB: ENT-INV-6 — recompute is a no-op when<br/>computed set equals latest snapshot<br/>(no write, no event emitted)

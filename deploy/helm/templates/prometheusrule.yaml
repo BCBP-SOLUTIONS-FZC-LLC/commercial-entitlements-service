@@ -1,0 +1,258 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "commercial-entitlements.fullname" . }}
+  labels:
+    {{- include "commercial-entitlements.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: commercial_entitlements_availability
+      rules:
+        - alert: CommercialEntitlementsDown
+          expr: |
+            absent(up{job={{ include "commercial-entitlements.fullname" . | quote }}} == 1)
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: commercial-entitlements has no healthy instances
+            description: >-
+              No commercial-entitlements pods have been scraped as healthy for 2 minutes.
+              Check pod readiness: kubectl get pods -l app.kubernetes.io/name=commercial-entitlements
+
+        - alert: CommercialEntitlementsReplicasMissing
+          expr: |
+            sum(up{job={{ include "commercial-entitlements.fullname" . | quote }}}) < 2
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: commercial-entitlements running below minimum replica count
+            description: >-
+              Fewer than 2 replicas are healthy. HPA minReplicas is 2;
+              a further disruption will block node drains.
+              Current healthy count: {{ "{{ $value }}" }}.
+
+    - name: commercial_entitlements_errors
+      rules:
+        - alert: CommercialEntitlementsHighErrorRate
+          expr: |
+            sum by (domain, service, environment) (rate(platform_http_requests_total{job={{ include "commercial-entitlements.fullname" . | quote }}, status_class="5xx"}[5m]))
+              /
+            sum by (domain, service, environment) (rate(platform_http_requests_total{job={{ include "commercial-entitlements.fullname" . | quote }}}[5m]))
+            > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+            metric_status: proposed
+          annotations:
+            summary: commercial-entitlements 5xx error rate above 5%
+            description: >-
+              {{ "{{ $value | humanizePercentage }}" }} of requests are returning 5xx errors
+              over the last 5 minutes. Investigate recent deployments, dependency
+              health (Postgres, Valkey, SNS/SQS, IAM Catalog), and application logs.
+
+        - alert: CommercialEntitlementsCriticalErrorRate
+          expr: |
+            sum by (domain, service, environment) (rate(platform_http_requests_total{job={{ include "commercial-entitlements.fullname" . | quote }}, status_class="5xx"}[5m]))
+              /
+            sum by (domain, service, environment) (rate(platform_http_requests_total{job={{ include "commercial-entitlements.fullname" . | quote }}}[5m]))
+            > 0.20
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+            metric_status: proposed
+          annotations:
+            summary: commercial-entitlements 5xx error rate above 20%
+            description: >-
+              {{ "{{ $value | humanizePercentage }}" }} of requests are returning 5xx errors.
+              This exceeds the critical threshold. Escalate immediately.
+
+    - name: commercial_entitlements_latency
+      rules:
+        - alert: CommercialEntitlementsHighLatency
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le, domain, service, environment) (
+                rate(platform_http_request_duration_seconds_bucket{job={{ include "commercial-entitlements.fullname" . | quote }}}[5m])
+              )
+            ) > 2.0
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+            metric_status: proposed
+          annotations:
+            summary: commercial-entitlements p99 latency above 2s
+            description: >-
+              The p99 request duration is {{ "{{ $value | humanizeDuration }}" }}, exceeding
+              the 2s threshold. Check slow-query logs and Valkey response times.
+
+    - name: commercial_entitlements_outbox
+      rules:
+        - alert: CommercialEntitlementsOutboxDeadLetters
+          expr: |
+            sum by (domain, service, environment) (increase(platform_dlq_messages_total{job={{ include "commercial-entitlements.fullname" . | quote }}, operation="outbox_publish"}[30m])) > 0
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: commercial-entitlements outbox events moved to dead-letter
+            description: >-
+              One or more outbox events have exceeded max retries (OUTBOX_RETENTION_DAYS).
+              Check the outbox runner logs for SNS publish errors (OUTBOX_CONCURRENCY,
+              OUTBOX_CLAIM_LEASE) and verify SNS_TOPIC_ENTITLEMENTS_ARN connectivity.
+
+        - alert: CommercialEntitlementsOutboxBacklog
+          expr: |
+            max by (domain, service, environment) (platform_outbox_oldest_pending_age_seconds{job={{ include "commercial-entitlements.fullname" . | quote }}}) > 300
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: commercial-entitlements outbox delivery is more than 5 minutes behind
+            description: >-
+              The oldest pending outbox event is {{ "{{ $value | humanizeDuration }}" }} old.
+              Check the outbox runner logs for SNS publish errors.
+
+        - alert: CommercialEntitlementsDLQBacklog
+          expr: |
+            max by (domain, service, environment, queue) (platform_dlq_depth{job={{ include "commercial-entitlements.fullname" . | quote }}}) > 0
+          for: 30m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: Messages are waiting in the {{ "{{ $labels.queue }}" }} DLQ
+            description: >-
+              {{ "{{ $value }}" }} messages in the DLQ of {{ "{{ $labels.queue }}" }}. Inspect
+              DLQReason attribute, fix the cause, then redrive.
+
+        - alert: CommercialEntitlementsDBPoolSaturated
+          expr: |
+            max by (domain, service, environment, pool) (
+              sum by (domain, service, environment, pool, instance) (platform_db_pool_connections{job={{ include "commercial-entitlements.fullname" . | quote }}, state="acquired"})
+                /
+              (sum by (domain, service, environment, pool, instance) (platform_db_pool_max_connections{job={{ include "commercial-entitlements.fullname" . | quote }}}) > 0)
+            ) > 0.9
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: commercial-entitlements Postgres pool {{ "{{ $labels.pool }}" }} is over 90% utilised
+            description: >-
+              {{ "{{ $value | humanizePercentage }}" }} of pool {{ "{{ $labels.pool }}" }}'s connections are
+              checked out on the busiest replica. Pool "default" is the API pool,
+              pool "system" is the BYPASSRLS pool.
+
+    - name: commercial_entitlements_business
+      rules:
+        - alert: CommercialEntitlementsRecomputeErrors
+          expr: |
+            sum by (domain, service, environment) (rate(commercial_entitlements_recompute_total{outcome="error"}[5m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: commercial-entitlements entitlement recompute errors elevated
+            description: >-
+              {{ "{{ $value | humanize }}" }}/s recompute operations are failing.
+              Check Postgres connectivity and ENT-INV-1 snapshot version conflicts.
+
+        - alert: CommercialEntitlementsConsumedEventSchemaViolation
+          expr: |
+            sum by (domain, service, environment, event_type) (increase(commercial_entitlements_consumed_event_rejected_total{reason="schema_violation"}[5m])) > 0
+          for: 0m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: Consumed {{ "{{ $labels.event_type }}" }} events violate their schema
+            description: >-
+              commercial-entitlements is rejecting {{ "{{ $labels.event_type }}" }} events to
+              the DLQ because the payload fails the embedded consumed-event schema.
+              Either the producer broke its contract or this service's
+              api/asyncapi.yaml is stale.
+
+    - name: commercial_entitlements_cache
+      rules:
+        - alert: CommercialEntitlementsCacheMissSpike
+          expr: |
+            sum by (domain, service, environment) (rate(commercial_entitlements_cache_miss_total[5m]))
+              /
+            (
+              sum by (domain, service, environment) (rate(commercial_entitlements_cache_hit_total[5m]))
+              +
+              sum by (domain, service, environment) (rate(commercial_entitlements_cache_miss_total[5m]))
+            ) > 0.3
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: commercial-entitlements Valkey cache miss rate above 30%
+            description: >-
+              Cache miss rate {{ "{{ $value | humanizePercentage }}" }} sustained for 5 min.
+              Unexpected Postgres load increase. Check Valkey connectivity and
+              ENT-D13 quota ceiling writes.
+
+    - name: commercial_entitlements_reconciler
+      rules:
+        - alert: CommercialEntitlementsReconcilerJobFailed
+          expr: |
+            kube_job_status_failed{
+              job_name=~"{{ include "commercial-entitlements.fullname" . }}-(override|addon|outbox|events|quota).*"
+            } > 0
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: commercial-entitlements reconciler job {{ "{{ $labels.job_name }}" }} failed
+            description: >-
+              Reconciler job {{ "{{ $labels.job_name }}" }} has failed pods.
+              Stale overrides/addons or unprocessed quota resets may accumulate.
+
+        - alert: CommercialEntitlementsReconcilerJobStale
+          expr: |
+            time() - kube_cronjob_status_last_schedule_time{
+              cronjob=~"{{ include "commercial-entitlements.fullname" . }}-(override|addon|outbox|events|quota).*"
+            } > 7200
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: commercial-entitlements reconciler CronJob {{ "{{ $labels.cronjob }}" }} not scheduled for 2h
+            description: >-
+              CronJob {{ "{{ $labels.cronjob }}" }} has not run in over 2× its expected interval.
+              The CronJob controller may be stuck or the namespace may have resource pressure.
+
+    - name: commercial_entitlements_compliance
+      rules:
+        - alert: CommercialEntitlementsRLSCrossTenantAccess
+          expr: |
+            increase(commercial_entitlements_rls_violations_total{violation_type="cross_tenant_access"}[5m]) > 0
+          labels:
+            severity: critical
+            team: platform
+            compliance: tenant-isolation
+          annotations:
+            summary: RLS blocked a cross-tenant access attempt in commercial-entitlements
+            description: >-
+              A caller with a valid tenant GUC attempted to read/write a row
+              belonging to a different tenant. Investigate the last 5 minutes of
+              rls_violation_log immediately.
+{{- end }}

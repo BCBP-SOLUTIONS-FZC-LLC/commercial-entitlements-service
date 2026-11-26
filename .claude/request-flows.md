@@ -120,9 +120,11 @@ SQS tenant-entitlements-q → TenantEventConsumer.Handle
 ```
 SQS membership-entitlements-q → MembershipConsumer.Handle
   TenantMembershipsPurged → Recompute(TenantLifecycle)
-  TenantConverted → PurgeTrialForTenant + Recompute(TenantLifecycle)
-  TenantOffboarded → PurgeTrialForTenant + Recompute(TenantLifecycle)
+  TenantStateChanged{cause:TrialReactivated} → Recompute(TenantLifecycle)
+    (published by O&M via transactional outbox after DB commit — I-17 read is always safe)
   unknown → ackUnknown (metrics, no DLQ)
+Note: TenantConverted and TenantOffboarded come from Realm Provisioner on
+  iam-tenant-events → tenant-entitlements-q (TenantEventConsumer), not this queue.
 ```
 
 ## Catalog Change → Plan Cache Invalidation + Fan-out

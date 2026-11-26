@@ -14,7 +14,8 @@ import (
 const MembershipConsumerName = "membership-entitlements-q"
 
 // MembershipConsumer handles IAM membership lifecycle events that may require
-// entitlement recomputation (e.g. TenantConverted → state changes).
+// entitlement recomputation. It subscribes to iam.membership.events, which
+// carries TenantMembershipsPurged and TenantStateChanged (EVT-16).
 type MembershipConsumer struct {
 	inbox     port.Inbox
 	effectSvc port.EffectiveSetService
@@ -44,13 +45,9 @@ func (c *MembershipConsumer) Handle(ctx context.Context, env events.Envelope[jso
 		return processOnce(ctx, c.inbox, MembershipConsumerName, env, func(txCtx context.Context) error {
 			return c.handlePurge(txCtx, env)
 		})
-	case "TenantConverted":
+	case "TenantStateChanged":
 		return processOnce(ctx, c.inbox, MembershipConsumerName, env, func(txCtx context.Context) error {
-			return c.handleConverted(txCtx, env)
-		})
-	case "TenantOffboarded":
-		return processOnce(ctx, c.inbox, MembershipConsumerName, env, func(txCtx context.Context) error {
-			return c.handleOffboarded(txCtx, env)
+			return c.handleTenantStateChanged(txCtx, env)
 		})
 	default:
 		return ackUnknown(ctx, c.inbox, c.log, MembershipConsumerName, env)
@@ -60,38 +57,22 @@ func (c *MembershipConsumer) Handle(ctx context.Context, env events.Envelope[jso
 func (c *MembershipConsumer) handlePurge(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	var payload domain.InboundMembershipEvent
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
-		return nil // ack malformed
+		return nil //nolint:nilerr // ack malformed
 	}
 	_, err := c.effectSvc.Recompute(ctx, payload.TenantID, domain.CauseTenantLifecycle)
 	return err
 }
 
-func (c *MembershipConsumer) handleConverted(ctx context.Context, env events.Envelope[json.RawMessage]) error {
-	var payload domain.InboundMembershipEvent
+// handleTenantStateChanged processes TenantStateChanged events from iam-org-membership.
+// Only cause=="TrialReactivated" triggers a recompute; other causes are ack'd silently
+// because they arrive via dedicated events on tenant-entitlements-q.
+func (c *MembershipConsumer) handleTenantStateChanged(ctx context.Context, env events.Envelope[json.RawMessage]) error {
+	var payload domain.InboundTenantStateChangedEvent
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
-		return nil
+		return nil //nolint:nilerr // ack malformed
 	}
-	// Trial data is no longer relevant after conversion.
-	if c.trialSvc != nil {
-		if err := c.trialSvc.PurgeTrialForTenant(ctx, payload.TenantID); err != nil {
-			c.log.Warn("membership consumer: purge trial on convert failed",
-				map[string]interface{}{"tenant_id": payload.TenantID, "error": err.Error()})
-		}
-	}
-	_, err := c.effectSvc.Recompute(ctx, payload.TenantID, domain.CauseTenantLifecycle)
-	return err
-}
-
-func (c *MembershipConsumer) handleOffboarded(ctx context.Context, env events.Envelope[json.RawMessage]) error {
-	var payload domain.InboundMembershipEvent
-	if err := json.Unmarshal(env.Payload, &payload); err != nil {
-		return nil
-	}
-	if c.trialSvc != nil {
-		if err := c.trialSvc.PurgeTrialForTenant(ctx, payload.TenantID); err != nil {
-			c.log.Warn("membership consumer: purge trial on offboard failed",
-				map[string]interface{}{"tenant_id": payload.TenantID, "error": err.Error()})
-		}
+	if payload.Cause != "TrialReactivated" {
+		return nil //nolint:nilerr
 	}
 	_, err := c.effectSvc.Recompute(ctx, payload.TenantID, domain.CauseTenantLifecycle)
 	return err

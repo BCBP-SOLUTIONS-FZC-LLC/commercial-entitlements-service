@@ -103,18 +103,27 @@ func (c *Cache) Health(ctx context.Context) error {
 // ── Effective-set cache ───────────────────────────────────────────────────
 
 // GetEffectiveSet returns the cached EffectiveSet for a tenant, if any.
+// CACHE-1: all error paths return (nil, nil) so the caller falls through to
+// Postgres without blocking the business operation.
 func (c *Cache) GetEffectiveSet(ctx context.Context, tenantID uuid.UUID) (*domain.EffectiveSet, error) {
 	data, err := c.rdb.Get(ctx, effectiveSetKey(tenantID)).Bytes()
 	if err == redis.Nil {
 		metrics.IncCacheMiss("effective_set")
 		return nil, nil
 	}
-	if err != nil {
-		return nil, err
+	if err != nil { //nolint:nilerr
+		c.logger().Warn("valkey: GetEffectiveSet error — degrading to Postgres",
+			map[string]interface{}{"tenant_id": tenantID, "error": err.Error()})
+		metrics.IncCacheMiss("effective_set")
+		return nil, nil //nolint:nilerr
 	}
 	var es domain.EffectiveSet
-	if err := json.Unmarshal(data, &es); err != nil {
-		return nil, err
+	if err := json.Unmarshal(data, &es); err != nil { //nolint:nilerr
+		// Corrupted cache entry — treat as a miss and let it be overwritten.
+		c.logger().Warn("valkey: GetEffectiveSet unmarshal failed — treating as miss",
+			map[string]interface{}{"tenant_id": tenantID, "error": err.Error()})
+		metrics.IncCacheMiss("effective_set")
+		return nil, nil //nolint:nilerr
 	}
 	metrics.IncCacheHit("effective_set")
 	return &es, nil
@@ -137,18 +146,27 @@ func (c *Cache) InvalidateEffectiveSet(ctx context.Context, tenantID uuid.UUID) 
 // ── Plan cache ────────────────────────────────────────────────────────────
 
 // GetPlan returns the cached Plan for a plan code, if any.
+// CACHE-1: all error paths return (nil, nil) so the caller falls through to
+// the catalog service without blocking the business operation.
 func (c *Cache) GetPlan(ctx context.Context, planCode string) (*domain.Plan, error) {
 	data, err := c.rdb.Get(ctx, planKey(planCode)).Bytes()
 	if err == redis.Nil {
 		metrics.IncCacheMiss("plan")
 		return nil, nil
 	}
-	if err != nil {
-		return nil, err
+	if err != nil { //nolint:nilerr
+		c.logger().Warn("valkey: GetPlan error — degrading to catalog",
+			map[string]interface{}{"plan_code": planCode, "error": err.Error()})
+		metrics.IncCacheMiss("plan")
+		return nil, nil //nolint:nilerr
 	}
 	var plan domain.Plan
-	if err := json.Unmarshal(data, &plan); err != nil {
-		return nil, err
+	if err := json.Unmarshal(data, &plan); err != nil { //nolint:nilerr
+		// Corrupted cache entry — treat as a miss and let it be overwritten.
+		c.logger().Warn("valkey: GetPlan unmarshal failed — treating as miss",
+			map[string]interface{}{"plan_code": planCode, "error": err.Error()})
+		metrics.IncCacheMiss("plan")
+		return nil, nil //nolint:nilerr
 	}
 	metrics.IncCacheHit("plan")
 	return &plan, nil

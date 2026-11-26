@@ -55,7 +55,7 @@ func (c *CatalogConsumer) handleCatalogChanged(ctx context.Context, env events.E
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
 		c.log.Warn("catalog consumer: unmarshal failed",
 			map[string]interface{}{"event_type": env.Type, "error": err.Error()})
-		return nil
+		return nil //nolint:nilerr
 	}
 
 	// Invalidate Valkey cache.

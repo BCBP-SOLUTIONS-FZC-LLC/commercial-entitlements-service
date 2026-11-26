@@ -46,7 +46,9 @@ func (p *Publisher) Enqueue(ctx context.Context, event *domain.DomainEvent) erro
 		return fmt.Errorf("marshal event payload: %w", err)
 	}
 
-	// Schema validation only — NoopCodec passes; ValidatingCodec checks schema.
+	// Schema validation only. ValidatingCodec validates against the embedded
+	// JSON schema for event.Type (ErrNoSchema → forward-compat pass-through);
+	// NoopCodec always passes. Genuine schema violations are hard errors.
 	if _, _, err := p.codec.Encode(ctx, event.Type, raw); err != nil && !isNoSchemaErr(err) {
 		return fmt.Errorf("validate event %s: %w", event.Type, err)
 	}
@@ -106,11 +108,10 @@ func (NoopPublisher) PublishBatch(_ context.Context, _ []events.Envelope[json.Ra
 	return nil
 }
 
-// isNoSchemaErr reports whether err is the platform-events sentinel that
-// indicates no schema is registered for the event type.
+// isNoSchemaErr reports whether err signals that no schema is registered for
+// the event type. ValidatingCodec returns ErrNoSchema for forward-compat event
+// types with no embedded schema; callers treat this as a pass-through, not a
+// hard validation error.
 func isNoSchemaErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	return errors.Is(err, ErrNoSchema) || err.Error() == "no schema"
+	return errors.Is(err, ErrNoSchema)
 }

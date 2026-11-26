@@ -1,18 +1,19 @@
-replicaCount: 1
+# Dev environment overrides for commercial-entitlements.
+# Merge with base values.yaml: helm upgrade ... -f values.yaml -f values-dev.yaml
 
 env:
-  APP_ENV: dev
-  RUN_MIGRATIONS: "true"
+  APP_ENV: "dev"
+  LOG_LEVEL: "debug"
+  OTEL_TRACES_SAMPLER_RATIO: "1.0"   # full sampling in dev
   DOCS_ENABLED: "true"
 
-cronjobs:
-  overrideExpiry:
-    suspend: true
-  addonExpiry:
-    suspend: true
-  outboxPrune:
-    suspend: true
-  processedEventsPrune:
-    suspend: true
-  quotaReset:
-    suspend: true
+# Admit IAM and billing callers in dev for integration testing.
+# Istio is not deployed in dev; NetworkPolicy is the sole L3/L4 enforcement.
+callers:
+  enabled: true
+  istio:
+    enabled: false
+    existingCallerNamespaces:
+      - commercial      # commercial namespace: same-namespace services
+      - gateway         # Ingress controller / Envoy Gateway data plane
+      - observability   # Prometheus scrape (port 9090 only)

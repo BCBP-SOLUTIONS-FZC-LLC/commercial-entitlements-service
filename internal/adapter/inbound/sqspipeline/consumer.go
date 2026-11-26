@@ -11,6 +11,7 @@ import (
 	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 )
 
@@ -32,10 +33,17 @@ func Handler(
 			if verr := validator.Validate(env.Type, env.Payload); verr != nil && !errors.Is(verr, ErrNoSchema) {
 				log.Warn("sqspipeline: schema validation failed — forwarding to DLQ",
 					map[string]interface{}{"queue": queueName, "event_type": env.Type, "error": verr.Error()})
+				metrics.IncConsumedEventRejected(queueName, env.Type, "schema_violation")
 				if dlq != nil {
 					src, ok := events.SourceMessageFromContext(ctx)
 					if ok {
 						_ = dlq.SendToDLQ(ctx, src.QueueURL, src.Body, src.Attributes, "schema_violation")
+					} else {
+						// SourceMessageFromContext absent means platform-events did not attach the
+						// raw SQS message to the context. The message cannot be forwarded; it will
+						// be deleted from the queue. Log at ERROR so on-call can investigate.
+						log.Error("sqspipeline: schema-invalid message has no SourceMessageFromContext — cannot forward to DLQ; message will be lost",
+							map[string]interface{}{"queue": queueName, "event_type": env.Type, "event_id": env.ID})
 					}
 				}
 				return nil

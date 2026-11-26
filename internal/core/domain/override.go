@@ -20,7 +20,7 @@ const (
 type Override struct {
 	TenantID      uuid.UUID
 	LimitKey      LimitKey
-	Value         *int64     // nil = unlimited
+	Value         *int64 // nil = unlimited
 	Reason        string
 	SetBy         uuid.UUID
 	ExpiresAt     *time.Time

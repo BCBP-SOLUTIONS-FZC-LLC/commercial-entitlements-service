@@ -26,9 +26,13 @@ func NewOverrideRepository(pool *pgcommon.Pool) *OverrideRepository {
 var _ port.OverrideRepository = (*OverrideRepository)(nil)
 
 // Upsert inserts or updates an override for the given tenant+key.
+// Optimistic locking: the ON CONFLICT path only applies when the stored
+// record_version equals the predecessor of the incoming version
+// (entitlement_overrides.record_version = EXCLUDED.record_version - 1).
+// A 0-row result means a concurrent write won → ErrOptimisticLockConflict.
 func (r *OverrideRepository) Upsert(ctx context.Context, o *domain.Override) error {
 	return withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
-		_, err := tx.Exec(ctx, `
+		tag, err := tx.Exec(ctx, `
 			INSERT INTO entitlement_overrides
 				(tenant_id, limit_key, value, reason, set_by, expires_at, record_version, created_at, updated_at)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -38,12 +42,19 @@ func (r *OverrideRepository) Upsert(ctx context.Context, o *domain.Override) err
 			      set_by         = EXCLUDED.set_by,
 			      expires_at     = EXCLUDED.expires_at,
 			      record_version = EXCLUDED.record_version,
-			      updated_at     = EXCLUDED.updated_at`,
+			      updated_at     = EXCLUDED.updated_at
+			WHERE entitlement_overrides.record_version = EXCLUDED.record_version - 1`,
 			o.TenantID, string(o.LimitKey), o.Value,
 			o.Reason, o.SetBy, o.ExpiresAt,
 			o.RecordVersion, o.CreatedAt, o.UpdatedAt,
 		)
-		return err
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrOptimisticLockConflict
+		}
+		return nil
 	})
 }
 

@@ -19,9 +19,13 @@ import (
 	temporaladapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/temporal"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/service"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/metrics"
+
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/logger"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgmetrics"
 )
 
 func main() {
@@ -63,8 +67,28 @@ func main() {
 
 	_ = gincommon.ObservabilityMiddlewares(cfg)
 	sqspipeline.InstallTracingHooks(cfg.ServiceName)
+	metrics.Register(appEnv)
 
-	pgCfg, _ := pgcommon.ConfigFromEnv()
+	identity := gincommon.MetricsConstLabels()
+	evWarnings, err := events.InitMetrics(events.MetricsIdentityFromLabels(identity), gincommon.MetricsRegisterer())
+	for _, w := range evWarnings {
+		rawLog.Warn("platform-events metric disabled", map[string]any{"metric": w.Metric, "error": w.Error()})
+	}
+	if err != nil {
+		panic(fmt.Sprintf("init platform-events metrics: %v", err))
+	}
+	pgMetricWarnings, err := pgmetrics.InitWithIdentity(pgmetrics.IdentityFromLabels(identity), gincommon.MetricsRegisterer())
+	for _, w := range pgMetricWarnings {
+		rawLog.Warn("platform-pgcommon metric disabled", map[string]any{"metric": w.Metric, "error": w.Error()})
+	}
+	if err != nil {
+		panic(fmt.Sprintf("init platform-pgcommon metrics: %v", err))
+	}
+
+	pgCfg, pgCfgWarnings := pgcommon.ConfigFromEnv()
+	for _, w := range pgCfgWarnings {
+		rawLog.Warn("postgres config warning", map[string]any{"key": w.Key, "reason": w.Reason})
+	}
 	pgCfg.DSN = pgadapter.DSNFromEnv()
 	pgCfg.GUCProvider = pgcommon.GUCSetFromContext
 	pgCfg.Logger = pgadapter.NewLoggerAdapter(rawLog)
@@ -77,7 +101,7 @@ func main() {
 	defer pool.Close()
 
 	cache := valkeyadapter.New(envOr("VALKEY_URL", "localhost:6379")).WithLogger(rawLog)
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	enqueueCodec, _ := eventbusadapter.NewValidatingCodec(eventbusadapter.NoopCodec{})
 	outboxPublisher := eventbusadapter.New(eventbusadapter.EventSource, enqueueCodec).WithLogger(rawLog)

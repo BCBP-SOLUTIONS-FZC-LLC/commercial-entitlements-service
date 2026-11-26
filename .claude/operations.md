@@ -4,7 +4,7 @@
 
 ### Tenant Isolation — Three Layers
 
-- **Layer 1** — Kubernetes NetworkPolicy: only `commercial` namespace service accounts reach `/internal/v1/`; no public internet exposure.
+- **Layer 1** — Kubernetes NetworkPolicy: only `commercial` namespace service accounts reach `/api/v1/internal/`; no public internet exposure.
 - **Layer 2** — PostgreSQL RLS: `app.tenant_id` GUC, `ENABLE + FORCE ROW LEVEL SECURITY`. GUC bound **transaction-locally** (`SET LOCAL`) by `pgcommon.GUCSetFromContext` on every pool checkout. Never session-scoped (RLS-6).
 - **Layer 3** — Audit-tagged audit log via platform-audit outbox mode.
 
@@ -34,9 +34,9 @@
 
 ### Prometheus Metrics (`internal/adapter/outbound/metrics/`)
 
-Namespace: `commercial_entitlements_*`. Registered via `metrics.Register(appEnv)` onto `gincommon.MetricsRegisterer()`. Registry is guarded by `sync.Once` — safe to call from both `cmd/server` and `cmd/reconciler`.
+Namespace: `commercial_entitlements_*`. Metric constructors use `gincommon.NewCounterVec`, `gincommon.NewHistogramVec`, `gincommon.NewCounter` (never raw `prometheus.New*`). Registered via `metrics.Register(appEnv)` onto `gincommon.MetricsRegisterer()`. Registry is guarded by `sync.Once` — safe to call from all binaries. Observability domain: `"commercial"` (ratified in platform-gincommon v2.7.0).
 
-All metrics are Tier 3 service-specific (`commercial_entitlements_*`). Required labels `service`, `domain`, and `environment` are injected centrally by `gincommon.MetricsRegisterer()` as const labels (Rule 8). Tier 1 platform metrics (`platform_*`) are registered automatically by `events.InitMetrics()`, `pgmetrics.InitWithIdentity()`, and `audit.InitMetrics()`.
+All metrics are Tier 3 service-specific (`commercial_entitlements_*`). Required labels `service`, `domain`, and `environment` are injected centrally by `gincommon.MetricsRegisterer()` as const labels (Rule 8). Tier 1 platform metrics (`platform_*`) are registered automatically by `events.InitMetrics()` (all binaries with outbox/consumers), `pgmetrics.InitWithIdentity()` (all binaries with a Postgres pool), and `audit.InitMetrics()` (`cmd/server` only).
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
@@ -46,14 +46,18 @@ All metrics are Tier 3 service-specific (`commercial_entitlements_*`). Required 
 | `commercial_entitlements_override_remove_total` | Counter | `limit_key` | Override removes |
 | `commercial_entitlements_override_expire_total` | Counter | — | Overrides swept by reconciler |
 | `commercial_entitlements_addon_grant_total` | Counter | `limit_key` | Addon packs granted |
+| `commercial_entitlements_addon_remove_total` | Counter | — | Addon packs removed by operator (ENT-O5 DELETE) |
 | `commercial_entitlements_addon_expire_total` | Counter | — | Addons swept by reconciler |
 | `commercial_entitlements_drawdown_total` | Counter | `limit_key`, `shortfall` | Drawdown requests; `shortfall` ∈ `yes`\|`no` |
 | `commercial_entitlements_shortfall_raised_total` | Counter | `limit_key`, `status` | Shortfalls raised; `status` ∈ `auto_accepted`\|`pending_approval` |
 | `commercial_entitlements_shortfall_resolve_total` | Counter | `disposition` | Shortfalls resolved by operators; `disposition` ∈ `approve`\|`reject` |
 | `commercial_entitlements_cache_hit_total` | Counter | `kind` | Valkey advisory cache hits |
 | `commercial_entitlements_cache_miss_total` | Counter | `kind` | Valkey advisory cache misses (fell through to Postgres/IAM) |
+| `commercial_entitlements_trial_assignment_total` | Counter | `profile` | Trial profile assignments/updates by operator (ENT-O3); `profile` ∈ trial_specific\|reduced_plan\|full_plan\|custom |
 | `commercial_entitlements_duplicate_messages_total` | Counter | `consumer`, `event_type` | Duplicate events detected and skipped by inbox dedup layer (Tier-3 complement to Tier-1 `platform_duplicate_messages_total`) |
-| `commercial_entitlements_unknown_event_acknowledged_total` | Counter | `event_type` | Events with no registered handler acknowledged for forward compatibility |
+| `commercial_entitlements_unknown_event_acknowledged_total` | Counter | `consumer`, `event_type` | Events with no registered handler acknowledged for forward compatibility |
+| `commercial_entitlements_consumed_event_rejected_total` | Counter | `consumer`, `event_type`, `reason` | Inbound SQS events rejected before reaching the domain handler; `reason=schema_violation` → ValidatingCodec check failed and message forwarded to DLQ |
+| `commercial_entitlements_rls_violations_total` | Counter | `violation_type` | PostgreSQL RLS policy violations (SQLSTATE 42501 + "row-level security" message); `violation_type=cross_tenant_access`; any non-zero value is a critical compliance signal |
 
 **Label cardinality:** no `tenant_id`/`user_id`/`request_id`/`event_id`/`session_id` label anywhere (prohibited by standard).
 
@@ -96,7 +100,7 @@ All reconciler jobs use the **system pool** (`SYSTEM_DATABASE_URL`, `BYPASSRLS`)
 
 **Reconciler env vars:**
 - `RECONCILER_JOB` — job name (or use `--job=` flag)
-- `RECONCILER_TIMEOUT` — max wall time (default 5m)
+- `RECONCILER_TIMEOUT` — max wall time (default 15m)
 - `RECONCILER_BATCH_LIMIT` — rows per sweep (default 500)
 - `RECONCILER_STATEMENT_TIMEOUT` — Postgres statement timeout (default 2m)
 - `OUTBOX_RETENTION_DAYS` — outbox retention (default 8)

@@ -1,0 +1,29 @@
+# Prometheus Adapter custom metrics rule for commercial-entitlements.
+# Exposes platform_http_requests_per_second as a Kubernetes custom metric
+# so the HPA can scale on RPS (autoscaling.targetRPSPerReplica in values.yaml).
+#
+# PREREQUISITE: prometheus-adapter must be installed in the cluster.
+# Apply to the prometheus-adapter ConfigMap or include in its rules list.
+#
+# After applying, verify: kubectl get --raw /apis/custom.metrics.k8s.io/v1beta1 \
+#   | jq '.resources[] | select(.name | contains("platform_http_requests_per_second"))'
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-adapter-custom-metrics-commercial-entitlements
+  namespace: monitoring
+data:
+  config.yaml: |
+    rules:
+      - seriesQuery: 'platform_http_requests_total{job="commercial-entitlements"}'
+        resources:
+          overrides:
+            namespace: {resource: "namespace"}
+            pod: {resource: "pod"}
+        name:
+          matches: "platform_http_requests_total"
+          as: "platform_http_requests_per_second"
+        metricsQuery: |
+          sum(rate(platform_http_requests_total{job="commercial-entitlements",<<.LabelMatchers>>}[2m]))
+            by (<<.GroupBy>>)

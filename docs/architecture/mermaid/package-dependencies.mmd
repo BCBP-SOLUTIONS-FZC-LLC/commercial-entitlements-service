@@ -1,0 +1,84 @@
+graph LR
+    %% Mirrors .go-arch-lint.yml — inbound adapters may import core; core never imports adapters.
+
+    subgraph composition["cmd/"]
+        server_cmd["cmd/server"]
+        reconciler_cmd["cmd/reconciler"]
+        worker_cmd["cmd/worker"]
+        migrate_cmd["cmd/migrate"]
+        expiry_cmd["cmd/expiry"]
+        catrefresh_cmd["cmd/catalog-refresh"]
+    end
+
+    subgraph inbound["internal/adapter/inbound/"]
+        http_in["http"]
+        sqspipeline_in["sqspipeline"]
+        consumer_in["consumer"]
+    end
+
+    subgraph core_pkg["internal/core/"]
+        domain_core["domain"]
+        service_core["service"]
+        port_core["port"]
+    end
+
+    subgraph outbound["internal/adapter/outbound/"]
+        postgres_out["postgres"]
+        valkey_out["valkey"]
+        eventbus_out["eventbus"]
+        iamclient_out["iamclient"]
+        metrics_out["metrics"]
+        auditrecorder_out["auditrecorder"]
+    end
+
+    pkg_ctx["pkg/requestctx"]
+
+    %% Composition roots wire everything
+    server_cmd --> http_in
+    server_cmd --> sqspipeline_in
+    server_cmd --> consumer_in
+    server_cmd --> postgres_out
+    server_cmd --> valkey_out
+    server_cmd --> eventbus_out
+    server_cmd --> iamclient_out
+    server_cmd --> metrics_out
+    server_cmd --> auditrecorder_out
+    server_cmd --> service_core
+
+    reconciler_cmd --> postgres_out
+    reconciler_cmd --> valkey_out
+    reconciler_cmd --> metrics_out
+    reconciler_cmd --> service_core
+
+    worker_cmd --> service_core
+    catrefresh_cmd --> iamclient_out
+    catrefresh_cmd --> postgres_out
+    catrefresh_cmd --> valkey_out
+
+    %% Inbound → core
+    http_in --> service_core
+    http_in --> domain_core
+    http_in --> pkg_ctx
+    consumer_in --> service_core
+    consumer_in --> domain_core
+    sqspipeline_in --> consumer_in
+
+    %% Core
+    service_core --> domain_core
+    service_core --> port_core
+    port_core --> domain_core
+    port_core --> pkg_ctx
+
+    %% Outbound → core (implements port interfaces)
+    postgres_out --> domain_core
+    postgres_out --> port_core
+    valkey_out --> domain_core
+    valkey_out --> port_core
+    eventbus_out --> port_core
+    eventbus_out --> domain_core
+    iamclient_out --> domain_core
+    auditrecorder_out --> port_core
+
+    %% Forbidden (enforced by go-arch-lint):
+    %% inbound must NOT import outbound
+    %% core must NOT import any adapter

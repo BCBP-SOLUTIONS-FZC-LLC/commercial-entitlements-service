@@ -27,8 +27,9 @@ make test-ci        # race + coverage — what CI runs
 make lint           # golangci-lint ./...
 make arch-lint      # go-arch-lint boundary check
 make fmt-check      # CI gofmt gate
+make check-metrics  # validate metric names, suffixes, labels, tier compliance
 make swag           # regenerate docs/swagger/ from annotations
-make ci             # tidy + fmt-check + vet + lint + test-ci + build
+make ci             # tidy + fmt-check + vet + lint + arch-lint + check-metrics + test-ci + build
 ```
 
 ## Binaries

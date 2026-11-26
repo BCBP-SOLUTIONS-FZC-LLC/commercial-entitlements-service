@@ -82,7 +82,7 @@ func run() int {
 	shutdownTracing, err := gincommon.InitTracingWithConfig(gincommon.TracingConfig{
 		ServiceName:  serviceName,
 		BuildVersion: bv,
-		Domain:       "commercial",
+		Domain:       envOr("OBSERVABILITY_DOMAIN", "commercial"),
 		Environment:  appEnv,
 		Logger:       rawLog,
 	})
@@ -103,7 +103,7 @@ func run() int {
 		Logger:       rawLog,
 		ServiceName:  serviceName,
 		BuildVersion: bv,
-		Domain:       "commercial",
+		Domain:       envOr("OBSERVABILITY_DOMAIN", "commercial"),
 	})
 	metrics.Register(appEnv)
 	identity := gincommon.MetricsConstLabels()
@@ -126,7 +126,11 @@ func run() int {
 
 	log.Info("reconciler starting", "job", jobName)
 
-	timeout := 5 * time.Minute
+	// Default 15 min — addon-expiry triggers one recompute per pack (IAM call per
+	// recompute); at scale 1000 packs × 10 s/IAM = 167 min worst-case, so
+	// operators should tune RECONCILER_TIMEOUT for their fleet size.
+	// 5 min was too low for mid-sized deployments (LLD gap, reconciler timeout audit).
+	timeout := 15 * time.Minute
 	if s := os.Getenv("RECONCILER_TIMEOUT"); s != "" {
 		if d, err := time.ParseDuration(s); err == nil && d > 0 {
 			timeout = d

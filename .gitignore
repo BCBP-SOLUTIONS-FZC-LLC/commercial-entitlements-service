@@ -55,8 +55,9 @@ bin/
 # .idea/
 # .vscode/
 
-# Claude Code agent worktrees (temporary, not project code)
+# Claude Code runtime files (session state, ephemeral locks — not project code)
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 
 # Staged PascalCase Glue schema copies (from make schema-register / CI)
 .tmp/

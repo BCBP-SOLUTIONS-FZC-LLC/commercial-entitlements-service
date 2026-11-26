@@ -101,7 +101,7 @@ Three route groups, all under `/api/v1/`:
 | Operator | `/api/v1/operator/` | Operator tooling |
 
 Full route catalogue: `.claude/api-caching-events.md`
-Swagger UI (staging/prod): `GET /docs/swagger/index.html` with `DOCS_ENABLED=true`
+Swagger UI: `GET /swagger/index.html` (requires `DOCS_ENABLED=true`)
 
 ---
 

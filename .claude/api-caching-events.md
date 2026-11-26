@@ -7,7 +7,7 @@
 - Middleware: `gincommon.ObservabilityMiddlewares` (`PanicRecovery → RequestID → Tracing → CorrelationHeaders → Metrics → Logging → Timeout`, 30s) → `gincommon.ProtectedMiddlewares` (`RequireAuth → ContextMiddleware`) → route-specific gates.
 - Content type `application/json`. Timestamps RFC 3339 UTC. Errors via `gincommon.ErrorResponse`.
 - All routes require `x-tenant-id` header (set by the calling service); RLS enforces the boundary.
-- Swagger UI: `GET /docs/swagger/index.html` (requires `DOCS_ENABLED=true` and `DOCS_AUTH_TOKEN` in staging/prod). Generate with `make swag`.
+- Swagger UI: `GET /swagger/index.html` (requires `DOCS_ENABLED=true`; `DOCS_AUTH_TOKEN` required in staging/prod). Generate with `make swag`.
 
 ## Endpoint Catalogue
 

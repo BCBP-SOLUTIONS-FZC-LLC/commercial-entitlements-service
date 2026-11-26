@@ -25,7 +25,7 @@ import (
 
 const (
 	postgresImage    = "postgres:16-alpine"
-	appRole          = "entitlements_app"
+	appRole          = "commercial_entitlements_app" // matches scripts/init-db.sql and migrations
 	appRolePassword  = "apppassword-testonly"
 	migratorPassword = "migratorpassword-testonly"
 	dbName           = "entitlements_test"
@@ -35,7 +35,7 @@ const (
 // role, and returns three pools plus the default tenant ID. The container is
 // terminated when t ends.
 //
-//   - appPool  — RLS-enforced app role (entitlements_app NOBYPASSRLS); tenant
+//   - appPool  — RLS-enforced app role (commercial_entitlements_app NOBYPASSRLS); tenant
 //     is injected via GUC from ctx on every query.
 //   - seedPool — superuser connection (postgres role); used to seed rows that
 //     bypass RLS or for SQL assertions after the fact.
@@ -60,7 +60,7 @@ func setupTestDB(t *testing.T) (*pgcommon.Pool, *dbseed.Pool, *pgcommon.Pool, uu
 
 	// Create the application role BEFORE running migrations.
 	// Migrations (000002, 000003) contain GRANT statements that reference
-	// entitlements_app — the role must already exist when they run.
+	// commercial_entitlements_app — the role must already exist when they run.
 	// This matches production: the DBA pre-creates the role and the migration
 	// only grants permissions to it. (Pattern from iam-org-membership §rls_test.go)
 	seedPool, err := dbseed.New(ctx, superDSN)

@@ -23,17 +23,17 @@ import (
 // Feature:           Schema migration idempotency
 // Scenario:          Running MigrateSchema twice on the same database succeeds
 // Expected Result:   Second call returns no error
-// createRoleForMigration creates the entitlements_app role using the superuser
-// DSN before migrations run. Required because migrations 000002 and 000003
+// createRoleForMigration creates the commercial_entitlements_app role using the
+// superuser DSN before migrations run. Required because migrations 000002–000004
 // contain GRANT statements referencing this role (matches production setup
-// where the DBA pre-creates the role before the migrate Job runs).
+// where scripts/init-db.sql pre-creates the role before the migrate Job runs).
 func createRoleForMigration(t *testing.T, ctx context.Context, superDSN string) {
 	t.Helper()
 	raw, err := dbseedNew(ctx, superDSN)
 	require.NoError(t, err)
 	t.Cleanup(raw.Close)
 	err = raw.Exec(ctx, "CREATE ROLE "+appRole+" LOGIN PASSWORD '"+appRolePassword+"' NOBYPASSRLS")
-	require.NoError(t, err, "create entitlements_app role before migrations")
+	require.NoError(t, err, "create "+appRole+" role before migrations")
 }
 
 func TestP5Mig001_MigrateSchemaIdempotent(t *testing.T) {

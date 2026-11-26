@@ -58,7 +58,7 @@ func (c *TenantEventConsumer) handleLifecycleEvent(ctx context.Context, env even
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
 		c.log.Warn("tenant consumer: unmarshal failed",
 			map[string]interface{}{"event_type": env.Type, "error": err.Error()})
-		return nil
+		return nil //nolint:nilerr
 	}
 	_, err := c.effectSvc.Recompute(ctx, payload.TenantID, domain.CauseTenantLifecycle)
 	return err
@@ -69,7 +69,7 @@ func (c *TenantEventConsumer) handleOffboard(ctx context.Context, env events.Env
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
 		c.log.Warn("tenant consumer: unmarshal failed for offboard event",
 			map[string]interface{}{"event_type": env.Type, "error": err.Error()})
-		return nil
+		return nil //nolint:nilerr
 	}
 	if c.trialSvc != nil {
 		if err := c.trialSvc.PurgeTrialForTenant(ctx, payload.TenantID); err != nil {

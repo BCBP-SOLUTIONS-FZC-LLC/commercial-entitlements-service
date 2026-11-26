@@ -14,14 +14,6 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 )
 
-// fakeTxForPublisher embeds a fake pgx.Tx to test Enqueue without real DB.
-// It captures Exec calls to verify the correct SQL is issued.
-type noopTxForPublisher struct{}
-
-func (noopTxForPublisher) Begin(_ context.Context) (interface{ String() string }, error) {
-	return nil, nil
-}
-
 // We only need to test paths that do NOT reach outbox.Enqueue (which needs pgx.Tx).
 // We test: marshal error, codec error, missing tx context.
 
@@ -91,4 +83,24 @@ type failCodec struct{ err error }
 
 func (f *failCodec) Encode(_ context.Context, _ string, _ []byte) ([]byte, string, error) {
 	return nil, "", f.err
+}
+
+func TestPublisher_Enqueue_WithSpanContext_NoPanic(t *testing.T) {
+	// Install a span context extractor so the TraceID and SpanID branches fire.
+	port.SetSpanContextExtractor(func(_ context.Context) port.SpanContext {
+		return port.SpanContext{TraceID: "trace-abc", SpanID: "span-xyz"}
+	})
+	t.Cleanup(func() {
+		port.SetSpanContextExtractor(nil)
+	})
+
+	p := New(EventSource, NoopCodec{})
+	ev := &domain.DomainEvent{
+		Type:       domain.EventTypeTenantEntitlementsChanged,
+		Data:       "{}",
+		TenantID:   uuid.New(),
+		OccurredAt: time.Now().UTC(),
+	}
+	err := p.Enqueue(context.Background(), ev)
+	require.Error(t, err) // no tx — expected; spans were injected
 }

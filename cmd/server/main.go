@@ -69,7 +69,7 @@ func main() {
 		Logger:         log,
 		ServiceName:    envOr("APP_NAME", "commercial-entitlements"),
 		BuildVersion:   envOr("BUILD_VERSION", buildVersion),
-		Domain:         "commercial",
+		Domain:         envOr("OBSERVABILITY_DOMAIN", "commercial"),
 		Environment:    appEnv,
 		RequestTimeout: requestTimeout,
 	}
@@ -87,6 +87,7 @@ func main() {
 	}
 
 	sqspipeline.InstallTracingHooks(cfg.ServiceName)
+	installOTelHooks(cfg.ServiceName)
 
 	_ = gincommon.ObservabilityMiddlewares(cfg)
 	metrics.Register(appEnv)
@@ -289,6 +290,7 @@ func main() {
 	overrideSvc := service.NewOverrideService(overrideRepo, effectSvc, txRunner).WithLogger(log)
 	addonSvc := service.NewAddonService(addonRepo, drawdownRepo, shortfallRepo, effectSvc, txRunner).
 		WithLogger(log).
+		WithShortfallConfig(loadShortfallConfig()).
 		WithAddonMetricsHooks(
 			func(key domain.LimitKey, hadShortfall bool) { metrics.IncDrawdown(key, hadShortfall) },
 			func(key domain.LimitKey, status domain.ShortfallStatus) { metrics.IncShortfallRaised(key, status) },
@@ -488,7 +490,16 @@ func main() {
 	}
 	drain.Wait()
 
+	// Drain outbox and audit runners in parallel, tracked in a WaitGroup so the
+	// pool is not released until both runners have finished flushing (LLD §7.3).
 	var runners sync.WaitGroup
+	runners.Add(1)
+	go func() {
+		defer runners.Done()
+		if err := outboxRunner.Stop(); err != nil {
+			log.Error("outbox runner drain error", map[string]interface{}{"error": err.Error()})
+		}
+	}()
 	if auditRunner != nil {
 		runners.Add(1)
 		go func() {
@@ -499,9 +510,6 @@ func main() {
 				log.Error("audit runner stop error", map[string]interface{}{"error": err.Error()})
 			}
 		}()
-	}
-	if err := outboxRunner.Stop(); err != nil {
-		log.Error("outbox runner drain error", map[string]interface{}{"error": err.Error()})
 	}
 	runners.Wait()
 	cancelBackground()

@@ -5,8 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/google/uuid"
 
@@ -40,11 +38,8 @@ func (r *AddonRepository) Insert(ctx context.Context, a *domain.QuotaAddon) erro
 		)
 		return err
 	})
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_quota_addons_billing_ref" {
-			return domain.NewError(domain.ErrBillingRefAlreadyClaimed, "billing_ref already claimed by a different tenant")
-		}
+	if pgcommon.IsUniqueViolation(err) && pgcommon.ConstraintName(err) == "uq_quota_addons_billing_ref" {
+		return domain.NewError(domain.ErrBillingRefAlreadyClaimed, "billing_ref already claimed by a different tenant")
 	}
 	return err
 }

@@ -67,9 +67,7 @@ func processOnce(ctx context.Context, inbox port.Inbox, consumer string, env eve
 // handler is logged, counted, and recorded in processed_events so
 // redelivery does not storm the same unknown type.
 func ackUnknown(ctx context.Context, inbox port.Inbox, log port.Logger, consumer string, env events.Envelope[json.RawMessage]) error {
-	if metrics.UnknownEventAcknowledged != nil {
-		metrics.UnknownEventAcknowledged.WithLabelValues(sanitizeEventType(env.Type)).Inc()
-	}
+	metrics.IncUnknownEventAcknowledged(consumer, sanitizeEventType(env.Type))
 	log.Info("unknown event type — silently acknowledging",
 		map[string]interface{}{"event_id": env.ID, "event_type": env.Type})
 	return processOnce(ctx, inbox, consumer, env, func(context.Context) error { return nil })

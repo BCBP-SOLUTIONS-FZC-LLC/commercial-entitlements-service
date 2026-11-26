@@ -15,11 +15,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/test/dbseed"
+	pgdomain "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 )
 
@@ -31,16 +31,18 @@ const (
 	dbName           = "entitlements_test"
 )
 
-// testDB holds everything a single test needs.
-type testDB struct {
-	appPool  *pgcommon.Pool
-	seedPool *dbseed.Pool
-	tenantID uuid.UUID
-}
-
 // setupTestDB starts a Postgres container, runs migrations, creates the app
-// role, and returns both pools. The container is terminated when t ends.
-func setupTestDB(t *testing.T) (*pgcommon.Pool, *dbseed.Pool, uuid.UUID) {
+// role, and returns three pools plus the default tenant ID. The container is
+// terminated when t ends.
+//
+//   - appPool  — RLS-enforced app role (entitlements_app NOBYPASSRLS); tenant
+//     is injected via GUC from ctx on every query.
+//   - seedPool — superuser connection (postgres role); used to seed rows that
+//     bypass RLS or for SQL assertions after the fact.
+//   - sysPool  — BYPASSRLS system pool (superuser, no GUCProvider); used for
+//     cross-tenant queries such as ListTenantIDsByPlan and reconciler reads.
+//     Mirrors IAM org-membership's three-pool pattern.
+func setupTestDB(t *testing.T) (*pgcommon.Pool, *dbseed.Pool, *pgcommon.Pool, uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -48,10 +50,7 @@ func setupTestDB(t *testing.T) (*pgcommon.Pool, *dbseed.Pool, uuid.UUID) {
 		tcpostgres.WithDatabase(dbName),
 		tcpostgres.WithUsername("postgres"),
 		tcpostgres.WithPassword(migratorPassword),
-		tcpostgres.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).WithStartupTimeout(60*time.Second),
-		),
+		tcpostgres.BasicWaitStrategies(),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ctr.Terminate(context.Background()) })
@@ -59,30 +58,32 @@ func setupTestDB(t *testing.T) (*pgcommon.Pool, *dbseed.Pool, uuid.UUID) {
 	superDSN, err := ctr.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
 
-	// Run migrations using the superuser DSN.
-	require.NoError(t, pgadapter.MigrateSchema(ctx, superDSN, nil))
-
-	// Create the application role.
+	// Create the application role BEFORE running migrations.
+	// Migrations (000002, 000003) contain GRANT statements that reference
+	// entitlements_app — the role must already exist when they run.
+	// This matches production: the DBA pre-creates the role and the migration
+	// only grants permissions to it. (Pattern from iam-org-membership §rls_test.go)
 	seedPool, err := dbseed.New(ctx, superDSN)
 	require.NoError(t, err)
 	t.Cleanup(seedPool.Close)
 
-	_, err = seedPool.Exec(ctx, fmt.Sprintf(
-		`DO $$ BEGIN
-			IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '%s') THEN
-				CREATE ROLE %s LOGIN PASSWORD '%s';
-			END IF;
-		END $$`,
-		appRole, appRole, appRolePassword,
+	err = seedPool.Exec(ctx, fmt.Sprintf(
+		`CREATE ROLE %s LOGIN PASSWORD '%s' NOBYPASSRLS`,
+		appRole, appRolePassword,
 	))
 	require.NoError(t, err)
 
-	// Grant table access to the app role.
-	_, err = seedPool.Exec(ctx, fmt.Sprintf(`
+	// Run migrations (now that the role exists, GRANTs inside migrations succeed).
+	require.NoError(t, pgadapter.MigrateSchema(ctx, superDSN, nil))
+
+	// Belt-and-suspenders: also grant CONNECT + USAGE for containers that
+	// do not apply the GRANTs inside migrations (e.g. fresh schema).
+	err = seedPool.Exec(ctx, fmt.Sprintf(`
+		GRANT CONNECT ON DATABASE %s TO %s;
 		GRANT USAGE ON SCHEMA public TO %s;
 		GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %s;
 		GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %s;
-	`, appRole, appRole, appRole))
+	`, dbName, appRole, appRole, appRole, appRole))
 	require.NoError(t, err)
 
 	// Build app DSN using the app role.
@@ -99,14 +100,20 @@ func setupTestDB(t *testing.T) (*pgcommon.Pool, *dbseed.Pool, uuid.UUID) {
 	appPool, err := pgcommon.NewPool(ctx, pgcommon.Config{
 		DSN:           appDSN,
 		PGBouncerMode: false,
-		GUCProvider: func(ctx context.Context) map[string]string {
-			return map[string]string{"app.tenant_id": tenantFromCtx(ctx, tenantID).String()}
+		GUCProvider: func(ctx context.Context) (pgdomain.GUCSet, bool) {
+			return pgdomain.GUCSet{TenantID: tenantFromCtx(ctx, tenantID).String()}, true
 		},
 	})
 	require.NoError(t, err)
 	t.Cleanup(appPool.Close)
 
-	return appPool, seedPool, tenantID
+	// sysPool: superuser with no GUCProvider — bypasses RLS for cross-tenant
+	// queries (ListTenantIDsByPlan, reconciler reads, error-path seeding).
+	sysPool, err := pgcommon.NewPool(ctx, pgadapter.SystemPoolConfig(superDSN, nil))
+	require.NoError(t, err)
+	t.Cleanup(sysPool.Close)
+
+	return appPool, seedPool, sysPool, tenantID
 }
 
 // tenantFromCtx returns the tenant ID stored in ctx, falling back to def.
@@ -132,12 +139,12 @@ func sampleSnapshot(tenantID uuid.UUID, version int64) *domain.EntitlementSnapsh
 		SourceRecordVersion: version,
 		Plan:                "starter",
 		State:               domain.EntitlementStateActive,
-		FeatureFlags:        []any{},
+		FeatureFlags:        []string{},
 		ModelTier:           "standard",
-		Limits: map[domain.LimitKey]int64{
-			domain.LimitKeyLLMTokenQuotaMonthly: 100_000,
+		Limits: map[domain.LimitKey]domain.LimitValue{
+			domain.LimitKeyLLMTokenQuotaMonthly: {Value: func() *int64 { v := int64(100_000); return &v }()},
 		},
-		Cause:      domain.EffectiveSetCausePlanChange,
+		Cause:      domain.CausePlanChange,
 		ComputedAt: time.Now().UTC().Truncate(time.Microsecond),
 	}
 }

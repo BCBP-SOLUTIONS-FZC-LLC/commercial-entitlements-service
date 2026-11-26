@@ -33,12 +33,14 @@ import (
 
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/test/dbseed"
+	pgdomain "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 )
 
 const (
-	flociImage  = "floci/floci:2.1.0"
-	flociRegion = "ap-south-1"
+	flociImage   = "floci/floci:2.1.0"
+	flociRegion  = "ap-south-1"
+	flociAccount = "000000000000"
 )
 
 var (
@@ -51,7 +53,7 @@ var (
 func TestMain(m *testing.M) {
 	for _, key := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"} {
 		if os.Getenv(key) == "" {
-			os.Setenv(key, "test")
+			_ = os.Setenv(key, "test")
 		}
 	}
 	code := m.Run()
@@ -62,22 +64,49 @@ func TestMain(m *testing.M) {
 }
 
 // startFloci starts the shared floci container once per package.
+// Retried up to maxFlociAttempts times with exponential backoff because
+// Docker Desktop can lose the port-registration race on the first attempt
+// (same pattern as iam-org-membership setupTestDB).
+const maxFlociAttempts = 3
+
 func startFloci(t *testing.T) string {
 	t.Helper()
 	sharedFlociOnce.Do(func() {
 		ctx := context.Background()
-		ctr, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-			ContainerRequest: testcontainers.ContainerRequest{
-				Image:        flociImage,
-				ExposedPorts: []string{"4566/tcp"},
-				WaitingFor:   wait.ForHTTP("/_floci_health").WithPort("4566").WithStartupTimeout(60 * time.Second),
-				Env: map[string]string{
-					"SERVICES":       "sns,sqs",
-					"DEFAULT_REGION": flociRegion,
+		var ctr testcontainers.Container
+		var err error
+		for attempt := 1; attempt <= maxFlociAttempts; attempt++ {
+			ctr, err = testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+				ContainerRequest: testcontainers.ContainerRequest{
+					Image:        flociImage,
+					ExposedPorts: []string{"4566/tcp"},
+					// Use log-based wait: floci logs "started in X.XXXs" when it
+					// is ready to handle requests. HTTP health-check on the mapped
+					// port is unreliable on macOS Docker Desktop because the
+					// localhost port-mapping proxy takes time after the container
+					// starts — the log line fires as soon as the process is live.
+					WaitingFor: wait.ForLog("started in").
+						WithOccurrence(1).
+						WithStartupTimeout(120 * time.Second),
+					// Use floci-native vars (not LocalStack SERVICES=) so
+					// all services — including Glue Schema Registry — start.
+					// FLOCI_DEFAULT_ACCOUNT_ID is required for Glue ARN construction.
+					Env: map[string]string{
+						"FLOCI_DEFAULT_REGION":     flociRegion,
+						"FLOCI_DEFAULT_ACCOUNT_ID": flociAccount,
+					},
 				},
-			},
-			Started: true,
-		})
+				Started: true,
+			})
+			if err == nil {
+				break
+			}
+			t.Logf("startFloci: attempt %d/%d failed: %v — retrying", attempt, maxFlociAttempts, err)
+			if ctr != nil {
+				_ = ctr.Terminate(ctx)
+			}
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
 		if err != nil {
 			sharedFlociErr = fmt.Errorf("start floci: %w", err)
 			return
@@ -154,6 +183,14 @@ func setupIntegrationDB(t *testing.T, ctx context.Context, tenantID uuid.UUID) (
 	port, _ := ctr.MappedPort(ctx, "5432")
 	dsn := fmt.Sprintf("postgres://postgres:password@%s:%s/entitlements_int_test?sslmode=disable", host, port.Port())
 
+	// Create entitlements_app role BEFORE migrations (migrations contain
+	// GRANT statements referencing this role — same fix as postgres tests).
+	superSeed, seedErr := dbseed.New(ctx, dsn)
+	require.NoError(t, seedErr)
+	require.NoError(t, superSeed.Exec(ctx,
+		"CREATE ROLE entitlements_app LOGIN PASSWORD 'apppassword' NOBYPASSRLS"))
+	superSeed.Close()
+
 	require.NoError(t, pgadapter.MigrateSchema(ctx, dsn, nil))
 
 	seedPool, err := dbseed.New(ctx, dsn)
@@ -162,8 +199,8 @@ func setupIntegrationDB(t *testing.T, ctx context.Context, tenantID uuid.UUID) (
 
 	appPool, err := pgcommon.NewPool(ctx, pgcommon.Config{
 		DSN: dsn, PGBouncerMode: false,
-		GUCProvider: func(context.Context) map[string]string {
-			return map[string]string{"app.tenant_id": tenantID.String()}
+		GUCProvider: func(context.Context) (pgdomain.GUCSet, bool) {
+			return pgdomain.GUCSet{TenantID: tenantID.String()}, true
 		},
 	})
 	require.NoError(t, err)
@@ -191,7 +228,7 @@ func createTopic(t *testing.T, env *phase6Env, suffix string) string {
 func createQueue(t *testing.T, env *phase6Env, suffix string) string {
 	t.Helper()
 	name := fmt.Sprintf("ent-%s-%s", suffix, uuid.New().String()[:8])
-	out, err := env.sqsClient.CreateQueue(env.ctx, &sqs.CreateQueueInput{Name: &name})
+	out, err := env.sqsClient.CreateQueue(env.ctx, &sqs.CreateQueueInput{QueueName: &name})
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_, _ = env.sqsClient.DeleteQueue(context.Background(), &sqs.DeleteQueueInput{QueueUrl: out.QueueUrl})

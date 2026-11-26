@@ -3,9 +3,11 @@ package iamclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -152,4 +154,60 @@ func TestNewWithConfig_SetsFields(t *testing.T) {
 	c := NewWithConfig("https://iam.test", "api-key", nopIAMLogger{})
 	assert.Equal(t, "https://iam.test", c.baseURL)
 	assert.Equal(t, "api-key", c.apiKey)
+}
+
+// ── iamTimeout ───────────────────────────────────────────────────────────────
+
+func TestIAMTimeout_Default_WhenEnvUnset(t *testing.T) {
+	t.Setenv("IAM_CATALOG_TIMEOUT", "")
+	got := iamTimeout()
+	assert.Equal(t, defaultTimeout, got, "unset env → default 10s")
+}
+
+func TestIAMTimeout_CustomValue_WhenEnvSet(t *testing.T) {
+	t.Setenv("IAM_CATALOG_TIMEOUT", "5s")
+	got := iamTimeout()
+	assert.Equal(t, 5*time.Second, got, "valid env value must be used")
+}
+
+func TestIAMTimeout_FallbackOnInvalid_WhenEnvBad(t *testing.T) {
+	t.Setenv("IAM_CATALOG_TIMEOUT", "not-a-duration")
+	got := iamTimeout()
+	assert.Equal(t, defaultTimeout, got, "unparseable env → default")
+}
+
+// ── traceInjectTransport.RoundTrip error path ─────────────────────────────
+
+type errorTransport struct{ err error }
+
+func (e *errorTransport) RoundTrip(_ *http.Request) (*http.Response, error) {
+	return nil, e.err
+}
+
+func TestRoundTrip_TransportError_RecordsSpanError(t *testing.T) {
+	inner := &errorTransport{err: fmt.Errorf("connection refused")}
+	tr := traceInjectTransport{RoundTripper: inner}
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost/test", nil)
+	resp, err := tr.RoundTrip(req) //nolint:bodyclose // resp is nil on transport error; nothing to close
+	require.Error(t, err)
+	assert.Nil(t, resp, "response must be nil on transport error")
+	assert.Contains(t, err.Error(), "connection refused")
+}
+
+// ── FetchPlan — http.Do transport error ──────────────────────────────────
+
+func TestFetchPlan_TransportError_ReturnsError(t *testing.T) {
+	c := NewWithConfig("http://127.0.0.1:1", "", nopIAMLogger{}) // port 1 is always refused
+	_, err := c.FetchPlan(context.Background(), "some_plan")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetch plan")
+}
+
+// ── FetchTenantSubscription — http.Do transport error ───────────────────
+
+func TestFetchTenantSubscription_TransportError_ReturnsError(t *testing.T) {
+	c := NewWithConfig("http://127.0.0.1:1", "", nopIAMLogger{})
+	_, err := c.FetchTenantSubscription(context.Background(), uuid.New())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetch subscription")
 }

@@ -30,7 +30,13 @@ func (h *ShortfallHandler) List(c *gin.Context) {
 
 	var statusFilter []domain.ShortfallStatus
 	if s := c.Query("status"); s != "" {
-		statusFilter = []domain.ShortfallStatus{domain.ShortfallStatus(s)}
+		st := domain.ShortfallStatus(s)
+		if _, ok := domain.ValidShortfallStatuses[st]; !ok {
+			gincommon.AbortWithProblem(c, problem.NewBadRequestError(
+				"status must be one of: pending, auto_accepted, pending_approval, approved, rejected, expired"))
+			return
+		}
+		statusFilter = []domain.ShortfallStatus{st}
 	}
 
 	shortfalls, err := h.addonSvc.ListShortfalls(c.Request.Context(), tenantID, statusFilter)
@@ -61,9 +67,16 @@ func (h *ShortfallHandler) Resolve(c *gin.Context) {
 		return
 	}
 
+	disp := domain.ShortfallDisposition(body.Disposition)
+	if _, ok := domain.ValidShortfallDispositions[disp]; !ok {
+		gincommon.AbortWithProblem(c, problem.NewBadRequestError(
+			"disposition must be one of: approve, reject"))
+		return
+	}
+
 	sf, err := h.addonSvc.ResolveShortfall(c.Request.Context(), port.ResolveShortfallRequest{
 		ShortfallID:    shortfallID,
-		Disposition:    domain.ShortfallDisposition(body.Disposition),
+		Disposition:    disp,
 		DispositionBy:  actorID,
 		DispositionRef: body.DispositionRef,
 		Note:           body.Note,
@@ -72,6 +85,6 @@ func (h *ShortfallHandler) Resolve(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
-	metrics.IncShortfallResolve(domain.ShortfallDisposition(body.Disposition))
+	metrics.IncShortfallResolve(disp)
 	c.JSON(http.StatusOK, shortfallToResponse(sf))
 }

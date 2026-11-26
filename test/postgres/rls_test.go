@@ -23,7 +23,7 @@ import (
 // Expected Result:   GetLatest from Tenant B's context returns ErrSnapshotNotFound
 func TestP5Rls001_SnapshotTenantIsolation(t *testing.T) {
 	t.Parallel()
-	appPool, _, tenantA := setupTestDB(t)
+	appPool, _, _, tenantA := setupTestDB(t)
 	tenantB := uuid.New()
 
 	repo := pgadapter.NewSnapshotRepository(appPool)
@@ -48,7 +48,7 @@ func TestP5Rls001_SnapshotTenantIsolation(t *testing.T) {
 // Expected Result:   Empty slice from Tenant B context
 func TestP5Rls002_OverrideTenantIsolation(t *testing.T) {
 	t.Parallel()
-	appPool, _, tenantA := setupTestDB(t)
+	appPool, _, _, tenantA := setupTestDB(t)
 	tenantB := uuid.New()
 
 	repo := pgadapter.NewOverrideRepository(appPool)
@@ -69,7 +69,7 @@ func TestP5Rls002_OverrideTenantIsolation(t *testing.T) {
 // Expected Result:   Empty slice from Tenant B context
 func TestP5Rls003_AddonTenantIsolation(t *testing.T) {
 	t.Parallel()
-	appPool, _, tenantA := setupTestDB(t)
+	appPool, _, _, tenantA := setupTestDB(t)
 	tenantB := uuid.New()
 
 	repo := pgadapter.NewAddonRepository(appPool)
@@ -90,7 +90,7 @@ func TestP5Rls003_AddonTenantIsolation(t *testing.T) {
 // Expected Result:   GetLatest succeeds for the owning tenant
 func TestP5Rls004_TenantReadsOwnSnapshot(t *testing.T) {
 	t.Parallel()
-	appPool, _, tenantID := setupTestDB(t)
+	appPool, _, _, tenantID := setupTestDB(t)
 	ctx := withTenant(context.Background(), tenantID)
 
 	repo := pgadapter.NewSnapshotRepository(appPool)

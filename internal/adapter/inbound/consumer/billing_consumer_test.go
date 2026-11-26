@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -138,6 +139,35 @@ func TestBillingConsumer_AddonRefund_NonNegativeDelta_Skipped(t *testing.T) {
 	})
 	require.NoError(t, c.Handle(context.Background(), env))
 	assert.False(t, addon.refundCalled)
+}
+
+func TestBillingConsumer_AddonRefund_MalformedPayload_DLQ(t *testing.T) {
+	c, _, _ := newBillingConsumer()
+	// Valid reason peek ("refund") but the full payload has a bad delta type,
+	// causing json.Unmarshal of InboundBillingAddonRefundEvent to fail.
+	env := events.Envelope[json.RawMessage]{
+		ID: "e_refund_bad", Type: "TenantQuotaAddOnChanged",
+		Payload: json.RawMessage(`{"reason":"refund","delta":"not-a-number"}`),
+	}
+	err := c.Handle(context.Background(), env)
+	assert.Error(t, err, "malformed refund payload must return error to trigger NACK/DLQ")
+}
+
+func TestBillingConsumer_AddonRefund_ServiceError_PropagatesNACK(t *testing.T) {
+	_, _, addon := newBillingConsumer()
+	addon.applyRefundErr = errors.New("refund service failure")
+	c := NewBillingEventConsumer(nil, &fakeEffectiveSvc{}, nil, addon, nopConsumerLogger{})
+	env := makeBillingEnv("e_refund_svc_err", "TenantQuotaAddOnChanged", map[string]any{
+		"tenant_id":    uuid.New().String(),
+		"resource":     "llm_tokens",
+		"delta":        int64(-10_000),
+		"reason":       "refund",
+		"billing_ref":  "ref_err",
+		"purchase_ref": uuid.New().String(),
+	})
+	err := c.Handle(context.Background(), env)
+	assert.Error(t, err, "ApplyBillingRefund error must propagate as NACK")
+	assert.True(t, addon.refundCalled)
 }
 
 // ── Handle — addon unknown reason ─────────────────────────────────────────

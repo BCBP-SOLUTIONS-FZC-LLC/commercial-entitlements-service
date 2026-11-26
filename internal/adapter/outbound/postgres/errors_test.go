@@ -1,5 +1,11 @@
 // White-box tests for unexported helpers in the postgres adapter.
 // Package postgres (not postgres_test) so wrapConnErr and itoa are reachable.
+//
+// pgconn is imported here solely to construct *pgconn.PgError test fixtures so
+// pgcommon.Is* helpers (IsDeadlock, IsConnectionException, etc.) can recognise
+// them in wrapConnErr tests. pgcommon.Tx is a type alias for pgx.Tx, so test
+// stubs satisfying pgcommon.Tx must implement the full pgx.Tx interface. These
+// imports are confined to test files; production code uses only pgcommon.
 package postgres
 
 import (
@@ -8,6 +14,7 @@ import (
 	"testing"
 
 	pgdomain "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/domain"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -47,6 +54,37 @@ func TestWrapConnErr_UnknownError_Passthrough(t *testing.T) {
 	got := wrapConnErr(sentinel)
 	assert.Equal(t, sentinel, got,
 		"wrapConnErr must pass through errors it does not recognise")
+}
+
+func TestWrapConnErr_Deadlock_MapsToConcurrentUpdate(t *testing.T) {
+	err := wrapConnErr(&pgconn.PgError{Code: "40P01"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, domain.ErrConcurrentUpdate)
+}
+
+func TestWrapConnErr_SerializationFailure_MapsToConcurrentUpdate(t *testing.T) {
+	err := wrapConnErr(&pgconn.PgError{Code: "40001"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, domain.ErrConcurrentUpdate)
+}
+
+func TestWrapConnErr_QueryCanceled_MapsToRequestTimeout(t *testing.T) {
+	err := wrapConnErr(&pgconn.PgError{Code: "57014"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, domain.ErrRequestTimeout)
+}
+
+func TestWrapConnErr_LockNotAvailable_MapsToRequestTimeout(t *testing.T) {
+	err := wrapConnErr(&pgconn.PgError{Code: "55P03"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, domain.ErrRequestTimeout)
+}
+
+func TestWrapConnErr_ConnectionException_MapsToDBUnavailable(t *testing.T) {
+	// SQLSTATE class "08" = Connection Exception.
+	err := wrapConnErr(&pgconn.PgError{Code: "08006"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, domain.ErrDBUnavailable)
 }
 
 // ── itoa ─────────────────────────────────────────────────────────────────────

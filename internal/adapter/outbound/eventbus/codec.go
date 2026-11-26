@@ -28,4 +28,3 @@ type NoopCodec struct{}
 func (NoopCodec) Encode(_ context.Context, _ string, payload []byte) ([]byte, string, error) {
 	return payload, "", nil
 }
-

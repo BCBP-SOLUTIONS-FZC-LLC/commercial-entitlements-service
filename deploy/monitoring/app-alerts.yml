@@ -167,6 +167,70 @@ groups:
           summary: "commercial-entitlements entitlement recompute errors elevated"
           description: "{{ $value | humanize }}/s recompute operations failing."
 
+  # ── Cache ───────────────────────────────────────────────────────────────────
+  - name: commercial_entitlements_cache
+    rules:
+      - alert: CommercialEntitlementsCacheMissSpike
+        expr: |
+          sum by (domain, service, environment) (
+            rate(commercial_entitlements_cache_miss_total[5m])
+          )
+            /
+          (
+            sum by (domain, service, environment) (
+              rate(commercial_entitlements_cache_hit_total[5m])
+            )
+            +
+            sum by (domain, service, environment) (
+              rate(commercial_entitlements_cache_miss_total[5m])
+            )
+          ) > 0.3
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "commercial-entitlements Valkey cache miss rate above 30%"
+          description: >
+            Cache miss rate is {{ $value | humanizePercentage }} over last 5 min.
+            This drives unexpected Postgres load. Check Valkey connectivity and
+            ENT-D13 quota ceiling writes.
+
+  # ── Reconciler jobs ──────────────────────────────────────────────────────────
+  - name: commercial_entitlements_reconciler
+    rules:
+      - alert: CommercialEntitlementsReconcilerJobFailed
+        expr: |
+          kube_job_status_failed{
+            job_name=~"commercial-entitlements-(override|addon|outbox|events|quota).*"
+          } > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "commercial-entitlements reconciler job {{ $labels.job_name }} failed"
+          description: >
+            Reconciler job {{ $labels.job_name }} has failed pods.
+            Stale overrides/addons or unprocessed quota resets may accumulate.
+            Check pod logs: kubectl logs -l job-name={{ $labels.job_name }} --tail=100
+
+      - alert: CommercialEntitlementsReconcilerJobStale
+        expr: |
+          time() - kube_cronjob_status_last_schedule_time{
+            cronjob=~"commercial-entitlements-(override|addon|outbox|events|quota).*"
+          } > 7200
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "commercial-entitlements reconciler CronJob {{ $labels.cronjob }} not scheduled for 2h"
+          description: >
+            CronJob {{ $labels.cronjob }} has not run in over 2× its expected interval.
+            The CronJob controller may be stuck, namespace may have resource pressure,
+            or the CronJob spec may be invalid.
+
   # ── Compliance ───────────────────────────────────────────────────────────────
   - name: commercial_entitlements_compliance
     rules:

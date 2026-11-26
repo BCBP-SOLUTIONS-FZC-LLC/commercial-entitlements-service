@@ -21,7 +21,7 @@ func newEffectSvc(snaps port.SnapshotRepository, overrides port.OverrideReposito
 	return service.NewEffectiveSetService(snaps, overrides, addons, trials, catalog, iam, cache, tx)
 }
 
-func defaultEffectSvc() (*service.EffectiveSetService, *fakeSnapshotRepo, *fakeOverrideRepo, *fakeAddonRepo, *fakeTrialRepo, *fakeTxRunner) {
+func defaultEffectSvc() (*service.EffectiveSetService, *fakeSnapshotRepo, *fakeOverrideRepo, *fakeAddonRepo, *fakeTrialRepo, *fakeTxRunner) { //nolint:unparam
 	snaps := newSnapshotRepo()
 	overrides := newOverrideRepo()
 	addons := newAddonRepo()
@@ -713,4 +713,73 @@ func TestRecompute_TrialProfile_AllLimitFields(t *testing.T) {
 	assert.Equal(t, int64(rps), *es.Limits[domain.LimitKeyAPIRateLimitRPS].Value)
 	assert.Equal(t, int64(wf), *es.Limits[domain.LimitKeyWorkflowTemplateLimit].Value)
 	assert.Equal(t, int64(tender), *es.Limits[domain.LimitKeyTenderLimit].Value)
+}
+
+// ── Error path coverage for recomputeCore ─────────────────────────────────
+
+func TestRecompute_UnexpectedTrialAssignmentError_PropagatesError(t *testing.T) {
+	tenantID := uuid.New()
+	trials := newTrialRepo()
+	trials.getAssignErr = errors.New("db connection failed")
+	// Use a trial subscription so Step 2 (GetTrialAssignment) is reached.
+	iam := &fakeIAMClient{
+		fetchSubFn: func(_ context.Context, id uuid.UUID) (*port.TenantSubscription, error) {
+			return sampleSub(id, "starter", "trial"), nil
+		},
+	}
+	svc := newEffectSvc(newSnapshotRepo(), newOverrideRepo(), newAddonRepo(), trials, &fakeCatalogSvc{}, iam, nil, newTxRunner())
+
+	_, err := svc.Recompute(context.Background(), tenantID, domain.CausePlanChange)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get trial assignment")
+}
+
+func TestRecompute_OperatorOverrideListError_PropagatesError(t *testing.T) {
+	tenantID := uuid.New()
+	overrides := newOverrideRepo()
+	overrides.listErr = errors.New("db connection failed")
+	svc := newEffectSvc(newSnapshotRepo(), overrides, newAddonRepo(), newTrialRepo(), &fakeCatalogSvc{}, &fakeIAMClient{}, nil, newTxRunner())
+
+	_, err := svc.Recompute(context.Background(), tenantID, domain.CausePlanChange)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list operator overrides")
+}
+
+func TestRecompute_AddonSumError_PropagatesError(t *testing.T) {
+	tenantID := uuid.New()
+	addons := newAddonRepo()
+	addons.sumFn = func(_ uuid.UUID, _ domain.LimitKey) (int64, error) {
+		return 0, errors.New("db connection failed")
+	}
+	svc := newEffectSvc(newSnapshotRepo(), newOverrideRepo(), addons, newTrialRepo(), &fakeCatalogSvc{}, &fakeIAMClient{}, nil, newTxRunner())
+
+	_, err := svc.Recompute(context.Background(), tenantID, domain.CausePlanChange)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sum addon balance")
+}
+
+func TestRecompute_PublisherEnqueueError_PropagatesTxError(t *testing.T) {
+	tenantID := uuid.New()
+	tx := newTxRunner()
+	tx.pub.err = errors.New("publisher failed")
+	svc := newEffectSvc(newSnapshotRepo(), newOverrideRepo(), newAddonRepo(), newTrialRepo(), &fakeCatalogSvc{}, &fakeIAMClient{}, nil, tx)
+
+	_, err := svc.Recompute(context.Background(), tenantID, domain.CausePlanChange)
+	require.Error(t, err)
+}
+
+func TestRecompute_TrialOverrideListError_PropagatesError(t *testing.T) {
+	tenantID := uuid.New()
+	trials := newTrialRepo()
+	trials.listOvErr = errors.New("list trial overrides failed")
+	iam := &fakeIAMClient{
+		fetchSubFn: func(_ context.Context, id uuid.UUID) (*port.TenantSubscription, error) {
+			return sampleSub(id, "starter", "trial"), nil
+		},
+	}
+	svc := newEffectSvc(newSnapshotRepo(), newOverrideRepo(), newAddonRepo(), trials, &fakeCatalogSvc{}, iam, nil, newTxRunner())
+
+	_, err := svc.Recompute(context.Background(), tenantID, domain.CausePlanChange)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list trial overrides")
 }

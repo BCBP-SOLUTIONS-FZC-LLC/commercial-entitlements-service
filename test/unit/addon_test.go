@@ -24,7 +24,7 @@ func buildEffectSvcForAddon(snaps *fakeSnapshotRepo, overrides *fakeOverrideRepo
 	return service.NewEffectiveSetService(snaps, overrides, addons, trials, catalog, iam, nil, tx).WithLogger(port.NopLogger{})
 }
 
-func newAddonService() (*service.AddonService, *fakeAddonRepo, *fakeDrawdownRepo, *fakeShortfallRepo, *fakeTxRunner) {
+func newAddonService() (*service.AddonService, *fakeAddonRepo, *fakeDrawdownRepo, *fakeShortfallRepo, *fakeTxRunner) { //nolint:unparam
 	snaps := newSnapshotRepo()
 	overrides := newOverrideRepo()
 	addons := newAddonRepo()
@@ -335,21 +335,22 @@ func TestRecordDrawdown_Shortfall_AutoAccepted(t *testing.T) {
 	svc, addons, _, shortfalls, _ := newAddonService()
 	tenantID := uuid.New()
 	now := time.Now().UTC()
-	// Only 950 tokens available → 50 token shortfall (5% of 1000, within threshold)
+	// 9950 tokens available, 10000 requested → 50 token shortfall (0.5% of 10000).
+	// LLD-correct thresholds (ENT-D12): tolerance = 10000 tokens AND 1%; both met.
 	a := &domain.QuotaAddon{
 		ID: uuid.New(), TenantID: tenantID,
-		LimitKey: domain.LimitKeyLLMTokenQuotaMonthly, TotalTokens: 950, RemainingTokens: 950,
+		LimitKey: domain.LimitKeyLLMTokenQuotaMonthly, TotalTokens: 9950, RemainingTokens: 9950,
 		Status: domain.AddonStatusActive, RecordVersion: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	_ = addons.Insert(context.Background(), a)
 
 	req := port.RecordDrawdownRequest{
 		TenantID: tenantID, LimitKey: domain.LimitKeyLLMTokenQuotaMonthly,
-		TokensConsumed: 1000, PeriodStart: now,
+		TokensConsumed: 10000, PeriodStart: now,
 	}
 	d, err := svc.RecordDrawdown(context.Background(), req)
 	require.NoError(t, err)
-	assert.Equal(t, int64(950), d.TokensConsumed)
+	assert.Equal(t, int64(9950), d.TokensConsumed)
 
 	sfList, _ := shortfalls.ListByTenant(context.Background(), tenantID, nil)
 	require.Len(t, sfList, 1)
@@ -830,4 +831,207 @@ func TestApplyBillingRefund_ZeroRemaining_IsNoop(t *testing.T) {
 	// Record stays at 0
 	stored, _ := addons.GetByID(context.Background(), a.ID)
 	assert.Equal(t, int64(0), stored.RemainingTokens)
+}
+
+// ── WithShortfallConfig ────────────────────────────────────────────────────
+
+func TestWithShortfallConfig_SetsConfig(t *testing.T) {
+	svc, _, _, _, _ := newAddonService()
+	cfg := service.ShortfallConfig{
+		ToleranceTokens:    5_000,
+		TolerancePct:       0.5,
+		HighValueTokens:    100_000,
+		RepeatCount:        3,
+		RepeatWindowMonths: 6,
+	}
+	returned := svc.WithShortfallConfig(cfg)
+	// WithShortfallConfig returns the same pointer (fluent builder).
+	assert.Same(t, svc, returned)
+	// Verify the effect: a drawdown that falls within the new tolerance
+	// (5000 tokens) is auto-accepted.
+	tenantID := uuid.New()
+	now := time.Now().UTC()
+	a := &domain.QuotaAddon{
+		ID: uuid.New(), TenantID: tenantID,
+		LimitKey:        domain.LimitKeyLLMTokenQuotaMonthly,
+		TotalTokens:     20_000,
+		RemainingTokens: 20_000,
+		Status:          domain.AddonStatusActive,
+		RecordVersion:   1,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	addonsRepo := newAddonRepo()
+	_ = addonsRepo.Insert(context.Background(), a)
+
+	drawdownsRepo := newDrawdownRepo()
+	shortfallsRepo := newShortfallRepo()
+	tx := newTxRunner()
+	snaps := newSnapshotRepo()
+	overrides := newOverrideRepo()
+	trials := newTrialRepo()
+	effectSvc := buildEffectSvcForAddon(snaps, overrides, addonsRepo, trials, tx)
+	svc2 := service.NewAddonService(addonsRepo, drawdownsRepo, shortfallsRepo, effectSvc, tx).
+		WithShortfallConfig(cfg).
+		WithLogger(port.NopLogger{})
+
+	firstOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	d, err := svc2.RecordDrawdown(context.Background(), port.RecordDrawdownRequest{
+		TenantID:       tenantID,
+		LimitKey:       domain.LimitKeyLLMTokenQuotaMonthly,
+		TokensConsumed: 3_000, // within new 5 000-token tolerance
+		PeriodStart:    firstOfMonth,
+	})
+	require.NoError(t, err)
+	assert.NotEqual(t, uuid.Nil, d.ID)
+}
+
+// ── recordAddonAudit ───────────────────────────────────────────────────────
+
+func TestRecordAddonAudit_NoRecorderInContext_NoOp(t *testing.T) {
+	// recordAddonAudit is called inside the transaction closure during AddAddon.
+	// When no AuditRecorder is in ctx (the default fakeTxRunner has none),
+	// the call must succeed silently — audit failures never block business writes.
+	svc, _, _, _, _ := newAddonService()
+	tenantID := uuid.New()
+	req := port.AddAddonRequest{
+		TenantID:    tenantID,
+		LimitKey:    domain.LimitKeyLLMTokenQuotaMonthly,
+		TotalTokens: 10_000,
+		GrantedBy:   uuid.New(),
+		Reason:      "audit-noop test",
+	}
+	a, err := svc.AddAddon(context.Background(), req)
+	require.NoError(t, err)
+	assert.NotEqual(t, uuid.Nil, a.ID)
+}
+
+func TestRecordAddonAudit_RecorderInContext_CalledWithoutError(t *testing.T) {
+	// Wire a fakeTxRunner that injects an audit recorder into the tx context.
+	snaps := newSnapshotRepo()
+	overrides := newOverrideRepo()
+	addons := newAddonRepo()
+	trials := newTrialRepo()
+	tx := newTxRunnerWithAuditRecorder(&nopAuditRecorder{})
+	effectSvc := buildEffectSvcForAddon(snaps, overrides, addons, trials, tx)
+	drawdowns := newDrawdownRepo()
+	shortfalls := newShortfallRepo()
+	svc := service.NewAddonService(addons, drawdowns, shortfalls, effectSvc, tx).WithLogger(port.NopLogger{})
+
+	tenantID := uuid.New()
+	req := port.AddAddonRequest{
+		TenantID:    tenantID,
+		LimitKey:    domain.LimitKeyLLMTokenQuotaMonthly,
+		TotalTokens: 50_000,
+		GrantedBy:   uuid.New(),
+		Reason:      "audit-recorder test",
+	}
+	a, err := svc.AddAddon(context.Background(), req)
+	require.NoError(t, err)
+	assert.NotEqual(t, uuid.Nil, a.ID)
+}
+
+// ── recordAddonAudit: recorder returns error ──────────────────────────────
+
+type failAuditRecorder struct{}
+
+func (failAuditRecorder) Record(_ context.Context, _ port.AuditEntry) error {
+	return errors.New("audit write failed")
+}
+func (failAuditRecorder) RecordBatch(_ context.Context, _ []port.AuditEntry) error {
+	return errors.New("audit write failed")
+}
+
+func TestRecordAddonAudit_RecorderReturnsError_LogsWarnNoFailure(t *testing.T) {
+	// When AuditRecorder.Record returns an error, the business write must NOT fail
+	// (AUDIT-CALLER-1). The error must be logged as a warning.
+	tx := newTxRunnerWithAuditRecorder(&failAuditRecorder{})
+	snaps := newSnapshotRepo()
+	overrides := newOverrideRepo()
+	addons := newAddonRepo()
+	trials := newTrialRepo()
+	effectSvc := buildEffectSvcForAddon(snaps, overrides, addons, trials, tx)
+	svc := service.NewAddonService(addons, newDrawdownRepo(), newShortfallRepo(), effectSvc, tx).WithLogger(port.NopLogger{})
+
+	_, err := svc.AddAddon(context.Background(), port.AddAddonRequest{
+		TenantID:    uuid.New(),
+		LimitKey:    domain.LimitKeyLLMTokenQuotaMonthly,
+		TotalTokens: 1_000,
+		GrantedBy:   uuid.New(),
+		Reason:      "fail-recorder test",
+	})
+	// Business write must succeed even though audit recorder returned an error.
+	assert.NoError(t, err, "audit failure must not propagate to the caller")
+}
+
+// ── sortAddonsByExpiry: ai non-nil, aj nil — covers return false in ai<aj branch
+
+func TestSortAddonsByExpiry_LaterInsertedFirst_CoversFalseBranch(t *testing.T) {
+	// Insert addonB (later expiry) before addonA (earlier expiry) so sort.Slice
+	// compares (later, earlier) → ai.Before(*aj) = false, covering that branch.
+	snaps := newSnapshotRepo()
+	overrides := newOverrideRepo()
+	addons := newAddonRepo()
+	trials := newTrialRepo()
+	tx := newTxRunner()
+	effectSvc := buildEffectSvcForAddon(snaps, overrides, addons, trials, tx)
+	svc := service.NewAddonService(addons, newDrawdownRepo(), newShortfallRepo(), effectSvc, tx).WithLogger(port.NopLogger{})
+
+	tenantID := uuid.New()
+	now := time.Now().UTC()
+	soon := now.Add(24 * time.Hour)
+	later := now.Add(72 * time.Hour)
+
+	// Insert addonB (later expiry) FIRST so it appears at index 0 in the slice.
+	addonB := &domain.QuotaAddon{
+		ID: uuid.New(), TenantID: tenantID,
+		LimitKey: domain.LimitKeyLLMTokenQuotaMonthly, TotalTokens: 500, RemainingTokens: 500,
+		Status: domain.AddonStatusActive, ExpiresAt: &later,
+		RecordVersion: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	addonA := &domain.QuotaAddon{
+		ID: uuid.New(), TenantID: tenantID,
+		LimitKey: domain.LimitKeyLLMTokenQuotaMonthly, TotalTokens: 500, RemainingTokens: 500,
+		Status: domain.AddonStatusActive, ExpiresAt: &soon,
+		RecordVersion: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	_ = addons.Insert(context.Background(), addonB)
+	_ = addons.Insert(context.Background(), addonA)
+
+	// Request enough to drain one add-on; sort must put addonA (earlier) first.
+	d, err := svc.RecordDrawdown(context.Background(), port.RecordDrawdownRequest{
+		TenantID: tenantID, LimitKey: domain.LimitKeyLLMTokenQuotaMonthly,
+		TokensConsumed: 500, PeriodStart: now,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(500), d.TokensConsumed)
+
+	// addonA (earlier expiry) must be fully consumed.
+	storedA, _ := addons.GetByID(context.Background(), addonA.ID)
+	assert.Equal(t, int64(0), storedA.RemainingTokens)
+	// addonB (later expiry) must be untouched.
+	storedB, _ := addons.GetByID(context.Background(), addonB.ID)
+	assert.Equal(t, int64(500), storedB.RemainingTokens)
+}
+
+// ── RecordDrawdown error path coverage ────────────────────────────────────
+
+func TestRecordDrawdown_ListActiveAddonsError_PropagatesError(t *testing.T) {
+	snaps := newSnapshotRepo()
+	overrides := newOverrideRepo()
+	addons := newAddonRepo()
+	addons.listActiveErr = errors.New("list active addons failed")
+	trials := newTrialRepo()
+	tx := newTxRunner()
+	effectSvc := service.NewEffectiveSetService(snaps, overrides, addons, trials, &fakeCatalogSvc{}, &fakeIAMClient{}, nil, newTxRunner()).WithLogger(port.NopLogger{})
+	svc := service.NewAddonService(addons, newDrawdownRepo(), newShortfallRepo(), effectSvc, tx).WithLogger(port.NopLogger{})
+
+	_, err := svc.RecordDrawdown(context.Background(), port.RecordDrawdownRequest{
+		TenantID:       uuid.New(),
+		LimitKey:       domain.LimitKeyLLMTokenQuotaMonthly,
+		TokensConsumed: 100,
+		PeriodStart:    time.Now().UTC(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list active addons")
 }

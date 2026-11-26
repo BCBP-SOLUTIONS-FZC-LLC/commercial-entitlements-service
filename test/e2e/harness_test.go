@@ -29,7 +29,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	httpadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/inbound/http"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/postgres"
@@ -37,6 +36,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
+	pgdomain "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 )
 
@@ -64,10 +64,10 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 		tcpostgres.WithDatabase("entitlements_e2e"),
 		tcpostgres.WithUsername("postgres"),
 		tcpostgres.WithPassword("e2epassword"),
-		tcpostgres.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).WithStartupTimeout(60*time.Second),
-		),
+		// WithWaitStrategy was removed in testcontainers-go v0.35+; use the
+		// WaitingFor option on the underlying ContainerRequest instead, which
+		// tcpostgres.Run already applies by default (ready-log check).
+		tcpostgres.BasicWaitStrategies(),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ctr.Terminate(context.Background()) })
@@ -80,11 +80,11 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	appPool, err := pgcommon.NewPool(ctx, pgcommon.Config{
 		DSN:           superDSN,
 		PGBouncerMode: false,
-		GUCProvider: func(ctx context.Context) map[string]string {
+		GUCProvider: func(ctx context.Context) (pgdomain.GUCSet, bool) {
 			if id, ok := ctx.Value(e2eTenantKey{}).(uuid.UUID); ok {
-				return map[string]string{"app.tenant_id": id.String()}
+				return pgdomain.GUCSet{TenantID: id.String()}, true
 			}
-			return map[string]string{"app.tenant_id": tenantID.String()}
+			return pgdomain.GUCSet{TenantID: tenantID.String()}, true
 		},
 	})
 	require.NoError(t, err)
@@ -165,7 +165,7 @@ func (e *e2eEnv) do(t *testing.T, opts reqOpts) (int, http.Header, []byte) {
 		require.NoError(t, err)
 		bodyReader = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(opts.method, e.srv.URL+opts.path, bodyReader)
+	req, err := http.NewRequestWithContext(context.Background(), opts.method, e.srv.URL+opts.path, bodyReader)
 	require.NoError(t, err)
 	if opts.body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -175,7 +175,7 @@ func (e *e2eEnv) do(t *testing.T, opts reqOpts) (int, http.Header, []byte) {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	return resp.StatusCode, resp.Header, body
@@ -211,11 +211,13 @@ func (e *e2eEnv) seedSnapshot(t *testing.T, tenantID uuid.UUID, plan string) {
 		SourceRecordVersion: 1,
 		Plan:                plan,
 		State:               domain.EntitlementStateActive,
-		FeatureFlags:        []any{},
+		FeatureFlags:        []string{},
 		ModelTier:           "standard",
-		Limits:              map[domain.LimitKey]int64{domain.LimitKeyLLMTokenQuotaMonthly: 100_000},
-		Cause:               domain.EffectiveSetCausePlanChange,
-		ComputedAt:          time.Now().UTC(),
+		Limits: map[domain.LimitKey]domain.LimitValue{
+			domain.LimitKeyLLMTokenQuotaMonthly: {Value: func() *int64 { v := int64(100_000); return &v }()},
+		},
+		Cause:      domain.CausePlanChange,
+		ComputedAt: time.Now().UTC(),
 	}
 	_, err := repo.Upsert(ctx, snap)
 	require.NoError(t, err)

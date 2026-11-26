@@ -1,10 +1,10 @@
 package eventbus
 
 import (
-	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path"
@@ -16,18 +16,18 @@ import (
 //go:embed schemas/*.json
 var schemasRaw embed.FS
 
-// ErrNoSchema is the sentinel returned when no schema is registered for an event type.
-var ErrNoSchema = errNoSchema
-
-var errNoSchema = fmt.Errorf("no schema")
+// ErrNoSchema is the sentinel returned when no schema is registered for an
+// event type. Using errors.New ensures errors.Is identity checks work
+// correctly across the eventbus package.
+var ErrNoSchema = errors.New("no schema")
 
 // ValidatingCodec wraps an inner Codec and validates every payload against an
 // embedded JSON Schema before forwarding to the inner codec. When no schema is
 // registered for an event type, Validate returns ErrNoSchema — callers on the
 // consumer path forward-compat through this sentinel.
 type ValidatingCodec struct {
-	inner    Codec
-	schemas  map[string]*jsonschema.Schema // event type → compiled schema
+	inner   Codec
+	schemas map[string]*jsonschema.Schema // event type → compiled schema
 }
 
 // NewValidatingCodec compiles all embedded schemas/*.json and returns a
@@ -82,8 +82,14 @@ func compileSchemas(fsys embed.FS, dir string) (map[string]*jsonschema.Schema, e
 		if err != nil {
 			return nil, fmt.Errorf("read embedded schema %s: %w", p, err)
 		}
+		// jsonschema/v6 AddResource expects a decoded JSON value (any), not an
+		// io.Reader. Unmarshal first so the library receives the right type.
+		var doc any
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return nil, fmt.Errorf("parse embedded schema %s: %w", p, err)
+		}
 		schemaURL := "file:///" + p
-		if err := c.AddResource(schemaURL, bytes.NewReader(data)); err != nil {
+		if err := c.AddResource(schemaURL, doc); err != nil {
 			return nil, fmt.Errorf("add schema resource %s: %w", schemaURL, err)
 		}
 		compiled, err := c.Compile(schemaURL)

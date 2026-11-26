@@ -1,0 +1,142 @@
+basePath: /api/v1
+definitions:
+  http.AddonResourceEligibilityResponse:
+    properties:
+      eligible:
+        type: boolean
+      reason:
+        type: string
+    type: object
+  http.EffectiveSetResponse:
+    properties:
+      addon_eligibility:
+        additionalProperties:
+          $ref: '#/definitions/http.AddonResourceEligibilityResponse'
+        description: |-
+          AddonEligibility reports per-resource eligibility for quota add-on purchases.
+          Billing reads llm_tokens in v1 for the BIL-ADD-1 check (BL-OQ-3).
+        type: object
+      cause:
+        type: string
+      computed_at:
+        type: string
+      feature_flags:
+        items:
+          type: string
+        type: array
+      limits:
+        additionalProperties:
+          $ref: '#/definitions/http.LimitValueResponse'
+        type: object
+      model_tier:
+        type: string
+      plan_code:
+        type: string
+      state:
+        type: string
+      tenant_id:
+        type: string
+      trial_profile:
+        type: string
+      version:
+        type: integer
+    type: object
+  http.LimitValueResponse:
+    properties:
+      value:
+        description: null means unlimited
+        type: integer
+    type: object
+info:
+  contact:
+    email: platform@bcbpsolutions.com
+    name: BCBP Solutions Platform Team
+  description: Manages per-tenant entitlement sets including plan-based limits, operator
+    overrides, quota addons, trial profiles, and shortfall management.
+  license:
+    name: Proprietary
+  title: Commercial Entitlements Service
+  version: "1.0"
+paths:
+  /api/v1/internal/tenants/{id}/entitlements:
+    get:
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.EffectiveSetResponse'
+      summary: Get effective entitlement set (internal)
+      tags:
+      - entitlements
+  /api/v1/internal/tenants/{id}/entitlements/recompute:
+    post:
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.EffectiveSetResponse'
+      summary: Force recompute entitlement set
+      tags:
+      - entitlements
+  /api/v1/tenants/{id}/entitlements:
+    get:
+      parameters:
+      - description: Tenant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.EffectiveSetResponse'
+      summary: Get effective entitlement set (tenant)
+      tags:
+      - entitlements
+tags:
+- description: 'In-mesh service-to-service routes. ENT-I1: GET/POST /api/v1/internal/tenants/:id/entitlements, ENT-I2: GET .../plans/current, ENT-I3: POST .../entitlements/drawdown.'
+  name: internal
+- description: 'Tenant-scoped read routes (JWT required). ENT-T1: GET /api/v1/tenants/:id/entitlements.'
+  name: tenant
+- description: 'Platform operator routes (platform_operator role). ENT-O1..O7: manual overrides, trial profiles, quota addons, shortfall resolution, plan catalog management.'
+  name: operator
+- description: 'Manual entitlement override management. ENT-O2: GET/PUT/DELETE /api/v1/operator/tenants/:id/entitlements/overrides/:limitKey.'
+  name: overrides
+- description: 'Quota addon pack management. ENT-O5: GET/POST/DELETE /api/v1/operator/tenants/:id/entitlements/addons.'
+  name: addons
+- description: 'Quota shortfall resolution. ENT-O6: GET .../shortfalls, ENT-O7: POST .../shortfalls/:shortfallId/resolve.'
+  name: shortfalls
+- description: 'Trial profile and override management. ENT-O3: PUT/GET/DELETE .../trial-profile, ENT-O4: PUT/GET/DELETE .../trial-overrides/:limitKey.'
+  name: trial
+- description: 'Plan catalog. GET /api/v1/operator/plans, POST .../plans/:planCode/refresh.'
+  name: plans
+- description: Entitlement snapshot reads and recompute triggers.
+  name: entitlements
+- description: Health checks and operational endpoints (unauthenticated).
+  name: infra
+securityDefinitions:
+  BearerAuth:
+    description: JWT bearer token from Keycloak. Prefix with "Bearer ".
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

@@ -94,6 +94,7 @@ func (h *AddonHandler) Remove(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
+	metrics.IncAddonRemove()
 	c.Status(http.StatusNoContent)
 }
 
@@ -103,6 +104,10 @@ func (h *AddonHandler) ListDrawdowns(c *gin.Context) {
 	limitKey := domain.LimitKey(c.Query("limit_key"))
 	if limitKey == "" {
 		limitKey = domain.LimitKeyLLMTokenQuotaMonthly
+	} else if !domain.KnownLimitKeys[limitKey] {
+		gincommon.AbortWithProblem(c, problem.NewBadRequestError(
+			"limit_key must be one of the recognised limit keys"))
+		return
 	}
 	drawdowns, err := h.addonSvc.ListDrawdowns(c.Request.Context(), tenantID, limitKey)
 	if err != nil {

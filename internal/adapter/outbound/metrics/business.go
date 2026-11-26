@@ -56,6 +56,24 @@ func IncAddonGrant(key domain.LimitKey) {
 	}
 }
 
+// IncAddonRemove increments the addon-remove counter.
+// Called when an operator explicitly removes an addon pack (ENT-O5 DELETE).
+// No limit_key label: the handler receives only addonId; resolving the
+// limit_key would require an extra DB round-trip.
+func IncAddonRemove() {
+	if AddonRemoveTotal != nil {
+		AddonRemoveTotal.Inc()
+	}
+}
+
+// IncTrialAssignment increments the trial-assignment counter for a profile.
+// Called when an operator assigns or updates a trial profile (ENT-O3).
+func IncTrialAssignment(profile string) {
+	if TrialAssignmentTotal != nil {
+		TrialAssignmentTotal.WithLabelValues(profile).Inc()
+	}
+}
+
 // IncAddonExpire increments the addon-expire counter (reconciler sweep).
 func IncAddonExpire() {
 	if AddonExpireTotal != nil {
@@ -101,5 +119,30 @@ func IncCacheHit(kind string) {
 func IncCacheMiss(kind string) {
 	if CacheMissTotal != nil {
 		CacheMissTotal.WithLabelValues(kind).Inc()
+	}
+}
+
+// IncUnknownEventAcknowledged increments the unknown-event-acknowledged counter.
+// consumer is the stable queue-name string; eventType is sanitized via sanitizeEventType.
+func IncUnknownEventAcknowledged(consumer, eventType string) {
+	if UnknownEventAcknowledged != nil {
+		UnknownEventAcknowledged.WithLabelValues(consumer, eventType).Inc()
+	}
+}
+
+// IncConsumedEventRejected increments the consumed-event-rejected counter.
+// consumer is the stable queue-name string; eventType is the raw event type from
+// the SQS envelope; reason is "schema_violation" for ValidatingCodec failures.
+func IncConsumedEventRejected(consumer, eventType, reason string) {
+	if ConsumedEventRejectedTotal != nil {
+		ConsumedEventRejectedTotal.WithLabelValues(consumer, eventType, reason).Inc()
+	}
+}
+
+// IncRLSViolation increments the RLS-violations counter.
+// violationType should be "cross_tenant_access" for the standard alert.
+func IncRLSViolation(violationType string) {
+	if RLSViolationsTotal != nil {
+		RLSViolationsTotal.WithLabelValues(violationType).Inc()
 	}
 }

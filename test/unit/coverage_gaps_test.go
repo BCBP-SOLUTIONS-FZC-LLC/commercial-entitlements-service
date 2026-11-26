@@ -965,3 +965,128 @@ func TestNopLogger_AllMethods_NoPanic(t *testing.T) {
 	l.Warn("w", fields)
 	l.Error("e", fields)
 }
+
+// ── ExpireAddons: list expired error propagates ───────────────────────────
+
+func TestExpireAddons_ListExpiredError_PropagatesError(t *testing.T) {
+	snaps := newSnapshotRepo()
+	overrides := newOverrideRepo()
+	addons := newAddonRepo()
+	addons.listExpiredErr = errors.New("list expired failed")
+	trials := newTrialRepo()
+	tx := newTxRunner()
+	effectSvc := service.NewEffectiveSetService(snaps, overrides, addons, trials, &fakeCatalogSvc{}, &fakeIAMClient{}, nil, tx).WithLogger(port.NopLogger{})
+	svc := service.NewAddonService(addons, newDrawdownRepo(), newShortfallRepo(), effectSvc, tx).WithLogger(port.NopLogger{})
+
+	_, err := svc.ExpireAddons(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list expired addons")
+}
+
+// ── RecordDrawdown: addon update error in tx ──────────────────────────────
+
+func TestRecordDrawdown_AddonUpdateError_PropagatesTxError(t *testing.T) {
+	snaps := newSnapshotRepo()
+	overrides := newOverrideRepo()
+	addons := newAddonRepo()
+	trials := newTrialRepo()
+	tx := newTxRunner()
+	effectSvc := service.NewEffectiveSetService(snaps, overrides, addons, trials, &fakeCatalogSvc{}, &fakeIAMClient{}, nil, newTxRunner()).WithLogger(port.NopLogger{})
+
+	tenantID := uuid.New()
+	now := time.Now().UTC()
+	addon := &domain.QuotaAddon{
+		ID: uuid.New(), TenantID: tenantID,
+		LimitKey: domain.LimitKeyLLMTokenQuotaMonthly, TotalTokens: 1000, RemainingTokens: 1000,
+		Status: domain.AddonStatusActive, RecordVersion: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	_ = addons.Insert(context.Background(), addon)
+	addons.updateErr = errors.New("addon update failed")
+
+	svc := service.NewAddonService(addons, newDrawdownRepo(), newShortfallRepo(), effectSvc, tx).WithLogger(port.NopLogger{})
+	_, err := svc.RecordDrawdown(context.Background(), port.RecordDrawdownRequest{
+		TenantID:       tenantID,
+		LimitKey:       domain.LimitKeyLLMTokenQuotaMonthly,
+		TokensConsumed: 500,
+		PeriodStart:    now,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "update addon")
+}
+
+// ── ResolveShortfall: recompute failure is a warning (non-fatal) ──────────
+
+func TestResolveShortfall_RecomputeFailsNonFatal_Approve(t *testing.T) {
+	snaps := newSnapshotRepo()
+	overrides := newOverrideRepo()
+	addons := newAddonRepo()
+	trials := newTrialRepo()
+	tx := newTxRunner()
+	// Use a catalog service that fails so recompute fails.
+	catalog := &fakeCatalogSvc{
+		getPlanFn: func(_ context.Context, _ string) (*domain.Plan, error) {
+			return nil, errors.New("catalog down")
+		},
+	}
+	effectSvc := service.NewEffectiveSetService(snaps, overrides, addons, trials, catalog, &fakeIAMClient{}, nil, tx).WithLogger(port.NopLogger{})
+	shortfalls := newShortfallRepo()
+	svc := service.NewAddonService(addons, newDrawdownRepo(), shortfalls, effectSvc, tx).WithLogger(port.NopLogger{})
+
+	sfID := uuid.New()
+	now := time.Now().UTC()
+	shortfalls.shortfalls[sfID] = &domain.QuotaAddonShortfall{
+		ID: sfID, TenantID: uuid.New(), Status: domain.ShortfallStatusPendingApproval,
+		CreatedAt: now, UpdatedAt: now,
+	}
+
+	dispRef := "ref-approval-123"
+	// Approve disposition triggers recompute which fails → warning logged, success returned.
+	sf, err := svc.ResolveShortfall(context.Background(), port.ResolveShortfallRequest{
+		ShortfallID: sfID, Disposition: domain.DispositionApprove, DispositionBy: uuid.New(),
+		DispositionRef: &dispRef,
+	})
+	require.NoError(t, err, "recompute failure must not propagate to caller")
+	assert.NotNil(t, sf)
+}
+
+// ── RemoveOverride: recompute failure logs warning (non-fatal) ───────────
+
+func TestRemoveOverride_RecomputeFailsNonFatal(t *testing.T) {
+	overrides := newOverrideRepo()
+	tx := newTxRunner()
+	failIAM := &fakeIAMClient{
+		fetchSubFn: func(_ context.Context, t uuid.UUID) (*port.TenantSubscription, error) {
+			return nil, errors.New("iam unavailable")
+		},
+	}
+	effectSvc := service.NewEffectiveSetService(newSnapshotRepo(), overrides, newAddonRepo(), newTrialRepo(), &fakeCatalogSvc{}, failIAM, nil, tx)
+	svc := service.NewOverrideService(overrides, effectSvc, tx).WithLogger(port.NopLogger{})
+
+	tenantID := uuid.New()
+	val := int64(100)
+	now := time.Now().UTC()
+	_ = overrides.Upsert(context.Background(), &domain.Override{
+		TenantID: tenantID, LimitKey: domain.LimitKeyTenderLimit, Value: &val,
+		Reason: "test", SetBy: uuid.New(), RecordVersion: 0, CreatedAt: now, UpdatedAt: now,
+	})
+
+	err := svc.RemoveOverride(context.Background(), port.RemoveOverrideRequest{
+		TenantID: tenantID, LimitKey: domain.LimitKeyTenderLimit,
+		RemovedBy: uuid.New(), Reason: "cleanup",
+	})
+	require.NoError(t, err, "recompute failure after RemoveOverride must not propagate")
+}
+
+// ── ExpireOverrides: list expired error propagates ───────────────────────
+
+func TestExpireOverrides_ListExpiredError(t *testing.T) {
+	overrides := newOverrideRepo()
+	overrides.listExpiredErr = errors.New("list expired overrides failed")
+	tx := newTxRunner()
+	effectSvc := service.NewEffectiveSetService(newSnapshotRepo(), overrides, newAddonRepo(), newTrialRepo(), &fakeCatalogSvc{}, &fakeIAMClient{}, nil, tx)
+	svc := service.NewOverrideService(overrides, effectSvc, tx).WithLogger(port.NopLogger{})
+
+	_, err := svc.ExpireOverrides(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list expired overrides")
+}

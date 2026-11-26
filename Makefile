@@ -42,6 +42,11 @@ TEST_INTERNAL_PKGS := ./cmd/server/... \
                       ./internal/adapter/outbound/valkey/... \
                       ./internal/core/port/...
 
+# Temporal tests run separately: the Temporal test activity environment uses
+# goroutines whose coverage counters get lost when bundled with many other
+# packages in a single go test -race invocation (Go multi-package coverage race).
+TEST_TEMPORAL_PKGS := ./internal/adapter/temporal/...
+
 # Every test/postgres/*.go test func calls t.Parallel() and spins its own
 # testcontainers Postgres. Capped to avoid Docker resource-contention flakes.
 # Override on the CLI (e.g. `make test-postgres TEST_POSTGRES_PARALLEL=8`).
@@ -269,18 +274,29 @@ _test-integration: | .coverage
 	  -coverpkg=$(COVER_PKG_LIST) \
 	  -coverprofile=.coverage/integration.out
 
-# Merge the three per-suite profiles into a single coverage.out (max-count
+# Temporal tests run isolated (without -race to avoid coverage data loss when
+# bundled with many other packages in one go test invocation).
+.PHONY: _test-temporal
+_test-temporal: | .coverage
+	$(GO) test $(TEST_TEMPORAL_PKGS) \
+	  -count=1 -timeout 60s \
+	  -coverpkg=$(COVER_PKG_LIST) \
+	  -coverprofile=.coverage/temporal.out
+
+# Merge the four per-suite profiles into a single coverage.out (max-count
 # strategy — any suite covering a block wins).
 .PHONY: _merge-coverage
 _merge-coverage:
 	@python3 scripts/merge_coverage.py \
 	  .coverage/unit.out .coverage/postgres.out .coverage/integration.out \
+	  .coverage/temporal.out \
 	  > coverage.out
 	@echo "==> coverage.out merged from all suites (max-count strategy)"
 
 .PHONY: test-ci
 test-ci: | .coverage
 	$(MAKE) -j3 _test-unit _test-postgres _test-integration
+	$(MAKE) _test-temporal
 	$(MAKE) _merge-coverage
 
 # Human-friendly plain-output variants (no coverage, verbose).

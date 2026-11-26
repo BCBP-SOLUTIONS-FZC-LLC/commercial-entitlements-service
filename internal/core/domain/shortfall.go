@@ -10,12 +10,12 @@ import (
 type ShortfallStatus string
 
 const (
-	ShortfallStatusPending          ShortfallStatus = "pending"
-	ShortfallStatusAutoAccepted     ShortfallStatus = "auto_accepted"
-	ShortfallStatusPendingApproval  ShortfallStatus = "pending_approval"
-	ShortfallStatusApproved         ShortfallStatus = "approved"
-	ShortfallStatusRejected         ShortfallStatus = "rejected"
-	ShortfallStatusExpired          ShortfallStatus = "expired"
+	ShortfallStatusPending         ShortfallStatus = "pending"
+	ShortfallStatusAutoAccepted    ShortfallStatus = "auto_accepted"
+	ShortfallStatusPendingApproval ShortfallStatus = "pending_approval"
+	ShortfallStatusApproved        ShortfallStatus = "approved"
+	ShortfallStatusRejected        ShortfallStatus = "rejected"
+	ShortfallStatusExpired         ShortfallStatus = "expired"
 )
 
 // ShortfallDisposition is the resolution outcome chosen by an operator.
@@ -25,6 +25,25 @@ const (
 	DispositionApprove ShortfallDisposition = "approve"
 	DispositionReject  ShortfallDisposition = "reject"
 )
+
+// ValidShortfallStatuses is the approved vocabulary for the status query
+// parameter on ENT-O6 (ListShortfalls). Handlers validate against this map
+// before casting to ShortfallStatus so callers receive 400 for unknown values.
+var ValidShortfallStatuses = map[ShortfallStatus]struct{}{
+	ShortfallStatusPending:         {},
+	ShortfallStatusAutoAccepted:    {},
+	ShortfallStatusPendingApproval: {},
+	ShortfallStatusApproved:        {},
+	ShortfallStatusRejected:        {},
+	ShortfallStatusExpired:         {},
+}
+
+// ValidShortfallDispositions is the approved vocabulary for the disposition
+// field on ENT-O7 (ResolveShortfall). Handlers validate against this map.
+var ValidShortfallDispositions = map[ShortfallDisposition]struct{}{
+	DispositionApprove: {},
+	DispositionReject:  {},
+}
 
 // QuotaAddonShortfall is raised when a drawdown request arrives and the tenant
 // has insufficient addon quota balance (ENT-D11/D12).

@@ -49,7 +49,6 @@ env:
   # APP_ENV is also the observability environment label; must be one of
   # local|dev|test|staging|prod (no aliases — "production" fails startup).
   APP_ENV: "prod"
-  # Domain is hardcoded in main.go (gincommon.Config.Domain = "commercial").
   APP_PORT: "8080"
   METRICS_PORT: "9090"
   BUILD_VERSION: ""   # overridden by deployment.yaml from imageTag
@@ -89,15 +88,31 @@ env:
 
   # IAM Catalog client — read by internal/adapter/outbound/iamclient.
   IAM_CATALOG_BASE_URL: ""
+  # Per-request HTTP timeout for IAM catalog calls (default "10s").
+  # Increase for slow IAM or high-concurrency addon-expiry reconciler runs.
+  IAM_CATALOG_TIMEOUT: "10s"
 
   # Temporal workflow worker — optional; server skips if unset.
   # Read in cmd/server/main.go: os.Getenv("TEMPORAL_HOST_PORT").
   TEMPORAL_HOST_PORT: ""
 
   # Reconciler config — read by cmd/reconciler/main.go.
-  RECONCILER_TIMEOUT: "5m"
+  # 15m default: addon-expiry triggers one IAM call (10s timeout) per pack;
+  # 1000 packs × 10s = 167m worst-case, so tune for fleet size.
+  RECONCILER_TIMEOUT: "15m"
   RECONCILER_BATCH_LIMIT: "500"
   RECONCILER_STATEMENT_TIMEOUT: "2m"
+
+  # Observability domain label — "commercial" is ratified in platform-gincommon v2.7.0.
+  OBSERVABILITY_DOMAIN: "commercial"
+
+  # Shortfall thresholds — ENT-D11/D12 configurable per LLD §12.
+  # All five values are adjustable without a code change (ENT-D12 resolution).
+  SHORTFALL_TOLERANCE_TOKENS: "10000"
+  SHORTFALL_TOLERANCE_PCT: "1"
+  SHORTFALL_HIGH_VALUE_TOKENS: "250000"
+  SHORTFALL_REPEAT_COUNT: "2"
+  SHORTFALL_REPEAT_WINDOW_MONTHS: "3"
 
   # Prometheus pushgateway — reconciler jobs push metrics here when set.
   PROMETHEUS_PUSHGATEWAY_URL: ""

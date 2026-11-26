@@ -74,8 +74,12 @@ type SetOverrideBody struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
+// RemoveOverrideBody carries the optional reason for a DELETE override.
+// Reason is intentionally not binding:"required" — DELETE operations do not
+// mandate a reason in the HTTP body, though callers should supply one for
+// audit trail completeness.
 type RemoveOverrideBody struct {
-	Reason string `json:"reason" binding:"required"`
+	Reason string `json:"reason"`
 }
 
 type OverrideResponse struct {

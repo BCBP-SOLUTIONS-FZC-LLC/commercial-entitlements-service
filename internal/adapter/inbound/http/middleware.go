@@ -70,7 +70,7 @@ func tenantIDFromContext(c *gin.Context) uuid.UUID {
 }
 
 // hasRole reports whether the given role is present in the roles slice.
-func hasRole(roles []string, role string) bool {
+func hasRole(roles []string, role string) bool { //nolint:unparam
 	return slices.Contains(roles, role)
 }
 

@@ -83,7 +83,7 @@ func (c *BillingEventConsumer) handleAddonChanged(ctx context.Context, env event
 	default:
 		c.log.Info("billing consumer: unknown addon reason acknowledged",
 			map[string]interface{}{"reason": peek.Reason, "event_id": env.ID})
-		return nil
+		return nil //nolint:nilerr
 	}
 }
 
@@ -99,7 +99,7 @@ func (c *BillingEventConsumer) handleAddonPurchase(ctx context.Context, env even
 	if payload.Delta <= 0 {
 		c.log.Warn("billing consumer: purchase event has non-positive delta, skipping",
 			map[string]interface{}{"delta": payload.Delta, "billing_ref": payload.BillingRef})
-		return nil
+		return nil //nolint:nilerr
 	}
 	return c.addonSvc.ApplyBillingPurchase(ctx, port.ApplyBillingPurchaseRequest{
 		TenantID:    payload.TenantID,
@@ -121,7 +121,7 @@ func (c *BillingEventConsumer) handleAddonRefund(ctx context.Context, env events
 	if payload.Delta >= 0 {
 		c.log.Warn("billing consumer: refund event has non-negative delta, skipping",
 			map[string]interface{}{"delta": payload.Delta, "billing_ref": payload.BillingRef})
-		return nil
+		return nil //nolint:nilerr
 	}
 	return c.addonSvc.ApplyBillingRefund(ctx, port.ApplyBillingRefundRequest{
 		TenantID:    payload.TenantID,
@@ -136,7 +136,7 @@ func (c *BillingEventConsumer) handleSubscriptionEvent(ctx context.Context, env 
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
 		c.log.Warn("billing consumer: unmarshal failed",
 			map[string]interface{}{"event_type": env.Type, "error": err.Error()})
-		return nil // ack malformed events to prevent DLQ storms
+		return nil //nolint:nilerr // ack malformed events to prevent DLQ storms
 	}
 
 	cause := domain.CauseBillingEvent

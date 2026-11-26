@@ -7,6 +7,7 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 )
@@ -44,6 +45,7 @@ func (h *TrialHandler) AssignProfile(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
+	metrics.IncTrialAssignment(body.Profile)
 	c.JSON(http.StatusOK, trialAssignmentToResponse(a))
 }
 

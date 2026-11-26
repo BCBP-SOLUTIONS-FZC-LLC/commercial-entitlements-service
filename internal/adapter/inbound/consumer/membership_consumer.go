@@ -57,7 +57,7 @@ func (c *MembershipConsumer) Handle(ctx context.Context, env events.Envelope[jso
 func (c *MembershipConsumer) handlePurge(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	var payload domain.InboundMembershipEvent
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
-		return nil // ack malformed
+		return nil //nolint:nilerr // ack malformed
 	}
 	_, err := c.effectSvc.Recompute(ctx, payload.TenantID, domain.CauseTenantLifecycle)
 	return err
@@ -69,10 +69,10 @@ func (c *MembershipConsumer) handlePurge(ctx context.Context, env events.Envelop
 func (c *MembershipConsumer) handleTenantStateChanged(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	var payload domain.InboundTenantStateChangedEvent
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
-		return nil // ack malformed
+		return nil //nolint:nilerr // ack malformed
 	}
 	if payload.Cause != "TrialReactivated" {
-		return nil
+		return nil //nolint:nilerr
 	}
 	_, err := c.effectSvc.Recompute(ctx, payload.TenantID, domain.CauseTenantLifecycle)
 	return err

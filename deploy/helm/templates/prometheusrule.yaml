@@ -186,6 +186,60 @@ spec:
               Either the producer broke its contract or this service's
               api/asyncapi.yaml is stale.
 
+    - name: commercial_entitlements_cache
+      rules:
+        - alert: CommercialEntitlementsCacheMissSpike
+          expr: |
+            sum by (domain, service, environment) (rate(commercial_entitlements_cache_miss_total[5m]))
+              /
+            (
+              sum by (domain, service, environment) (rate(commercial_entitlements_cache_hit_total[5m]))
+              +
+              sum by (domain, service, environment) (rate(commercial_entitlements_cache_miss_total[5m]))
+            ) > 0.3
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: commercial-entitlements Valkey cache miss rate above 30%
+            description: >-
+              Cache miss rate {{ "{{ $value | humanizePercentage }}" }} sustained for 5 min.
+              Unexpected Postgres load increase. Check Valkey connectivity and
+              ENT-D13 quota ceiling writes.
+
+    - name: commercial_entitlements_reconciler
+      rules:
+        - alert: CommercialEntitlementsReconcilerJobFailed
+          expr: |
+            kube_job_status_failed{
+              job_name=~"{{ include "commercial-entitlements.fullname" . }}-(override|addon|outbox|events|quota).*"
+            } > 0
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: commercial-entitlements reconciler job {{ "{{ $labels.job_name }}" }} failed
+            description: >-
+              Reconciler job {{ "{{ $labels.job_name }}" }} has failed pods.
+              Stale overrides/addons or unprocessed quota resets may accumulate.
+
+        - alert: CommercialEntitlementsReconcilerJobStale
+          expr: |
+            time() - kube_cronjob_status_last_schedule_time{
+              cronjob=~"{{ include "commercial-entitlements.fullname" . }}-(override|addon|outbox|events|quota).*"
+            } > 7200
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: commercial-entitlements reconciler CronJob {{ "{{ $labels.cronjob }}" }} not scheduled for 2h
+            description: >-
+              CronJob {{ "{{ $labels.cronjob }}" }} has not run in over 2× its expected interval.
+              The CronJob controller may be stuck or the namespace may have resource pressure.
+
     - name: commercial_entitlements_compliance
       rules:
         - alert: CommercialEntitlementsRLSCrossTenantAccess

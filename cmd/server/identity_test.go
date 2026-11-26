@@ -13,14 +13,14 @@ func TestResolveAppEnv_UsesAPP_ENV(t *testing.T) {
 }
 
 func TestResolveAppEnv_FallsBackToENVIRONMENT(t *testing.T) {
-	os.Unsetenv("APP_ENV")
+	_ = os.Unsetenv("APP_ENV")
 	t.Setenv("ENVIRONMENT", "staging")
 	assert.Equal(t, "staging", resolveAppEnv())
 }
 
 func TestResolveAppEnv_DefaultsDev(t *testing.T) {
-	os.Unsetenv("APP_ENV")
-	os.Unsetenv("ENVIRONMENT")
+	_ = os.Unsetenv("APP_ENV")
+	_ = os.Unsetenv("ENVIRONMENT")
 	assert.Equal(t, "dev", resolveAppEnv())
 }
 

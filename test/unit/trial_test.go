@@ -15,7 +15,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/service"
 )
 
-func newTrialService() (*service.TrialService, *fakeTrialRepo, *fakeTxRunner) {
+func newTrialService() (*service.TrialService, *fakeTrialRepo, *fakeTxRunner) { //nolint:unparam
 	snaps := newSnapshotRepo()
 	overrides := newOverrideRepo()
 	addons := newAddonRepo()

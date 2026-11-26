@@ -1,0 +1,222 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Manages per-tenant entitlement sets including plan-based limits, operator overrides, quota addons, trial profiles, and shortfall management.",
+        "title": "Commercial Entitlements Service",
+        "contact": {
+            "name": "BCBP Solutions Platform Team",
+            "email": "platform@bcbpsolutions.com"
+        },
+        "license": {
+            "name": "Proprietary"
+        },
+        "version": "1.0"
+    },
+    "basePath": "/api/v1",
+    "paths": {
+        "/api/v1/internal/tenants/{id}/entitlements": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "entitlements"
+                ],
+                "summary": "Get effective entitlement set (internal)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.EffectiveSetResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/internal/tenants/{id}/entitlements/recompute": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "entitlements"
+                ],
+                "summary": "Force recompute entitlement set",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.EffectiveSetResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/tenants/{id}/entitlements": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "entitlements"
+                ],
+                "summary": "Get effective entitlement set (tenant)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.EffectiveSetResponse"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "http.AddonResourceEligibilityResponse": {
+            "type": "object",
+            "properties": {
+                "eligible": {
+                    "type": "boolean"
+                },
+                "reason": {
+                    "type": "string"
+                }
+            }
+        },
+        "http.EffectiveSetResponse": {
+            "type": "object",
+            "properties": {
+                "addon_eligibility": {
+                    "description": "AddonEligibility reports per-resource eligibility for quota add-on purchases.\nBilling reads llm_tokens in v1 for the BIL-ADD-1 check (BL-OQ-3).",
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/http.AddonResourceEligibilityResponse"
+                    }
+                },
+                "cause": {
+                    "type": "string"
+                },
+                "computed_at": {
+                    "type": "string"
+                },
+                "feature_flags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "limits": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/http.LimitValueResponse"
+                    }
+                },
+                "model_tier": {
+                    "type": "string"
+                },
+                "plan_code": {
+                    "type": "string"
+                },
+                "state": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "trial_profile": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "integer"
+                }
+            }
+        },
+        "http.LimitValueResponse": {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "description": "null means unlimited",
+                    "type": "integer"
+                }
+            }
+        }
+    },
+    "tags": [
+        {
+            "name": "internal",
+            "description": "In-mesh service-to-service routes. ENT-I1: GET/POST /api/v1/internal/tenants/:id/entitlements, ENT-I2: GET .../plans/current, ENT-I3: POST .../entitlements/drawdown."
+        },
+        {
+            "name": "tenant",
+            "description": "Tenant-scoped read routes (JWT required). ENT-T1: GET /api/v1/tenants/:id/entitlements."
+        },
+        {
+            "name": "operator",
+            "description": "Platform operator routes (platform_operator role). ENT-O1..O7: manual overrides, trial profiles, quota addons, shortfall resolution, plan catalog management."
+        },
+        {
+            "name": "overrides",
+            "description": "Manual entitlement override management. ENT-O2: GET/PUT/DELETE /api/v1/operator/tenants/:id/entitlements/overrides/:limitKey."
+        },
+        {
+            "name": "addons",
+            "description": "Quota addon pack management. ENT-O5: GET/POST/DELETE /api/v1/operator/tenants/:id/entitlements/addons."
+        },
+        {
+            "name": "shortfalls",
+            "description": "Quota shortfall resolution. ENT-O6: GET .../shortfalls, ENT-O7: POST .../shortfalls/:shortfallId/resolve."
+        },
+        {
+            "name": "trial",
+            "description": "Trial profile and override management. ENT-O3: PUT/GET/DELETE .../trial-profile, ENT-O4: PUT/GET/DELETE .../trial-overrides/:limitKey."
+        },
+        {
+            "name": "plans",
+            "description": "Plan catalog. GET /api/v1/operator/plans, POST .../plans/:planCode/refresh."
+        },
+        {
+            "name": "entitlements",
+            "description": "Entitlement snapshot reads and recompute triggers."
+        },
+        {
+            "name": "infra",
+            "description": "Health checks and operational endpoints (unauthenticated)."
+        }
+    ],
+    "securityDefinitions": {
+        "BearerAuth": {
+            "description": "JWT bearer token from Keycloak. Prefix with \"Bearer \".",
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header"
+        }
+    }
+}

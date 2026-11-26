@@ -2,12 +2,17 @@
 # check-metrics.sh — CI validation for the Enterprise Platform Observability Standard.
 #
 # Validates internal/adapter/outbound/metrics/registry.go:
-#   1. Namespace: "commercial"  (never "platform")
-#   2. Subsystem: "entitlements"
+#   1. Namespace: "commercial"  (never "platform")  [struct-style, legacy check]
+#   2. Subsystem: "entitlements"                     [struct-style, legacy check]
 #   3. Counter metrics (NewCounter / NewCounterVec): Name ends with _total
 #   4. Histogram metrics (NewHistogram / NewHistogramVec): Name ends with _seconds
 #   5. No prohibited high-cardinality labels
-#   6. No uppercase in Name values
+#   6. No uppercase in metric name strings
+#   7. Label vocabulary compliance
+#
+# Supports both the legacy prometheus struct-literal style (Namespace/Subsystem/Name
+# fields) and the current gincommon call style where metric names appear as the
+# second string argument to gincommon.NewCounterVec(reg, "name", ...) etc.
 #
 # Compatible with bash 3.2+ (macOS system shell).
 # Exits 0 on pass, 1 on any failure.
@@ -22,7 +27,7 @@ log()  { [ "$VERBOSE" -eq 1 ] && echo "  OK  $*" || true; }
 fail() { echo "FAIL $*"; FAILURES=$((FAILURES + 1)); }
 hdr()  { echo ""; echo "=== $* ==="; }
 
-# ── 1. Namespace / Subsystem fields ──────────────────────────────────────
+# ── 1. Namespace / Subsystem fields (legacy struct-style check) ───────────
 hdr "Namespace and Subsystem fields"
 if grep -E 'Namespace:[[:space:]]+"platform"' "$REGISTRY" >/dev/null 2>&1; then
   fail "Namespace: \"platform\" found — Tier 1 metrics are owned by the platform-events library"
@@ -44,37 +49,51 @@ else
   log "Subsystem field OK"
 fi
 
-# ── 2. Build counter/histogram name lists via awk ─────────────────────────
-# Strategy: scan the file. When we see NewCounter/NewHistogram, record the type.
-# When we see Name: "...", classify under the most recent constructor type.
+# ── 2. Build counter/histogram name lists ─────────────────────────────────
+# Supports both styles:
+#   Legacy struct:   NewCounterVec(prometheus.CounterOpts{Name: "foo_total"}, ...)
+#   gincommon call:  gincommon.NewCounterVec(nil, "commercial_entitlements_foo_total", ...)
 hdr "Counter and Histogram suffix validation"
 
 TMPOUT=$(mktemp)
 awk '
+# Track the most recent constructor kind seen.
+# Handles both single-line and multi-line calls.
+
+# Legacy struct-literal style constructors and gincommon wrappers
 /NewHistogramVec|NewHistogram[^V]/ { kind = "histogram" }
 /NewCounterVec|NewCounter[^V]/     { kind = "counter" }
+
+# Legacy struct-literal style Name field
 /Name:[[:space:]]+"[a-z0-9_]+"/ {
   match($0, /"[a-z0-9_]+"/)
   name = substr($0, RSTART+1, RLENGTH-2)
-  if (kind != "") print kind ":" name
+  if (kind != "") { print kind ":" name; kind = "" }
+  next
+}
+
+# gincommon call style: the name "commercial_entitlements_..." may appear on
+# the same line as the constructor or on the following line.
+match($0, /"commercial_entitlements_[a-z0-9_]+"/) {
+  name = substr($0, RSTART+1, RLENGTH-2)
+  if (kind != "") { print kind ":" name; kind = "" }
 }
 ' "$REGISTRY" > "$TMPOUT"
 
 while IFS= read -r entry; do
   kind="${entry%%:*}"
   name="${entry##*:}"
-  full="commercial_entitlements_$name"
   case "$kind" in
     counter)
       case "$name" in
-        *_total) log "Counter _total OK: $full" ;;
-        *)       fail "Counter missing _total suffix: $full" ;;
+        *_total) log "Counter _total OK: $name" ;;
+        *)       fail "Counter missing _total suffix: $name" ;;
       esac
       ;;
     histogram)
       case "$name" in
-        *_seconds) log "Histogram _seconds OK: $full" ;;
-        *)         fail "Histogram missing _seconds suffix: $full" ;;
+        *_seconds) log "Histogram _seconds OK: $name" ;;
+        *)         fail "Histogram missing _seconds suffix: $name" ;;
       esac
       ;;
   esac
@@ -94,11 +113,17 @@ for label in tenant_id user_id email request_id event_id session_id; do
   fi
 done
 
-# ── 4. Lowercase Name values ──────────────────────────────────────────────
+# ── 4. Lowercase metric names ──────────────────────────────────────────────
+# Extract metric name strings: both struct Name: "..." and gincommon inline names.
 hdr "Lowercase metric names"
 TMPNAMES=$(mktemp)
-grep -E 'Name:[[:space:]]+"[a-z0-9_]+"' "$REGISTRY" \
-  | grep -oE '"[a-z0-9_]+"' | tr -d '"' > "$TMPNAMES"
+{
+  # Legacy struct style
+  grep -E 'Name:[[:space:]]+"[a-z0-9_]+"' "$REGISTRY" \
+    | grep -oE '"[a-z0-9_]+"' | tr -d '"' || true
+  # gincommon call style
+  grep -oE '"commercial_entitlements_[a-z0-9_]+"' "$REGISTRY" | tr -d '"' || true
+} | sort -u > "$TMPNAMES"
 
 while IFS= read -r name; do
   [ -z "$name" ] && continue
@@ -109,6 +134,49 @@ while IFS= read -r name; do
   fi
 done < "$TMPNAMES"
 rm -f "$TMPNAMES"
+
+# ── 5. Label vocabulary compliance ────────────────────────────────────────
+# Only labels from the approved platform/domain vocabulary may appear in
+# []string{...} label arrays or variadic label arguments. High-cardinality
+# identifiers are caught by check 3 above; this enforces the positive allowlist.
+hdr "Label vocabulary compliance"
+
+# Approved label vocabulary (Platform Observability Standard, Tier 3).
+APPROVED_LABELS="cause outcome limit_key disposition status shortfall kind consumer event_type profile reason violation_type"
+
+TMPLAB=$(mktemp)
+# Extract labels from both styles:
+#   Legacy struct:  []string{"cause", "outcome"}
+#   gincommon:      variadic args after help string — these appear on lines like
+#                   		"cause", "outcome"))
+#                   i.e. lines where every token is a short quoted label or punctuation.
+{
+  # Legacy []string{...} label arrays
+  grep -oE '\[\]string\{[^}]+\}' "$REGISTRY" 2>/dev/null \
+    | grep -oE '"[a-z_]+"' | tr -d '"' || true
+
+  # Variadic label argument lines: lines that contain quoted short identifiers
+  # followed by one or more closing parentheses (gincommon call close).
+  # This excludes bare import strings like \t"sync" which have no closing paren.
+  grep -E '^[[:space:]]+"[a-z][a-z_]+"(,[[:space:]]+"[a-z][a-z_]+")*\)+[,]?$' \
+    "$REGISTRY" 2>/dev/null \
+    | grep -oE '"[a-z][a-z_]+"' | tr -d '"' \
+    | grep -v '^commercial_entitlements_' || true
+} | sort -u > "$TMPLAB"
+
+while IFS= read -r label; do
+  [ -z "$label" ] && continue
+  found=0
+  for approved in $APPROVED_LABELS; do
+    [ "$label" = "$approved" ] && found=1 && break
+  done
+  if [ "$found" -eq 0 ]; then
+    fail "Unapproved label '$label' — not in platform/domain vocabulary: {$APPROVED_LABELS}"
+  else
+    log "Label '$label' approved"
+  fi
+done < "$TMPLAB"
+rm -f "$TMPLAB"
 
 # ── Summary ───────────────────────────────────────────────────────────────
 echo ""

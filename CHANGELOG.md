@@ -6,6 +6,44 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Added
+
+- **Enterprise Platform Observability Standard — metrics, logs, traces, DB, events all through platform libs only:**
+
+  - **Two new Tier-3 metrics** (`internal/adapter/outbound/metrics/`):
+    - `commercial_entitlements_consumed_event_rejected_total{consumer,event_type,reason}` — incremented in `sqspipeline.Handler` when `ValidatingCodec` rejects an inbound payload before it reaches the domain handler; `reason=schema_violation`; drives `CommercialEntitlementsConsumedEventSchemaViolation` alert.
+    - `commercial_entitlements_rls_violations_total{violation_type}` — incremented in `postgres.wrapConnErr` when PostgreSQL returns SQLSTATE 42501 + "row-level security" message; `violation_type=cross_tenant_access`; drives `CommercialEntitlementsRLSCrossTenantAccess` compliance alert.
+
+  - **Metric construction migrated to `gincommon.New*`** — `internal/adapter/outbound/metrics/registry.go` now uses `gincommon.NewCounterVec`, `gincommon.NewHistogramVec`, `gincommon.NewCounter` (never raw `prometheus.New*`). The `"commercial"` domain was ratified in platform-gincommon v2.7.0 and `OBSERVABILITY_DOMAIN` now defaults to `"commercial"` in all binaries (was `"billing"` pending ratification).
+
+  - **`events.InitMetrics` and `pgmetrics.InitWithIdentity`** added to `cmd/worker/main.go` and `cmd/catalog-refresh/main.go`. Both binaries create an outboxPublisher and pool; without initialisation the `platform_outbox_*` and `platform_db_*` counters were silently dropped.
+
+  - **`pgcommon.ConfigFromEnv()` warnings now logged** in `cmd/worker/main.go` and `cmd/catalog-refresh/main.go` (were silently discarded with `_`).
+
+  - **`isRLSViolation` now uses `pgcommon.SQLState(err)`** (`postgres/db.go`) instead of a plain string match for `"42501"`. This is the correct pgcommon API for SQLSTATE inspection without importing pgconn directly.
+
+  - **`ErrNoSchema` sentinel fixed** (`eventbus/validating_codec.go`) — changed from `fmt.Errorf("no schema")` to `errors.New("no schema")`, making `errors.Is` identity checks correct across the package. The dead `err.Error() == "no schema"` string fallback in `isNoSchemaErr` was removed.
+
+- **`check-metrics` target added to `make ci`** — `Makefile` runs `bash scripts/check-metrics.sh` as part of the CI gate, enforcing namespace classification, naming conventions, counter/histogram suffix rules, prohibited high-cardinality labels, and approved label vocabulary (18 metrics validated).
+
+### Changed
+
+- **`OBSERVABILITY_DOMAIN` default: `"billing"` → `"commercial"`** in `cmd/server`, `cmd/reconciler`. `cmd/worker`, `cmd/catalog-refresh`, `cmd/expiry` already hardcoded `"commercial"`. All binaries are now consistent; `deploy/helm/values.yaml` updated accordingly.
+
+- **`RECONCILER_TIMEOUT` default: `5m` → `15m`** (`deploy/helm/values.yaml`) — addon-expiry triggers one IAM call (10 s timeout) per pack; 1 000 packs × 10 s = 167 min worst-case; 15 min is a safe default for typical fleet sizes.
+
+- **AWS SDK v2 patch update** (5 direct deps, 11 transitive):
+
+  | Module | Before | After |
+  |---|---|---|
+  | `aws-sdk-go-v2/config` | v1.33.21 | v1.33.22 |
+  | `aws-sdk-go-v2/credentials` | v1.21.3 | v1.21.4 |
+  | `aws-sdk-go-v2/service/glue` | v1.177.0 | v1.177.1 |
+  | `aws-sdk-go-v2/service/sns` | v1.48.0 | v1.48.1 |
+  | `aws-sdk-go-v2/service/sqs` | v1.53.0 | v1.53.1 |
+
+  `govulncheck ./internal/... ./cmd/...` — **no vulnerabilities found**.
+
 ### Fixed
 
 - **E-3 read-race fix: conversion-revert recompute** — `membership-entitlements-q`

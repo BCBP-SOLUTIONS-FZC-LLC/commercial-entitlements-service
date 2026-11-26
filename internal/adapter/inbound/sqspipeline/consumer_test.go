@@ -6,6 +6,8 @@ import (
 	"errors"
 	"testing"
 
+	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
+
 	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 	"github.com/stretchr/testify/assert"
@@ -194,4 +196,45 @@ func TestInstallTracingHooks_NoPanic(t *testing.T) {
 		port.SetSpanContextExtractor(nil)
 		port.SetConsumerSpanFunc(nil)
 	})
+}
+
+// ── NewConsumer ───────────────────────────────────────────────────────────
+
+// stubSQSClient satisfies events.SQSClientLike with no-op implementations so
+// NewConsumer can be called in a unit test without real AWS credentials.
+type stubSQSClient struct{}
+
+func (s *stubSQSClient) ReceiveMessage(_ context.Context, _ *awssqs.ReceiveMessageInput, _ ...func(*awssqs.Options)) (*awssqs.ReceiveMessageOutput, error) {
+	return &awssqs.ReceiveMessageOutput{}, nil
+}
+func (s *stubSQSClient) DeleteMessage(_ context.Context, _ *awssqs.DeleteMessageInput, _ ...func(*awssqs.Options)) (*awssqs.DeleteMessageOutput, error) {
+	return &awssqs.DeleteMessageOutput{}, nil
+}
+func (s *stubSQSClient) ChangeMessageVisibility(_ context.Context, _ *awssqs.ChangeMessageVisibilityInput, _ ...func(*awssqs.Options)) (*awssqs.ChangeMessageVisibilityOutput, error) {
+	return &awssqs.ChangeMessageVisibilityOutput{}, nil
+}
+
+func TestNewConsumer_WithStubSQSClient_ReturnsConsumer(t *testing.T) {
+	env := eventcfg.SQSConfigEnv{
+		QueueURL:    "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue",
+		Region:      "us-east-1",
+		Concurrency: 1,
+	}
+	handlerFn := func(_ context.Context, _ events.Envelope[json.RawMessage]) error { return nil }
+	consumer, err := NewConsumer(env, &stubSQSClient{}, handlerFn, nil, nopLogger{})
+	require.NoError(t, err)
+	assert.NotNil(t, consumer)
+}
+
+func TestNewConsumer_WithDLQ_ReturnsConsumer(t *testing.T) {
+	env := eventcfg.SQSConfigEnv{
+		QueueURL:    "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue",
+		Region:      "us-east-1",
+		Concurrency: 2,
+	}
+	handlerFn := func(_ context.Context, _ events.Envelope[json.RawMessage]) error { return nil }
+	dlq := &fakeDLQ{resolved: "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue-dlq"}
+	consumer, err := NewConsumer(env, &stubSQSClient{}, handlerFn, dlq, nopLogger{})
+	require.NoError(t, err)
+	assert.NotNil(t, consumer)
 }

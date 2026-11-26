@@ -15,7 +15,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/service"
 )
 
-func newOverrideService() (*service.OverrideService, *fakeOverrideRepo, *fakeTxRunner) {
+func newOverrideService() (*service.OverrideService, *fakeOverrideRepo, *fakeTxRunner) { //nolint:unparam
 	snaps := newSnapshotRepo()
 	overrides := newOverrideRepo()
 	addons := newAddonRepo()

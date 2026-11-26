@@ -3,9 +3,6 @@ package http
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
-
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
@@ -16,14 +13,6 @@ import (
 )
 
 func init() { gin.SetMode(gin.TestMode) }
-
-// newCtx creates a minimal gin.Context with tenantID injected.
-func newCtx(method, path string) (*gin.Context, *httptest.ResponseRecorder) {
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(method, path, nil)
-	return c, w
-}
 
 // withTenantID injects a tenantID as the contextKeyTenantID value.
 func withTenantID(c *gin.Context, tenantID uuid.UUID) {
@@ -226,24 +215,3 @@ func (f *fakeCatalogSvc) ListPlans(_ context.Context) ([]string, error) {
 type fakePinger struct{ err error }
 
 func (p *fakePinger) Health(_ context.Context) error { return p.err }
-
-// ── bodyJSON helper ───────────────────────────────────────────────────────
-
-func bodyJSON(t interface{}) *httptest.ResponseRecorder { return nil } // placeholder; not used directly
-
-// httpStatus returns the recorded HTTP status code.
-func httpStatus(w *httptest.ResponseRecorder) int { return w.Code }
-
-// nextCalled tracks whether gin.Next() was called in middleware tests.
-type nextTracker struct{ called bool }
-
-func (n *nextTracker) next(c *gin.Context) { n.called = true; c.Next() }
-
-// passthroughRouter builds a minimal gin engine for middleware integration tests.
-func passthroughRouter(middlewares ...gin.HandlerFunc) (*gin.Engine, *httptest.ResponseRecorder) {
-	w := httptest.NewRecorder()
-	r := gin.New()
-	r.Use(middlewares...)
-	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
-	return r, w
-}

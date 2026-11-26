@@ -18,6 +18,22 @@ This service was built against the Enterprise Platform Observability Standard fr
 | Before | After | Why | Since |
 |---|---|---|---|
 | — | *This table is empty — no renames or removals yet.* | — | — |
+| `commercial_entitlements_*` (prometheus.NewCounterVec) | `commercial_entitlements_*` (gincommon.NewCounterVec) | "commercial" domain ratified in platform-gincommon v2.7.0 | this release |
+
+## Completed: "commercial" domain ratification
+
+The `commercial_entitlements_*` metric names require domain `"commercial"` in the
+platform-gincommon obsregistry (via `ServicePrefix("commercial","commercial-entitlements") =
+"commercial_entitlements_"`). This ratification is now complete:
+
+- `"commercial"` was added to the platform-gincommon v2.7.0 obsregistry.
+- `register()` in `internal/adapter/outbound/metrics/registry.go` now uses
+  `gincommon.NewCounterVec`, `gincommon.NewHistogramVec`, and `gincommon.NewCounter`
+  for all metric construction, enforcing the prefix and label rules at startup.
+- `OBSERVABILITY_DOMAIN` now defaults to `"commercial"` in `cmd/server/main.go`,
+  `cmd/reconciler/main.go`, `.env-example`, and `deploy/helm/values.yaml`.
+- The const labels `{domain="commercial", service="commercial-entitlements"}` are
+  injected centrally by `gincommon.MetricsRegisterer()` per Rule 8.
 
 ## Adding a new entry
 

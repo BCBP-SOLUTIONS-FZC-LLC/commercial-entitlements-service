@@ -44,11 +44,6 @@ func TestNoopPublisher_PublishBatch_NoError(t *testing.T) {
 	require.NoError(t, p.PublishBatch(context.Background(), nil))
 }
 
-func TestIsNoSchemaErr_ErrNoSchemaString(t *testing.T) {
-	// "no schema" string path in isNoSchemaErr
-	assert.True(t, isNoSchemaErr(noSchemaStrErr("no schema")))
+func TestIsNoSchemaErr_OtherError_False(t *testing.T) {
+	assert.False(t, isNoSchemaErr(assert.AnError))
 }
-
-type noSchemaStrErr string
-
-func (e noSchemaStrErr) Error() string { return string(e) }

@@ -130,13 +130,26 @@ func (r *SnapshotRepository) GetLatest(ctx context.Context, tenantID uuid.UUID) 
 	return &snap, nil
 }
 
-// ListTenantIDsByPlan returns all tenant IDs currently on the given plan.
-// Used by the Temporal catalog fan-out workflow.
+// listTenantIDsByPlanPageSize is the maximum rows returned per
+// ListTenantIDsByPlan call. Keeps the activity memory footprint bounded.
+// When a plan has more tenants the caller (Temporal workflow) must page by
+// passing the last returned ID as afterTenantID on subsequent calls.
+// TODO: change the signature to accept (afterTenantID uuid.UUID, limit int)
+// once the Temporal activities are updated to loop via continue-as-new paging.
+const listTenantIDsByPlanPageSize = 5000
+
+// ListTenantIDsByPlan returns up to listTenantIDsByPlanPageSize tenant IDs
+// currently on the given plan, ordered by tenant_id for deterministic paging.
+// Used by the Temporal catalog fan-out workflow (ENT-D1).
 func (r *SnapshotRepository) ListTenantIDsByPlan(ctx context.Context, planCode string) ([]uuid.UUID, error) {
 	var ids []uuid.UUID
 	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT tenant_id FROM entitlement_snapshots WHERE plan = $1`, planCode)
+			SELECT tenant_id
+			FROM entitlement_snapshots
+			WHERE plan = $1
+			ORDER BY tenant_id
+			LIMIT $2`, planCode, listTenantIDsByPlanPageSize)
 		if err != nil {
 			return err
 		}

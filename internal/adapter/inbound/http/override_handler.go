@@ -85,7 +85,8 @@ func (h *OverrideHandler) Remove(c *gin.Context) {
 	actorID := actorFromClaims(c)
 
 	var body RemoveOverrideBody
-	_ = c.ShouldBindJSON(&body) // reason is optional on DELETE
+	// Reason is optional on DELETE; ignore any parsing error from an absent body.
+	_ = c.ShouldBindJSON(&body)
 
 	err := h.overrideSvc.RemoveOverride(c.Request.Context(), port.RemoveOverrideRequest{
 		TenantID:  tenantID,

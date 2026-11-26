@@ -152,15 +152,16 @@ func (r *fakeSnapshotRepo) GetLatest(_ context.Context, tenantID uuid.UUID) (*do
 // ── fakeOverrideRepo ───────────────────────────────────────────────────────
 
 type fakeOverrideRepo struct {
-	mu          sync.Mutex
-	overrides   map[ovKey]*domain.Override
-	history     []domain.OverrideHistory
-	upsertErr   error
-	deleteErr   error
-	getErr      error
-	listErr     error
-	expiredList []domain.Override
-	listHistErr error
+	mu             sync.Mutex
+	overrides      map[ovKey]*domain.Override
+	history        []domain.OverrideHistory
+	upsertErr      error
+	deleteErr      error
+	getErr         error
+	listErr        error
+	listExpiredErr error
+	expiredList    []domain.Override
+	listHistErr    error
 }
 
 func newOverrideRepo() *fakeOverrideRepo {
@@ -218,6 +219,9 @@ func (r *fakeOverrideRepo) ListByTenant(_ context.Context, tenantID uuid.UUID) (
 }
 
 func (r *fakeOverrideRepo) ListExpired(_ context.Context, _ time.Time) ([]domain.Override, error) {
+	if r.listExpiredErr != nil {
+		return nil, r.listExpiredErr
+	}
 	return r.expiredList, nil
 }
 
@@ -246,15 +250,17 @@ func (r *fakeOverrideRepo) ListHistory(_ context.Context, tenantID uuid.UUID, ke
 // ── fakeAddonRepo ──────────────────────────────────────────────────────────
 
 type fakeAddonRepo struct {
-	mu          sync.Mutex
-	addons      map[uuid.UUID]*domain.QuotaAddon
-	insertErr   error
-	updateErr   error
-	getErr      error
-	getBilErr   error
-	listErr     error
-	expiredList []domain.QuotaAddon
-	sumFn       func(tenantID uuid.UUID, key domain.LimitKey) (int64, error)
+	mu             sync.Mutex
+	addons         map[uuid.UUID]*domain.QuotaAddon
+	insertErr      error
+	updateErr      error
+	getErr         error
+	getBilErr      error
+	listErr        error
+	listActiveErr  error
+	listExpiredErr error
+	expiredList    []domain.QuotaAddon
+	sumFn          func(tenantID uuid.UUID, key domain.LimitKey) (int64, error)
 }
 
 func newAddonRepo() *fakeAddonRepo {
@@ -332,10 +338,16 @@ func (r *fakeAddonRepo) ListByTenant(_ context.Context, tenantID uuid.UUID, limi
 }
 
 func (r *fakeAddonRepo) ListExpired(_ context.Context, _ time.Time) ([]domain.QuotaAddon, error) {
+	if r.listExpiredErr != nil {
+		return nil, r.listExpiredErr
+	}
 	return r.expiredList, nil
 }
 
 func (r *fakeAddonRepo) ListActiveByTenantAndKey(_ context.Context, tenantID uuid.UUID, limitKey domain.LimitKey) ([]domain.QuotaAddon, error) {
+	if r.listActiveErr != nil {
+		return nil, r.listActiveErr
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []domain.QuotaAddon
@@ -843,3 +855,20 @@ func (f *fakeTemporalStarter) StartExpiryFanout(_ context.Context) error {
 // ── errSentinel ────────────────────────────────────────────────────────────
 
 var errStorage = errors.New("storage failure")
+
+// ── nopAuditRecorder ────────────────────────────────────────────────────────
+
+// nopAuditRecorder satisfies port.AuditRecorder but discards every entry.
+// Used when tests want an audit recorder in context without real persistence.
+type nopAuditRecorder struct{}
+
+func (nopAuditRecorder) Record(_ context.Context, _ port.AuditEntry) error        { return nil }
+func (nopAuditRecorder) RecordBatch(_ context.Context, _ []port.AuditEntry) error { return nil }
+
+// newTxRunnerWithAuditRecorder returns a fakeTxRunner that injects the given
+// audit recorder into every transaction context it creates.
+func newTxRunnerWithAuditRecorder(rec port.AuditRecorder) *fakeTxRunner {
+	tx := newTxRunner()
+	tx.rec = rec
+	return tx
+}

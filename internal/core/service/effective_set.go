@@ -162,41 +162,47 @@ func (s *EffectiveSetService) recomputeCore(ctx context.Context, tenantID uuid.U
 
 	// --- Step 2: Trial-profile overrides ---
 	var trialProfile *string
-	var trialAssignment *domain.TenantTrialAssignment
 	if state == domain.EntitlementStateTrial {
-		if ta, err := s.trials.GetAssignment(ctx, tenantID); err == nil {
-			trialAssignment = ta
+		ta, err := s.trials.GetAssignment(ctx, tenantID)
+		switch {
+		case err == nil && ta != nil:
 			p := string(ta.Profile)
 			trialProfile = &p
 			// Apply trial-profile limit overrides.
 			if profileLimits, ok := plan.TrialProfiles[string(ta.Profile)]; ok {
 				applyTrialProfileLimits(limits, profileLimits)
 			}
+		case errors.Is(err, domain.ErrTrialAssignmentNotFound):
+			// No row means trial_specific default — no adjustments, trialProfile stays nil.
+		case err != nil:
+			// Unexpected repository error — fail the recompute.
+			return nil, fmt.Errorf("get trial assignment: %w", err)
 		}
 	}
-	_ = trialAssignment // used for profile context
 
 	// --- Step 3: Trial entitlement overrides ---
 	if state == domain.EntitlementStateTrial {
 		trialOvs, err := s.trials.ListOverrides(ctx, tenantID)
-		if err == nil {
-			for i := range trialOvs {
-				limits[trialOvs[i].LimitKey] = domain.LimitValue{Value: trialOvs[i].Value}
-			}
+		if err != nil {
+			return nil, fmt.Errorf("list trial overrides: %w", err)
+		}
+		for i := range trialOvs {
+			limits[trialOvs[i].LimitKey] = domain.LimitValue{Value: trialOvs[i].Value}
 		}
 	}
 
 	// --- Step 4: Operator overrides ---
 	opOvs, err := s.overrides.ListByTenant(ctx, tenantID)
-	if err == nil {
-		now := time.Now().UTC()
-		for i := range opOvs {
-			ov := &opOvs[i]
-			if ov.ExpiresAt != nil && ov.ExpiresAt.Before(now) {
-				continue // skip expired; reconciler sweeps these
-			}
-			limits[ov.LimitKey] = domain.LimitValue{Value: ov.Value}
+	if err != nil {
+		return nil, fmt.Errorf("list operator overrides: %w", err)
+	}
+	now := time.Now().UTC()
+	for i := range opOvs {
+		ov := &opOvs[i]
+		if ov.ExpiresAt != nil && ov.ExpiresAt.Before(now) {
+			continue // skip expired; reconciler sweeps these
 		}
+		limits[ov.LimitKey] = domain.LimitValue{Value: ov.Value}
 	}
 
 	// --- Step 5: Addon quota balance (additive) ---
@@ -205,7 +211,10 @@ func (s *EffectiveSetService) recomputeCore(ctx context.Context, tenantID uuid.U
 		domain.LimitKeyAPIRequestBudgetMonthly,
 	} {
 		addonBalance, err := s.addons.SumRemainingByTenantAndKey(ctx, tenantID, key)
-		if err == nil && addonBalance > 0 {
+		if err != nil {
+			return nil, fmt.Errorf("sum addon balance for %s: %w", key, err)
+		}
+		if addonBalance > 0 {
 			current := limits[key]
 			if current.IsUnlimited() {
 				continue // plan already unlimited; addons don't change that

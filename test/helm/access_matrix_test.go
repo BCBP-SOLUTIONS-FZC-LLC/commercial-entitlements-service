@@ -19,6 +19,7 @@ package helm_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -72,7 +73,7 @@ func renderChart(t *testing.T, extraSets ...string) []map[string]any {
 	t.Helper()
 	args := []string{"template", releaseName, chartDir(), "--namespace", namespace}
 	args = append(args, extraSets...)
-	out, err := exec.Command("helm", args...).Output()
+	out, err := exec.CommandContext(context.Background(), "helm", args...).Output() //nolint:noctx
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {

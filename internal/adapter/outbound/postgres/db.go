@@ -10,12 +10,12 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 )
@@ -142,8 +142,8 @@ func withPool(ctx context.Context, pool *pgcommon.Pool, fn func(pgcommon.Tx) err
 }
 
 // wrapConnErr converts non-protocol database errors into domain error types.
-// SQL-protocol errors (*pgconn.PgError) for unique violations, FK, check pass
-// through so the service layer can distinguish them.
+// SQL-protocol errors detected by pgcommon.Is* helpers for unique violations,
+// FK, etc. pass through so the service layer can distinguish them.
 func wrapConnErr(err error) error {
 	if err == nil {
 		return nil
@@ -173,6 +173,10 @@ func wrapConnErr(err error) error {
 			Cause:   fmt.Errorf("%w: %w", domain.ErrRequestTimeout, err),
 		}
 	}
+	if isRLSViolation(err) {
+		metrics.IncRLSViolation("cross_tenant_access")
+		return err
+	}
 	if isDBUnavailable(err) {
 		return &domain.DomainError{
 			Code:    domain.ErrDBUnavailable.Error(),
@@ -183,12 +187,26 @@ func wrapConnErr(err error) error {
 	return err
 }
 
+// isRLSViolation reports whether err is a PostgreSQL row-level security policy
+// violation. SQLSTATE 42501 (insufficient_privilege) checked via pgcommon.SQLState
+// plus the "row-level security" message substring to distinguish an RLS block
+// from a schema-level permission denial (both return 42501, only the former
+// mentions "row-level security" in the message text).
+func isRLSViolation(err error) bool {
+	return pgcommon.SQLState(err) == "42501" && strings.Contains(err.Error(), "row-level security")
+}
+
 // isDBUnavailable reports whether err is a database availability failure.
+// Covers all SQLSTATE-class availability errors via pgcommon helpers.
+// Transport-level failures (pgconn.ConnectError — dial/TLS errors before
+// any SQLSTATE response) are intentionally not matched here because
+// platform-pgcommon does not expose IsConnectError; those errors propagate
+// as-is rather than being classified as ErrDBUnavailable.
+// TODO(pgcommon): add pgcommon.IsConnectError() so transport failures are
+// also classified, then extend this function.
 func isDBUnavailable(err error) bool {
-	var connectErr *pgconn.ConnectError
 	return pgcommon.IsConnectionException(err) || pgcommon.IsInsufficientResources(err) ||
-		pgcommon.IsOperatorIntervention(err) || pgcommon.IsSystemError(err) || pgcommon.IsPoolClosed(err) ||
-		errors.As(err, &connectErr)
+		pgcommon.IsOperatorIntervention(err) || pgcommon.IsSystemError(err) || pgcommon.IsPoolClosed(err)
 }
 
 // itoa converts int to string for use in raw SQL LIMIT clauses.

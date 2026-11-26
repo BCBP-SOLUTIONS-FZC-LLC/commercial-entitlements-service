@@ -26,7 +26,7 @@ import (
 // Expected Result:   Exactly one update succeeds; the other returns ErrOptimisticLockConflict.
 func TestP5Conc001_AddonConcurrentUpdate(t *testing.T) {
 	t.Parallel()
-	appPool, _, tenantID := setupTestDB(t)
+	appPool, _, _, tenantID := setupTestDB(t)
 	ctx := withTenant(context.Background(), tenantID)
 
 	repo := pgadapter.NewAddonRepository(appPool)
@@ -70,7 +70,7 @@ func TestP5Conc001_AddonConcurrentUpdate(t *testing.T) {
 // Expected Result:   Higher version wins; total written count <= 2
 func TestP5Conc002_SnapshotConcurrentUpsert(t *testing.T) {
 	t.Parallel()
-	appPool, _, tenantID := setupTestDB(t)
+	appPool, _, _, tenantID := setupTestDB(t)
 	ctx := withTenant(context.Background(), tenantID)
 
 	repo := pgadapter.NewSnapshotRepository(appPool)
@@ -112,7 +112,7 @@ func TestP5Conc002_SnapshotConcurrentUpsert(t *testing.T) {
 // Expected Result:   Only one row; second GetByRequestID returns same record
 func TestP5Conc003_DrawdownIdempotency(t *testing.T) {
 	t.Parallel()
-	appPool, _, tenantID := setupTestDB(t)
+	appPool, _, _, tenantID := setupTestDB(t)
 	ctx := withTenant(context.Background(), tenantID)
 
 	addonRepo := pgadapter.NewAddonRepository(appPool)

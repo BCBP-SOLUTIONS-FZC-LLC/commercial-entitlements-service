@@ -139,12 +139,30 @@ func (c *BillingEventConsumer) handleAddonRefund(ctx context.Context, env events
 			map[string]interface{}{"delta": payload.Delta, "billing_ref": payload.BillingRef})
 		return nil //nolint:nilerr
 	}
-	return c.addonSvc.ApplyBillingRefund(ctx, port.ApplyBillingRefundRequest{
+	err := c.addonSvc.ApplyBillingRefund(ctx, port.ApplyBillingRefundRequest{
 		TenantID:    payload.TenantID,
 		PurchaseRef: payload.PurchaseRef,
 		Delta:       payload.Delta,
 		BillingRef:  payload.BillingRef,
 	})
+	if errors.Is(err, domain.ErrBillingRefAlreadyClaimed) {
+		// F-3: this refund_id is already recorded for another tenant or for a
+		// different purchase. Nothing was changed; a retry cannot succeed.
+		// Count it (same alert as B-8) and ack.
+		reason := domain.RefundConflictOtherTenant
+		var de *domain.DomainError
+		if errors.As(err, &de) {
+			if k, ok := de.Details["conflict"].(string); ok && k != "" {
+				reason = k
+			}
+		}
+		metrics.IncBillingRefConflict(env.Type, reason)
+		c.log.Error("billing consumer: refund billing_ref already recorded — refund NOT applied; operator review required",
+			map[string]interface{}{"event_id": env.ID, "billing_ref": payload.BillingRef, "tenant_id": payload.TenantID,
+				"purchase_ref": payload.PurchaseRef, "conflict": reason, "error": err.Error()})
+		return nil
+	}
+	return err
 }
 
 // handleSubscriptionEvent handles Billing's TenantPlanChanged,

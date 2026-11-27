@@ -374,6 +374,57 @@ func (r *fakeAddonRepo) SumRemainingByTenantAndKey(_ context.Context, tenantID u
 	return total, nil
 }
 
+// ── fakeRefundRepo ─────────────────────────────────────────────────────────
+
+// fakeRefundRepo mirrors quota_addon_refunds: billing_ref is globally unique
+// (Claim fails for any tenant), but GetForTenant only sees the caller's
+// tenant, as RLS does.
+type fakeRefundRepo struct {
+	mu   sync.Mutex
+	rows map[uuid.UUID]domain.QuotaAddonRefund
+}
+
+func newRefundRepo() *fakeRefundRepo {
+	return &fakeRefundRepo{rows: make(map[uuid.UUID]domain.QuotaAddonRefund)}
+}
+
+func (r *fakeRefundRepo) Claim(_ context.Context, ref *domain.QuotaAddonRefund) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.rows[ref.BillingRef]; ok {
+		return false, nil
+	}
+	r.rows[ref.BillingRef] = *ref
+	return true, nil
+}
+
+func (r *fakeRefundRepo) SumByAddon(_ context.Context, tenantID uuid.UUID, addonIDs []uuid.UUID) (map[uuid.UUID]int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	want := make(map[uuid.UUID]bool, len(addonIDs))
+	for _, id := range addonIDs {
+		want[id] = true
+	}
+	out := map[uuid.UUID]int64{}
+	for _, row := range r.rows {
+		if row.TenantID == tenantID && want[row.AddonID] {
+			out[row.AddonID] += row.TokensRemoved
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeRefundRepo) GetForTenant(_ context.Context, tenantID, billingRef uuid.UUID) (*domain.QuotaAddonRefund, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	row, ok := r.rows[billingRef]
+	if !ok || row.TenantID != tenantID {
+		return nil, nil
+	}
+	cp := row
+	return &cp, nil
+}
+
 // ── fakeDrawdownRepo ───────────────────────────────────────────────────────
 
 type fakeDrawdownRepo struct {

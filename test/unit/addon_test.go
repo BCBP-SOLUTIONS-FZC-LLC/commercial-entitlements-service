@@ -33,7 +33,8 @@ func newAddonService() (*service.AddonService, *fakeAddonRepo, *fakeDrawdownRepo
 	effectSvc := buildEffectSvcForAddon(snaps, overrides, addons, trials, tx)
 	drawdowns := newDrawdownRepo()
 	shortfalls := newShortfallRepo()
-	svc := service.NewAddonService(addons, drawdowns, shortfalls, effectSvc, tx).WithLogger(port.NopLogger{})
+	svc := service.NewAddonService(addons, drawdowns, shortfalls, effectSvc, tx).WithLogger(port.NopLogger{}).
+		WithRefundRepository(newRefundRepo())
 	return svc, addons, drawdowns, shortfalls, tx
 }
 
@@ -760,19 +761,20 @@ func TestApplyBillingRefund_HappyPath(t *testing.T) {
 		TenantID:    tenantID,
 		PurchaseRef: purchaseRef,
 		Delta:       -3_000,
-		BillingRef:  "ref_xyz",
+		BillingRef:  uuid.New(),
 	})
 	require.NoError(t, err)
 
 	stored, _ := addons.GetByID(context.Background(), a.ID)
 	assert.Equal(t, int64(7_000), stored.RemainingTokens)
-	assert.Equal(t, int64(7_000), stored.TotalTokens)
+	assert.Equal(t, int64(10_000), stored.TotalTokens, "ENT-D16: total_tokens is immutable")
+	assert.Equal(t, domain.AddonStatusActive, stored.Status)
 }
 
 func TestApplyBillingRefund_DeltaNotNegative_Error(t *testing.T) {
 	svc, _, _, _, _ := newAddonService()
 	err := svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
-		TenantID: uuid.New(), PurchaseRef: uuid.New(), Delta: 100, BillingRef: "ref",
+		TenantID: uuid.New(), PurchaseRef: uuid.New(), Delta: 100, BillingRef: uuid.New(),
 	})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, domain.ErrInvalidValue))
@@ -781,7 +783,7 @@ func TestApplyBillingRefund_DeltaNotNegative_Error(t *testing.T) {
 func TestApplyBillingRefund_AddonNotFound_Error(t *testing.T) {
 	svc, _, _, _, _ := newAddonService()
 	err := svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
-		TenantID: uuid.New(), PurchaseRef: uuid.New(), Delta: -100, BillingRef: "ref",
+		TenantID: uuid.New(), PurchaseRef: uuid.New(), Delta: -100, BillingRef: uuid.New(),
 	})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, domain.ErrAddonNotFound))
@@ -802,7 +804,7 @@ func TestApplyBillingRefund_RefundExceedsRemaining_CappedAtRemaining(t *testing.
 	_ = addons.Insert(context.Background(), a)
 
 	err := svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
-		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -1000, BillingRef: "ref",
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -1000, BillingRef: uuid.New(),
 	})
 	require.NoError(t, err)
 
@@ -825,7 +827,7 @@ func TestApplyBillingRefund_ZeroRemaining_IsNoop(t *testing.T) {
 	_ = addons.Insert(context.Background(), a)
 
 	err := svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
-		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -500, BillingRef: "ref",
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -500, BillingRef: uuid.New(),
 	})
 	require.NoError(t, err)
 	// Record stays at 0
@@ -1034,4 +1036,252 @@ func TestRecordDrawdown_ListActiveAddonsError_PropagatesError(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "list active addons")
+}
+
+// ── ApplyBillingRefund idempotency on billing_ref (F-3, BL-OQ-20 W-5) ──────
+
+func refundFixture(t *testing.T, remaining int64) (*service.AddonService, *fakeAddonRepo, *fakeRefundRepo, *domain.QuotaAddon, uuid.UUID, uuid.UUID) {
+	t.Helper()
+	snaps, overrides, addons, trials, tx := newSnapshotRepo(), newOverrideRepo(), newAddonRepo(), newTrialRepo(), newTxRunner()
+	effectSvc := buildEffectSvcForAddon(snaps, overrides, addons, trials, tx)
+	refunds := newRefundRepo()
+	svc := service.NewAddonService(addons, newDrawdownRepo(), newShortfallRepo(), effectSvc, tx).
+		WithLogger(port.NopLogger{}).WithRefundRepository(refunds)
+	tenantID, purchaseRef := uuid.New(), uuid.New()
+	now := time.Now().UTC()
+	a := &domain.QuotaAddon{
+		ID: uuid.New(), TenantID: tenantID,
+		LimitKey: domain.LimitKeyLLMTokenQuotaMonthly, TotalTokens: 10_000, RemainingTokens: remaining,
+		BillingRef: strptr(purchaseRef.String()),
+		Status:     domain.AddonStatusActive, RecordVersion: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	require.NoError(t, addons.Insert(context.Background(), a))
+	return svc, addons, refunds, a, tenantID, purchaseRef
+}
+
+// The same refund (one billing_ref) delivered twice — e.g. under two envelope
+// IDs, or after processed_events was pruned — removes tokens once.
+func TestApplyBillingRefund_SameBillingRefTwice_AppliedOnce(t *testing.T) {
+	svc, addons, refunds, a, tenantID, purchaseRef := refundFixture(t, 10_000)
+	req := port.ApplyBillingRefundRequest{TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -3_000, BillingRef: uuid.New()}
+
+	require.NoError(t, svc.ApplyBillingRefund(context.Background(), req))
+	require.NoError(t, svc.ApplyBillingRefund(context.Background(), req), "a replay is acked")
+
+	stored, _ := addons.GetByID(context.Background(), a.ID)
+	assert.Equal(t, int64(7_000), stored.RemainingTokens, "tokens reduced once")
+	assert.Len(t, refunds.rows, 1)
+	assert.Equal(t, int64(3_000), refunds.rows[req.BillingRef].TokensRemoved)
+}
+
+func TestApplyBillingRefund_TwoRefundsSamePurchase_BothAppliedAndCapped(t *testing.T) {
+	svc, addons, refunds, a, tenantID, purchaseRef := refundFixture(t, 5_000)
+	r1, r2 := uuid.New(), uuid.New()
+	require.NoError(t, svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -3_000, BillingRef: r1}))
+	require.NoError(t, svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -4_000, BillingRef: r2}))
+
+	stored, _ := addons.GetByID(context.Background(), a.ID)
+	assert.Equal(t, int64(0), stored.RemainingTokens)
+	require.Len(t, refunds.rows, 2)
+	assert.Equal(t, int64(3_000), refunds.rows[r1].TokensRemoved)
+	assert.Equal(t, int64(2_000), refunds.rows[r2].TokensRemoved, "capped at the remaining unused tokens")
+}
+
+func TestApplyBillingRefund_NothingUnused_RowWithZero_RedeliveryNoop(t *testing.T) {
+	svc, addons, refunds, a, tenantID, purchaseRef := refundFixture(t, 0)
+	req := port.ApplyBillingRefundRequest{TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -500, BillingRef: uuid.New()}
+	require.NoError(t, svc.ApplyBillingRefund(context.Background(), req))
+	require.Len(t, refunds.rows, 1)
+	assert.Equal(t, int64(0), refunds.rows[req.BillingRef].TokensRemoved)
+
+	// Tokens become unused again (e.g. an operator correction); the old
+	// refund redelivered must still not remove them.
+	stored, _ := addons.GetByID(context.Background(), a.ID)
+	stored.RemainingTokens = 400
+	require.NoError(t, addons.Update(context.Background(), stored))
+	require.NoError(t, svc.ApplyBillingRefund(context.Background(), req))
+	after, _ := addons.GetByID(context.Background(), a.ID)
+	assert.Equal(t, int64(400), after.RemainingTokens)
+	assert.Len(t, refunds.rows, 1)
+}
+
+func TestApplyBillingRefund_BeforePurchase_RetriedAndNoRow(t *testing.T) {
+	svc, _, refunds, _, tenantID, _ := refundFixture(t, 1_000)
+	err := svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
+		TenantID: tenantID, PurchaseRef: uuid.New(), Delta: -100, BillingRef: uuid.New()})
+	require.ErrorIs(t, err, domain.ErrAddonNotFound)
+	assert.Empty(t, refunds.rows)
+}
+
+func TestApplyBillingRefund_BillingRefRecordedForOtherTenant_Conflict(t *testing.T) {
+	svc, addons, refunds, a, tenantID, purchaseRef := refundFixture(t, 1_000)
+	ref := uuid.New()
+	refunds.rows[ref] = domain.QuotaAddonRefund{BillingRef: ref, TenantID: uuid.New()}
+
+	err := svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -100, BillingRef: ref})
+	require.ErrorIs(t, err, domain.ErrBillingRefAlreadyClaimed)
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.RefundConflictOtherTenant, de.Details["conflict"])
+	stored, _ := addons.GetByID(context.Background(), a.ID)
+	assert.Equal(t, int64(1_000), stored.RemainingTokens, "nothing removed")
+}
+
+func TestApplyBillingRefund_LedgerNotWired_FailsClosed(t *testing.T) {
+	snaps, overrides, addons, trials, tx := newSnapshotRepo(), newOverrideRepo(), newAddonRepo(), newTrialRepo(), newTxRunner()
+	svc := service.NewAddonService(addons, newDrawdownRepo(), newShortfallRepo(),
+		buildEffectSvcForAddon(snaps, overrides, addons, trials, tx), tx).WithLogger(port.NopLogger{})
+	err := svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
+		TenantID: uuid.New(), PurchaseRef: uuid.New(), Delta: -100, BillingRef: uuid.New()})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refund ledger not wired")
+}
+
+// F-4: a refund publishes TenantEntitlementsChanged{cause: addon_change}
+// whose changed_keys names llm_token_quota_monthly, so subscribers can filter.
+func TestApplyBillingRefund_PublishesAddonChangeWithLLMKey(t *testing.T) {
+	snaps, overrides, addons, trials, tx := newSnapshotRepo(), newOverrideRepo(), newAddonRepo(), newTrialRepo(), newTxRunner()
+	effectSvc := buildEffectSvcForAddon(snaps, overrides, addons, trials, tx)
+	svc := service.NewAddonService(addons, newDrawdownRepo(), newShortfallRepo(), effectSvc, tx).
+		WithLogger(port.NopLogger{}).WithRefundRepository(newRefundRepo())
+	tenantID, purchaseRef := uuid.New(), uuid.New()
+	now := time.Now().UTC()
+	require.NoError(t, addons.Insert(context.Background(), &domain.QuotaAddon{
+		ID: uuid.New(), TenantID: tenantID, LimitKey: domain.LimitKeyLLMTokenQuotaMonthly,
+		TotalTokens: 10_000, RemainingTokens: 10_000, BillingRef: strptr(purchaseRef.String()),
+		Status: domain.AddonStatusActive, RecordVersion: 1, CreatedAt: now, UpdatedAt: now,
+	}))
+	_, err := effectSvc.Recompute(context.Background(), tenantID, domain.CauseAddonChange)
+	require.NoError(t, err)
+	tx.pub.events = nil
+
+	require.NoError(t, svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -4_000, BillingRef: uuid.New()}))
+
+	require.Len(t, tx.pub.events, 1)
+	p, ok := tx.pub.events[0].Data.(domain.TenantEntitlementsChangedPayload)
+	require.True(t, ok)
+	assert.Equal(t, domain.CauseAddonChange, p.Cause)
+	assert.Equal(t, []string{string(domain.LimitKeyLLMTokenQuotaMonthly)}, p.ChangedKeys)
+}
+
+// A refund_id reused by Billing for a different purchase of the same tenant
+// is not a replay: nothing is applied and it surfaces as a conflict.
+func TestApplyBillingRefund_SameRefDifferentPurchase_Conflict(t *testing.T) {
+	svc, addons, refunds, a, tenantID, purchaseRef := refundFixture(t, 10_000)
+	ref := uuid.New()
+	require.NoError(t, svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -1_000, BillingRef: ref}))
+
+	now := time.Now().UTC()
+	other := uuid.New()
+	b := &domain.QuotaAddon{ID: uuid.New(), TenantID: tenantID, LimitKey: domain.LimitKeyLLMTokenQuotaMonthly,
+		TotalTokens: 5_000, RemainingTokens: 5_000, BillingRef: strptr(other.String()),
+		Status: domain.AddonStatusActive, RecordVersion: 1, CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, addons.Insert(context.Background(), b))
+
+	err := svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
+		TenantID: tenantID, PurchaseRef: other, Delta: -1_000, BillingRef: ref})
+	require.ErrorIs(t, err, domain.ErrBillingRefAlreadyClaimed)
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.RefundConflictOtherPurchase, de.Details["conflict"])
+	stored, _ := addons.GetByID(context.Background(), b.ID)
+	assert.Equal(t, int64(5_000), stored.RemainingTokens)
+	first, _ := addons.GetByID(context.Background(), a.ID)
+	assert.Equal(t, int64(9_000), first.RemainingTokens)
+	assert.Len(t, refunds.rows, 1)
+}
+
+// ── ENT-D16: total immutable, refunded status, removability, listings ─────
+
+func TestApplyBillingRefund_FullRefund_StatusRefundedTotalUnchanged(t *testing.T) {
+	svc, addons, _, a, tenantID, purchaseRef := refundFixture(t, 10_000)
+	require.NoError(t, svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -4_000, BillingRef: uuid.New()}))
+	require.NoError(t, svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -6_000, BillingRef: uuid.New()}))
+
+	stored, _ := addons.GetByID(context.Background(), a.ID)
+	assert.Equal(t, int64(10_000), stored.TotalTokens)
+	assert.Equal(t, int64(0), stored.RemainingTokens)
+	assert.Equal(t, domain.AddonStatusRefunded, stored.Status)
+
+	sum, err := addons.SumRemainingByTenantAndKey(context.Background(), tenantID, domain.LimitKeyLLMTokenQuotaMonthly)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), sum, "a refunded pack contributes nothing to the effective set")
+}
+
+func TestApplyBillingRefund_EmptiedByDrawsAndRefund_StatusConsumed(t *testing.T) {
+	// 10k purchased, 7k drawn (remaining 3k), then a 5k refund removes the last 3k.
+	svc, addons, refunds, a, tenantID, purchaseRef := refundFixture(t, 3_000)
+	ref := uuid.New()
+	require.NoError(t, svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -5_000, BillingRef: ref}))
+
+	stored, _ := addons.GetByID(context.Background(), a.ID)
+	assert.Equal(t, int64(10_000), stored.TotalTokens)
+	assert.Equal(t, int64(0), stored.RemainingTokens)
+	assert.Equal(t, domain.AddonStatusConsumed, stored.Status, "not fully refunded: 7k were drawn")
+	assert.Equal(t, int64(3_000), refunds.rows[ref].TokensRemoved)
+}
+
+func TestRemoveAddon_PartlyRefundedUndrawnPack_Removable(t *testing.T) {
+	svc, addons, _, a, tenantID, purchaseRef := refundFixture(t, 10_000)
+	require.NoError(t, svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -4_000, BillingRef: uuid.New()}))
+
+	require.NoError(t, svc.RemoveAddon(context.Background(), port.RemoveAddonRequest{
+		TenantID: tenantID, AddonID: a.ID, RemovedBy: uuid.New(), Reason: "correction"}),
+		"refunded tokens are not use; nothing was drawn")
+	stored, _ := addons.GetByID(context.Background(), a.ID)
+	assert.Equal(t, domain.AddonStatusRevoked, stored.Status)
+	assert.Equal(t, int64(10_000), stored.TotalTokens)
+}
+
+func TestRemoveAddon_PartlyRefundedAndDrawnPack_NotRemovable(t *testing.T) {
+	// 10k purchased, 2k refunded, 1k drawn → remaining 7k.
+	svc, addons, _, a, tenantID, purchaseRef := refundFixture(t, 10_000)
+	require.NoError(t, svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -2_000, BillingRef: uuid.New()}))
+	stored, _ := addons.GetByID(context.Background(), a.ID)
+	stored.RemainingTokens = 7_000
+	stored.RecordVersion++
+	require.NoError(t, addons.Update(context.Background(), stored))
+
+	err := svc.RemoveAddon(context.Background(), port.RemoveAddonRequest{
+		TenantID: tenantID, AddonID: a.ID, RemovedBy: uuid.New(), Reason: "correction"})
+	require.ErrorIs(t, err, domain.ErrPackPartiallyUsed)
+}
+
+func TestRemoveAddon_RefundedPack_InvalidAction(t *testing.T) {
+	svc, _, _, a, tenantID, purchaseRef := refundFixture(t, 10_000)
+	require.NoError(t, svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -10_000, BillingRef: uuid.New()}))
+
+	err := svc.RemoveAddon(context.Background(), port.RemoveAddonRequest{
+		TenantID: tenantID, AddonID: a.ID, RemovedBy: uuid.New(), Reason: "correction"})
+	require.ErrorIs(t, err, domain.ErrInvalidAction)
+}
+
+func TestListAddons_CarriesRefundedConsumedRemovable(t *testing.T) {
+	// 10k purchased, 2k refunded, 3k drawn → remaining 5k.
+	svc, addons, _, a, tenantID, purchaseRef := refundFixture(t, 10_000)
+	require.NoError(t, svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -2_000, BillingRef: uuid.New()}))
+	stored, _ := addons.GetByID(context.Background(), a.ID)
+	stored.RemainingTokens = 5_000
+	stored.RecordVersion++
+	require.NoError(t, addons.Update(context.Background(), stored))
+
+	list, err := svc.ListAddons(context.Background(), tenantID)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, int64(10_000), list[0].TotalTokens)
+	assert.Equal(t, int64(2_000), list[0].RefundedTokens)
+	assert.Equal(t, int64(3_000), list[0].ConsumedTokens())
+	assert.False(t, list[0].Removable())
 }

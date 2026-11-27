@@ -188,19 +188,20 @@ spec:
 
         - alert: CommercialEntitlementsBillingRefConflict
           expr: |
-            sum by (domain, service, environment, event_type) (increase(commercial_entitlements_billing_ref_conflict_total[15m])) > 0
+            sum by (domain, service, environment, event_type, reason) (increase(commercial_entitlements_billing_ref_conflict_total[15m])) > 0
           for: 0m
           labels:
             severity: critical
             team: platform
           annotations:
-            summary: A paid Billing add-on was not granted (billing_ref conflict)
+            summary: A Billing add-on event was dropped (billing_ref conflict, {{ "{{ $labels.reason }}" }})
             description: >-
               commercial-entitlements dropped a {{ "{{ $labels.event_type }}" }} event because
-              its billing_ref is already held by another tenant's add-on pack. The customer
-              paid but nothing was granted, or Billing reused a reference. Find the
-              billing_ref in the "billing_ref already claimed" error log and reconcile
-              with Billing before refunding or granting manually (ENT-O5).
+              its billing_ref is already held by another tenant (reason
+              {{ "{{ $labels.reason }}" }}: purchase = another tenant's add-on pack, the customer
+              paid but nothing was granted; refund_ref_other_tenant / refund_ref_other_purchase = the refund_id is
+              already recorded for another tenant or another purchase, the refund was not applied). Find the billing_ref in the
+              error log and reconcile with Billing before refunding or granting manually (ENT-O5).
 
     - name: commercial_entitlements_cache
       rules:

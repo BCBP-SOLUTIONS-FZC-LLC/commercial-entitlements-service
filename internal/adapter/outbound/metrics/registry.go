@@ -116,10 +116,11 @@ var (
 	// signal (see CommercialEntitlementsRLSCrossTenantAccess alert).
 	RLSViolationsTotal *prometheus.CounterVec
 
-	// ── Tier 3: Billing add-on conflicts (B-8) ────────────────────────────
-	// Labels: event_type ∈ {"TenantQuotaAddOnChanged"}, reason ∈ {"purchase"}.
+	// ── Tier 3: Billing add-on conflicts (B-8, F-3) ───────────────────────
+	// Labels: event_type ∈ {"TenantQuotaAddOnChanged"},
+	// reason ∈ {"purchase", "refund_ref_other_tenant", "refund_ref_other_purchase"}.
 	// A Billing add-on event whose billing_ref is already held by another
-	// tenant's pack; nothing is granted (see CommercialEntitlementsBillingRefConflict).
+	// tenant; nothing is changed (see CommercialEntitlementsBillingRefConflict).
 	BillingRefConflictTotal *prometheus.CounterVec
 )
 
@@ -253,7 +254,8 @@ func register() {
 	BillingRefConflictTotal = must(gincommon.NewCounterVec(nil,
 		"commercial_entitlements_billing_ref_conflict_total",
 		"Billing add-on events dropped because their billing_ref is already "+
-			"held by another tenant's pack (B-8). Nothing is granted and the "+
+			"held by another tenant: reason=purchase (pack, B-8) or "+
+			"reason=refund_ref_other_tenant|refund_ref_other_purchase (refund ledger, F-3). Nothing changes and the "+
 			"event is acked. Any non-zero value is a money signal — drives the "+
 			"CommercialEntitlementsBillingRefConflict alert.",
 		"event_type", "reason"))

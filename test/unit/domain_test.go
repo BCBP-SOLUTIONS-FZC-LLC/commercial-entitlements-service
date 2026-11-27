@@ -388,7 +388,7 @@ func TestInboundBillingAddonRefundEvent_Fields(t *testing.T) {
 		Resource:    "llm_tokens",
 		Delta:       -50_000,
 		Reason:      "refund",
-		BillingRef:  "ref_456",
+		BillingRef:  uuid.New(),
 		PurchaseRef: uuid.New(),
 	}
 	assert.Equal(t, int64(-50_000), ev.Delta)

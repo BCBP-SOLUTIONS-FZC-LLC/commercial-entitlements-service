@@ -99,7 +99,7 @@ func TestBillingConsumer_TenantQuotaAddOnChanged_Refund_PackRevoked(t *testing.T
 		"resource":     "llm_tokens",
 		"delta":        int64(-100_000),
 		"reason":       "refund",
-		"billing_ref":  "inv_bc08",
+		"billing_ref":  uuid.NewString(),
 		"purchase_ref": uuid.New().String(),
 	})
 	require.NoError(t, c.Handle(context.Background(), env))

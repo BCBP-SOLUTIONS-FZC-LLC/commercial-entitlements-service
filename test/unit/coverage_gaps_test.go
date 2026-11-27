@@ -885,7 +885,8 @@ func TestApplyBillingRefund_RecomputeFailsPropagates(t *testing.T) {
 		},
 	}
 	effectSvc := service.NewEffectiveSetService(snaps, overrides, addons, trials, &fakeCatalogSvc{}, failIAM, nil, tx)
-	svc := service.NewAddonService(addons, newDrawdownRepo(), newShortfallRepo(), effectSvc, tx).WithLogger(port.NopLogger{})
+	svc := service.NewAddonService(addons, newDrawdownRepo(), newShortfallRepo(), effectSvc, tx).WithLogger(port.NopLogger{}).
+		WithRefundRepository(newRefundRepo())
 
 	tenantID := uuid.New()
 	purchaseRef := uuid.New()
@@ -899,7 +900,7 @@ func TestApplyBillingRefund_RecomputeFailsPropagates(t *testing.T) {
 	_ = addons.Insert(context.Background(), a)
 
 	err := svc.ApplyBillingRefund(context.Background(), port.ApplyBillingRefundRequest{
-		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -100, BillingRef: "ref",
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -100, BillingRef: uuid.New(),
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "recompute failed")

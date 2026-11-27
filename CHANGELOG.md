@@ -6,6 +6,12 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed — Billing hand-off F-3 / F-4 (BL-OQ-20 W-5, W-6)
+
+- **F-3 Billing refunds could be applied twice.** A refund was idempotent only on the envelope ID, and `processed_events` is pruned after 8 days, so a DLQ redrive, a visibility-timeout cycle past the prune, or a re-publish under a new envelope ID removed tokens again. New append-only ledger `quota_addon_refunds` (migration `000005`, RLS, SELECT/INSERT grant) keyed by Billing `refund_id`; `ApplyBillingRefund` claims it with `ON CONFLICT DO NOTHING` in the same transaction as the pack update (replay → no change; `refund_id` of another tenant, or reused for another purchase of the same tenant → `commercial_entitlements_billing_ref_conflict_total{reason="refund_ref_other_tenant"|"refund_ref_other_purchase"}`, ack). `ApplyBillingRefundRequest.BillingRef` and the refund event's `billing_ref` are now `uuid.UUID`. `AddonService.WithRefundRepository`; without it refunds fail closed.
+- **ENT-D16 — `total_tokens` is immutable; refunds live in the ledger and pack status.** A refund no longer touches `total_tokens` (the old in-memory decrement was never persisted anyway, so refunded packs looked partly used and could not be removed). A pack whose refunds cover its whole purchased quantity moves to the new status `refunded` (migration `000006`); one emptied by draws plus refunds becomes `consumed`. `RemoveAddon` uses consumed = total − remaining − refunded (refunds are not use) and rejects non-active packs with `invalid_action`. `ListAddons` and the operator listing return `refunded_tokens`, `consumed_tokens` and `removable` (Swagger regenerated). `RefundRepository.SumByAddon` reads the ledger.
+- **F-4** ENT-D15 recorded: `TenantEntitlementsChanged{cause: addon_change}` (including drawdowns) is allowed under S-8. LLD §7.1 `cause` enum aligned with AsyncAPI/code; `domain.EffectiveSetCauses` + a drift test over the domain, the schema and the LLD. The `CommercialEntitlementsBillingRefConflict` alert now groups by `reason`.
+
 ### Fixed — Billing ↔ Entitlements compatibility (Billing hand-off BL-OQ-28)
 
 - **B-1 Glue-framed events were dead-lettered.** `sqspipeline.NewConsumer` now adds `events.WithConsumerCodec(events.GlueDecodeCodec{})` for all four queues. Outside dev every producer publishes Glue-framed messages; platform-events v2.3.0 fails a `schema_id`-bearing message on a consumer with no codec, so a paid add-on was charged but never granted.

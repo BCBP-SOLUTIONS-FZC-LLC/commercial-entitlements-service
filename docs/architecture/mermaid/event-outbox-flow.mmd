@@ -9,7 +9,7 @@ flowchart TD
     end
 
     subgraph inbound["Inbound — 4 SQS consumers"]
-        BQ["billing-entitlements-q\nInboundBillingEvent\n(addon purchase/refund, plan change)"]
+        BQ["billing-entitlements-q\nInboundBillingAddonPurchaseEvent · InboundBillingPlanChangedEvent\nInboundBillingSubscriptionCancelledEvent · InboundBillingReactivatedEvent\n(addon purchase/refund, plan change, cancel, reactivate)"]
         TQ["tenant-entitlements-q\nInboundTenantEvent\n(state change: suspended/cancelled/active)"]
         CQ["catalog-entitlements-q\nInboundCatalogEvent\n(plan catalog changed)"]
         MQ["membership-entitlements-q\nInboundMembershipEvent\n(seat/role change → recompute trigger)"]

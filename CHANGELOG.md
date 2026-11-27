@@ -6,6 +6,17 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed — Billing ↔ Entitlements compatibility (Billing hand-off BL-OQ-28)
+
+- **B-1 Glue-framed events were dead-lettered.** `sqspipeline.NewConsumer` now adds `events.WithConsumerCodec(events.GlueDecodeCodec{})` for all four queues. Outside dev every producer publishes Glue-framed messages; platform-events v2.3.0 fails a `schema_id`-bearing message on a consumer with no codec, so a paid add-on was charged but never granted.
+- **B-2 Billing could not call ENT-I1.** `internalServiceRequired` admits Billing by its mTLS principal (last `X-Forwarded-Client-Cert` URI = `BILLING_CALLER_PRINCIPAL`), and `billingReadOnly` keys on that principal (still GET ENT-I1 only). Istio rule changed from the non-existent `*/effective-set` / `*/quota-ceilings` to `GET /api/v1/internal/tenants/*`; the Deployment gets `BILLING_CALLER_PRINCIPAL`. `release.yml` namespace default `default` → `commercial`.
+- **B-3 Billing subscription changes raced Core.** `TenantStateChanged` now recomputes for Billing causes (`TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantPaymentPastDue`) and whenever plan or status changed. Snapshots now record Core's tenant `record_version` in `source_record_version` (it was always 0), and the upsert refuses a snapshot computed from an older one — otherwise a recompute that read I-17 before Core committed, but wrote last, would overwrite the relay's result.
+- **B-4 Consumed schemas were never enforced.** `ValidatingCodec.ValidateConsumed(queue, eventType)` maps each inbound schema per queue; a violation is dead-lettered on first delivery.
+- **B-5** `InboundBillingEvent` replaced by `InboundBillingPlanChangedEvent`, `InboundBillingSubscriptionCancelledEvent`, `InboundBillingReactivatedEvent` (Billing's wire shapes); undecodable subscription events are dead-lettered instead of acked. Schemas `inbound_billing_tenant_*.json` added (AsyncAPI 1.6.0, B-6).
+- **B-8 Re-claimed `billing_ref`.** `AddonRepository.Insert` uses `ON CONFLICT … DO NOTHING`: the old unique violation aborted the inbox transaction, so the "drop and ack" never committed and the event dead-lettered silently. New metric `commercial_entitlements_billing_ref_conflict_total{event_type,reason}` and critical alert `CommercialEntitlementsBillingRefConflict`.
+- **B-7** LLD rev 1.22 aligned with the code (ENT-I1 callers and wire shape, §7.2, §10.2, §13.1).
+- **E-4** decision recorded (LLD ENT-D14): purchased add-on balance stays on the trial snapshot after a conversion reversal; no code change.
+
 ### Added
 
 - **Enterprise Platform Observability Standard — metrics, logs, traces, DB, events all through platform libs only:**

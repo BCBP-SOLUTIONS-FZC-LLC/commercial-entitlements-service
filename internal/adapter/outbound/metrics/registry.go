@@ -115,6 +115,12 @@ var (
 	// a cross-tenant row access. Any non-zero value is a critical compliance
 	// signal (see CommercialEntitlementsRLSCrossTenantAccess alert).
 	RLSViolationsTotal *prometheus.CounterVec
+
+	// ── Tier 3: Billing add-on conflicts (B-8) ────────────────────────────
+	// Labels: event_type ∈ {"TenantQuotaAddOnChanged"}, reason ∈ {"purchase"}.
+	// A Billing add-on event whose billing_ref is already held by another
+	// tenant's pack; nothing is granted (see CommercialEntitlementsBillingRefConflict).
+	BillingRefConflictTotal *prometheus.CounterVec
 )
 
 // must panics if err is non-nil, otherwise returns v. Used for metric
@@ -243,6 +249,14 @@ func register() {
 			"by consumer, event_type, and reason. reason=schema_violation means "+
 			"the payload failed the ValidatingCodec check and was forwarded to DLQ.",
 		"consumer", "event_type", "reason"))
+
+	BillingRefConflictTotal = must(gincommon.NewCounterVec(nil,
+		"commercial_entitlements_billing_ref_conflict_total",
+		"Billing add-on events dropped because their billing_ref is already "+
+			"held by another tenant's pack (B-8). Nothing is granted and the "+
+			"event is acked. Any non-zero value is a money signal — drives the "+
+			"CommercialEntitlementsBillingRefConflict alert.",
+		"event_type", "reason"))
 
 	RLSViolationsTotal = must(gincommon.NewCounterVec(nil,
 		"commercial_entitlements_rls_violations_total",

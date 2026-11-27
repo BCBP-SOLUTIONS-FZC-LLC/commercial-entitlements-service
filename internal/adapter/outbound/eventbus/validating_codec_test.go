@@ -3,6 +3,7 @@ package eventbus
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -123,4 +124,76 @@ func TestEncode_UnknownEventTypePassesThrough(t *testing.T) {
 	encoded, _, err := vc.Encode(context.Background(), "FutureEventType", payload)
 	require.NoError(t, err, "ErrNoSchema must be treated as pass-through")
 	assert.Equal(t, payload, encoded)
+}
+
+// ── ValidateConsumed (B-4, BL-OQ-28) ─────────────────────────────────────────
+
+func TestValidateConsumed_AddonEvent_EnforcesSchema(t *testing.T) {
+	vc, err := NewValidatingCodec(NoopCodec{})
+	require.NoError(t, err)
+	valid := []byte(`{"tenant_id":"9b2f0c1e-2f6a-4a51-9d55-0d4f1c3e8a11","resource":"llm_tokens","delta":500000,` +
+		`"reason":"purchase","billing_ref":"pur_1","purchased_at":"2026-11-27T10:00:00Z","pack_code":"tokens_500k"}`)
+	assert.NoError(t, vc.ValidateConsumed("billing-entitlements-q", "TenantQuotaAddOnChanged", valid))
+
+	for name, body := range map[string]string{
+		"zero delta":          `{"tenant_id":"9b2f0c1e-2f6a-4a51-9d55-0d4f1c3e8a11","resource":"llm_tokens","delta":0,"reason":"purchase","billing_ref":"x"}`,
+		"missing billing_ref": `{"tenant_id":"9b2f0c1e-2f6a-4a51-9d55-0d4f1c3e8a11","resource":"llm_tokens","delta":5,"reason":"purchase"}`,
+		"unknown reason":      `{"tenant_id":"9b2f0c1e-2f6a-4a51-9d55-0d4f1c3e8a11","resource":"llm_tokens","delta":5,"reason":"gift","billing_ref":"x"}`,
+	} {
+		err := vc.ValidateConsumed("billing-entitlements-q", "TenantQuotaAddOnChanged", []byte(body))
+		assert.Error(t, err, name)
+		assert.False(t, errors.Is(err, ErrNoSchema), name)
+	}
+}
+
+// TenantReactivated has two producers with different contracts; the schema
+// is chosen by queue.
+func TestValidateConsumed_TenantReactivated_ScopedByQueue(t *testing.T) {
+	vc, err := NewValidatingCodec(NoopCodec{})
+	require.NoError(t, err)
+	rpPayload := []byte(`{"tenant_id":"9b2f0c1e-2f6a-4a51-9d55-0d4f1c3e8a11","realm":"r","source":"operator"}`)
+	assert.NoError(t, vc.ValidateConsumed("tenant-entitlements-q", "TenantReactivated", rpPayload))
+	assert.Error(t, vc.ValidateConsumed("billing-entitlements-q", "TenantReactivated", rpPayload),
+		"Billing's TenantReactivated requires source=billing and reactivated_at")
+
+	billingPayload := []byte(`{"tenant_id":"9b2f0c1e-2f6a-4a51-9d55-0d4f1c3e8a11","source":"billing","reactivated_at":"2026-11-27T10:00:00Z"}`)
+	assert.NoError(t, vc.ValidateConsumed("billing-entitlements-q", "TenantReactivated", billingPayload))
+}
+
+func TestValidateConsumed_BillingSubscriptionEvents(t *testing.T) {
+	vc, err := NewValidatingCodec(NoopCodec{})
+	require.NoError(t, err)
+	const tid = `"tenant_id":"9b2f0c1e-2f6a-4a51-9d55-0d4f1c3e8a11"`
+	assert.NoError(t, vc.ValidateConsumed("billing-entitlements-q", "TenantPlanChanged",
+		[]byte(`{`+tid+`,"plan":"pro","previous_plan":"starter","effective_at":"2026-11-27T10:00:00Z","billing_ref":"sub_1"}`)))
+	assert.Error(t, vc.ValidateConsumed("billing-entitlements-q", "TenantPlanChanged",
+		[]byte(`{`+tid+`,"plan":"platinum","previous_plan":"starter","effective_at":"2026-11-27T10:00:00Z","billing_ref":"sub_1"}`)))
+	assert.NoError(t, vc.ValidateConsumed("billing-entitlements-q", "TenantSubscriptionCancelled",
+		[]byte(`{`+tid+`,"cancelled_at":"2026-11-27T10:00:00Z","reason":"customer"}`)))
+	assert.Error(t, vc.ValidateConsumed("billing-entitlements-q", "TenantSubscriptionCancelled", []byte(`{`+tid+`}`)))
+}
+
+func TestValidateConsumed_UnregisteredType_ErrNoSchema(t *testing.T) {
+	vc, err := NewValidatingCodec(NoopCodec{})
+	require.NoError(t, err)
+	assert.ErrorIs(t, vc.ValidateConsumed("billing-entitlements-q", "SomeFutureEvent", []byte(`{}`)), ErrNoSchema)
+	assert.ErrorIs(t, vc.ValidateConsumed("unknown-q", "TenantPlanChanged", []byte(`{}`)), ErrNoSchema)
+}
+
+// Every embedded inbound_*.json is used by at least one queue, so a schema
+// cannot be added and silently never applied again (the original B-4 bug).
+func TestConsumedSchemaFiles_EveryInboundSchemaIsMapped(t *testing.T) {
+	used := map[string]bool{}
+	for _, types := range consumedSchemaFiles {
+		for _, f := range types {
+			used[f] = true
+		}
+	}
+	entries, err := schemasRaw.ReadDir("schemas")
+	require.NoError(t, err)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "inbound_") {
+			assert.True(t, used[e.Name()], "%s is embedded but no queue validates against it", e.Name())
+		}
+	}
 }

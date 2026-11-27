@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -16,6 +17,7 @@ const (
 	RoleOperator       = "platform_operator"
 	headerServiceToken = "x-service-token"
 	headerServiceName  = "x-service-name"
+	headerXFCC         = "X-Forwarded-Client-Cert"
 	contextKeyTenantID = "tenant_id"
 )
 
@@ -33,17 +35,54 @@ func operatorRequired() gin.HandlerFunc {
 }
 
 // internalServiceRequired gates service-to-service internal endpoints.
-// In production an x-service-token header carries a shared secret validated
-// at the ingress/sidecar layer. Here we just enforce the header is present
-// so the middleware slot is real and can be hardened without changing handlers.
-func internalServiceRequired() gin.HandlerFunc {
+//
+// A caller is admitted when either:
+//   - it sends x-service-token (a shared secret validated at the ingress/
+//     sidecar layer; here only presence is enforced so the slot is real and
+//     can be hardened without changing handlers); or
+//   - its mTLS principal is billingPrincipal (B-2, F-2, BL-OQ-28). Billing
+//     calls ENT-I1 with its mesh identity and the CD-19 x-user-id /
+//     x-tenant-id / x-tenant-roles headers, never x-service-token. The
+//     principal is the last X-Forwarded-Client-Cert element: on an mTLS
+//     connection the Istio sidecar appends the verified peer certificate's
+//     URI there (APPEND_FORWARD), and Envoy drops the header on a non-mTLS
+//     connection, so with PeerAuthentication STRICT a caller cannot forge it.
+//     billingReadOnly then confines that caller to GET ENT-I1.
+//
+// Without a mesh (local dev) the header is caller-controlled, exactly as
+// x-service-token presence is; the Istio AuthorizationPolicy is the
+// authoritative layer in staging and prod. An empty billingPrincipal
+// disables principal admission.
+func internalServiceRequired(billingPrincipal string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if c.GetHeader(headerServiceToken) == "" {
-			gincommon.AbortWithProblem(c, problem.NewUnauthorizedError("This endpoint is only accessible from internal services."))
+		if c.GetHeader(headerServiceToken) != "" {
+			c.Next()
 			return
 		}
-		c.Next()
+		if billingPrincipal != "" && principalFromXFCC(c.GetHeader(headerXFCC)) == billingPrincipal {
+			c.Next()
+			return
+		}
+		gincommon.AbortWithProblem(c, problem.NewUnauthorizedError("This endpoint is only accessible from internal services."))
 	}
+}
+
+// principalFromXFCC returns the mTLS principal ("cluster.local/ns/<ns>/sa/<sa>")
+// from an X-Forwarded-Client-Cert header: the URI=spiffe://… pair of the last
+// element, which is the nearest hop (the sidecar in front of this pod).
+// Returns "" when the header or the URI pair is absent.
+func principalFromXFCC(h string) string {
+	if h == "" {
+		return ""
+	}
+	elems := strings.Split(h, ",")
+	for _, pair := range strings.Split(elems[len(elems)-1], ";") {
+		k, v, ok := strings.Cut(strings.TrimSpace(pair), "=")
+		if ok && strings.EqualFold(k, "URI") {
+			return strings.TrimPrefix(strings.Trim(v, `"`), "spiffe://")
+		}
+	}
+	return ""
 }
 
 // tenantIDGate validates that :id in the path is a valid UUID and stores it
@@ -75,16 +114,22 @@ func hasRole(roles []string, role string) bool { //nolint:unparam
 }
 
 // billingReadOnly is layer 3 of W-2 (W-2 app allow-list, BL-OQ-3).
-// It restricts calls that identify as "commercial-billing" (via x-service-name)
-// to exactly one route: GET /api/v1/internal/tenants/:id/entitlements (ENT-I1).
-// All other routes return 403, providing defense-in-depth behind the Istio
-// AuthorizationPolicy and NetworkPolicy layers.
-func billingReadOnly() gin.HandlerFunc {
+// It restricts Billing to exactly one route: GET
+// /api/v1/internal/tenants/:id/entitlements (ENT-I1). All other routes return
+// 403, providing defense-in-depth behind the Istio AuthorizationPolicy and
+// NetworkPolicy layers.
+//
+// A request is Billing's when its mTLS principal (X-Forwarded-Client-Cert) is
+// billingPrincipal — the identity Billing actually presents (B-2, F-2) — or
+// when it sends x-service-name: commercial-billing.
+func billingReadOnly(billingPrincipal string) gin.HandlerFunc {
 	const billingCaller = "commercial-billing"
 	const allowedRoute = "/api/v1/internal/tenants/:id/entitlements"
 
 	return func(c *gin.Context) {
-		if c.GetHeader(headerServiceName) != billingCaller {
+		isBilling := c.GetHeader(headerServiceName) == billingCaller ||
+			(billingPrincipal != "" && principalFromXFCC(c.GetHeader(headerXFCC)) == billingPrincipal)
+		if !isBilling {
 			c.Next()
 			return
 		}

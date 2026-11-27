@@ -36,7 +36,7 @@ func TestMembershipConsumer_UnknownEventType_AckUnknown(t *testing.T) {
 	assert.Empty(t, eff.recomputedWith)
 }
 
-// MC-04: TenantStateChanged with non-trial cause → acked silently, no recompute.
+// MC-04: TenantStateChanged with an unrelated cause and no plan/status change → acked silently, no recompute.
 func TestMembershipConsumer_TenantStateChanged_NonTrialCause_SilentAck(t *testing.T) {
 	c, eff := newMembershipConsumer()
 	env := membershipEnv("mc04", "TenantStateChanged", uuid.New(), map[string]any{"cause": "Suspended"})

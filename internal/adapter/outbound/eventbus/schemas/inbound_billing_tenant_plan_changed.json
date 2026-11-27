@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "InboundBillingTenantPlanChangedPayload",
+  "type": "object",
+  "required": [
+    "tenant_id",
+    "plan",
+    "previous_plan",
+    "effective_at",
+    "billing_ref"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "plan": {
+      "type": "string",
+      "enum": [
+        "starter",
+        "pro",
+        "enterprise"
+      ]
+    },
+    "previous_plan": {
+      "type": "string",
+      "enum": [
+        "starter",
+        "pro",
+        "enterprise"
+      ]
+    },
+    "direction": {
+      "type": "string",
+      "enum": [
+        "upgrade",
+        "downgrade"
+      ]
+    },
+    "effective_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "billing_ref": {
+      "type": "string"
+    },
+    "billing_subscription_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}

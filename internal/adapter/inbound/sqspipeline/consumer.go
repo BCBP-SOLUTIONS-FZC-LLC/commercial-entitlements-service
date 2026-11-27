@@ -73,6 +73,14 @@ type ValidatorFunc interface {
 var ErrNoSchema = errors.New("no schema")
 
 // NewConsumer creates a new platform-events SQS consumer.
+//
+// Every consumer decodes Glue-framed messages (B-1, BL-OQ-28): outside dev,
+// producers (Billing, Core, RP, Catalog) publish with a Glue Schema Registry
+// codec — an 18-byte header plus a dataschema/schema_id — and platform-events
+// fails any such message on a consumer with no codec, so it would retry and
+// dead-letter. GlueDecodeCodec only strips the header; plain-JSON envelopes
+// never reach it, and schema validation stays with this service's own
+// consumed schemas (Handler's validator).
 func NewConsumer(
 	env eventcfg.SQSConfigEnv,
 	sqsClient events.SQSClientLike,
@@ -80,7 +88,7 @@ func NewConsumer(
 	dlq events.DLQPublisher,
 	log port.Logger,
 ) (events.Consumer, error) {
-	opts := eventcfg.SQSConsumerOptions(env)
+	opts := append(eventcfg.SQSConsumerOptions(env), events.WithConsumerCodec(events.GlueDecodeCodec{}))
 	if dlq != nil {
 		opts = append(opts, events.WithDLQForwarding(dlq))
 	}

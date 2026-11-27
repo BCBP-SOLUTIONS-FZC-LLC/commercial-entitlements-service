@@ -96,7 +96,7 @@ caller → AddonService.RecordDrawdown(ctx, {tenantID, limitKey, tokensConsumed,
 SQS billing-entitlements-q → BillingEventConsumer.Handle
   → processOnce(inbox, "billing-entitlements-q", eventID, fn)
       fn:
-        1. parse TenantPlanChanged{tenantID, planCode, state}
+        1. decode TenantPlanChanged / TenantSubscriptionCancelled / TenantReactivated into its own struct (B-5); only tenant_id is used — undecodable or missing tenant_id → error → retry → DLQ
         2. EffectiveSetService.Recompute(ctx, tenantID, BillingEvent)
            [this re-fetches subscription from IAM to get new plan]
       COMMIT processed_events + snapshot + TenantEntitlementsChanged event
@@ -120,8 +120,15 @@ SQS tenant-entitlements-q → TenantEventConsumer.Handle
 ```
 SQS membership-entitlements-q → MembershipConsumer.Handle
   TenantMembershipsPurged → Recompute(TenantLifecycle)
-  TenantStateChanged{cause:TrialReactivated} → Recompute(TenantLifecycle)
-    (published by O&M via transactional outbox after DB commit — I-17 read is always safe)
+  TenantStateChanged → (published by O&M via transactional outbox after DB commit — I-17 read is always safe)
+    cause TrialReactivated                                  → Recompute(TenantLifecycle)
+    cause TenantPlanChanged|TenantSubscriptionCancelled|
+          TenantReactivated|TenantPaymentPastDue (Billing)  → Recompute(BillingEvent)   [B-3]
+    plan or status changed (any other cause)                → Recompute(TenantLifecycle)
+    otherwise                                               → ack
+  Why B-3: Billing publishes its subscription events to both Core (billing-orgm-q)
+  and billing-entitlements-q, unordered. If Entitlements reads I-17 before Core
+  applies the change it keeps the old plan; Core's relay is the settling recompute.
   unknown → ackUnknown (metrics, no DLQ)
 Note: TenantConverted and TenantOffboarded come from Realm Provisioner on
   iam-tenant-events → tenant-entitlements-q (TenantEventConsumer), not this queue.

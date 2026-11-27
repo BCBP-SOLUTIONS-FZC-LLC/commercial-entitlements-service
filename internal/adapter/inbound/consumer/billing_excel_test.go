@@ -19,7 +19,7 @@ import (
 // BC-01: TenantPlanChanged triggers recompute + TenantEntitlementsChanged emitted.
 func TestBillingConsumer_TenantPlanChanged_RecomputesAndEmits(t *testing.T) {
 	c, eff, _ := newBillingConsumer()
-	payload := domain.InboundBillingEvent{TenantID: uuid.New(), SubscriptionState: "active", PlanCode: "pro"}
+	payload := domain.InboundBillingPlanChangedEvent{TenantID: uuid.New(), Plan: "pro", PreviousPlan: "starter", BillingRef: "sub_1"}
 	env := makeBillingEnv("bc01", "TenantPlanChanged", payload)
 	require.NoError(t, c.Handle(context.Background(), env))
 	assert.Len(t, eff.recomputedWith, 1)
@@ -30,7 +30,7 @@ func TestBillingConsumer_TenantPlanChanged_RecomputesAndEmits(t *testing.T) {
 func TestBillingConsumer_TenantPlanChanged_Idempotent(t *testing.T) {
 	eff := &fakeEffectiveSvc{}
 	c := NewBillingEventConsumer(&fakeInbox{duplicate: true}, eff, nil, &fakeAddonSvc{}, nopConsumerLogger{})
-	payload := domain.InboundBillingEvent{TenantID: uuid.New()}
+	payload := domain.InboundBillingPlanChangedEvent{TenantID: uuid.New(), Plan: "pro", PreviousPlan: "starter", BillingRef: "sub_1"}
 	env := makeBillingEnv("bc02", "TenantPlanChanged", payload)
 	require.NoError(t, c.Handle(context.Background(), env))
 	assert.Empty(t, eff.recomputedWith, "duplicate must be a no-op")
@@ -39,7 +39,7 @@ func TestBillingConsumer_TenantPlanChanged_Idempotent(t *testing.T) {
 // BC-03: TenantSubscriptionCancelled triggers recompute; state maps to read_only.
 func TestBillingConsumer_TenantSubscriptionCancelled_StateReadOnly(t *testing.T) {
 	c, eff, _ := newBillingConsumer()
-	payload := domain.InboundBillingEvent{TenantID: uuid.New(), SubscriptionState: "read_only"}
+	payload := domain.InboundBillingSubscriptionCancelledEvent{TenantID: uuid.New(), Reason: "customer"}
 	env := makeBillingEnv("bc03", "TenantSubscriptionCancelled", payload)
 	require.NoError(t, c.Handle(context.Background(), env))
 	assert.Len(t, eff.recomputedWith, 1)
@@ -49,7 +49,7 @@ func TestBillingConsumer_TenantSubscriptionCancelled_StateReadOnly(t *testing.T)
 func TestBillingConsumer_TenantSubscriptionCancelled_Idempotent(t *testing.T) {
 	eff := &fakeEffectiveSvc{}
 	c := NewBillingEventConsumer(&fakeInbox{duplicate: true}, eff, nil, &fakeAddonSvc{}, nopConsumerLogger{})
-	payload := domain.InboundBillingEvent{TenantID: uuid.New()}
+	payload := domain.InboundBillingSubscriptionCancelledEvent{TenantID: uuid.New(), Reason: "customer"}
 	env := makeBillingEnv("bc04", "TenantSubscriptionCancelled", payload)
 	require.NoError(t, c.Handle(context.Background(), env))
 	assert.Empty(t, eff.recomputedWith, "duplicate must be a no-op")
@@ -58,7 +58,7 @@ func TestBillingConsumer_TenantSubscriptionCancelled_Idempotent(t *testing.T) {
 // BC-05: TenantReactivated triggers recompute; state becomes active.
 func TestBillingConsumer_TenantReactivated_StateActive(t *testing.T) {
 	c, eff, _ := newBillingConsumer()
-	payload := domain.InboundBillingEvent{TenantID: uuid.New(), SubscriptionState: "active"}
+	payload := domain.InboundBillingReactivatedEvent{TenantID: uuid.New(), Source: "billing"}
 	env := makeBillingEnv("bc05", "TenantReactivated", payload)
 	require.NoError(t, c.Handle(context.Background(), env))
 	assert.Len(t, eff.recomputedWith, 1)
@@ -141,26 +141,15 @@ func TestBillingConsumer_UnknownEventType_AckUnknown(t *testing.T) {
 	assert.Empty(t, eff.recomputedWith)
 }
 
-// BC-12: Subscription event with malformed payload → acked silently (not DLQ'd).
-func TestBillingConsumer_SubscriptionEvent_MalformedPayload_SilentAck(t *testing.T) {
+// BC-12: Subscription event with malformed payload → error, so it is dead-lettered (B-5).
+func TestBillingConsumer_SubscriptionEvent_MalformedPayload_DeadLettered(t *testing.T) {
 	c, eff, _ := newBillingConsumer()
 	env := events.Envelope[json.RawMessage]{
 		ID: "bc12", Type: "TenantPlanChanged",
 		Payload: json.RawMessage(`not-json`),
 	}
-	require.NoError(t, c.Handle(context.Background(), env))
-	assert.Empty(t, eff.recomputedWith, "malformed subscription event must be acked without recompute")
-}
-
-// BC-13: TenantPlanChanged with trial profile → cause=CauseTrialChange.
-func TestBillingConsumer_TenantPlanChanged_WithTrialProfile_CauseTrialChange(t *testing.T) {
-	c, eff, _ := newBillingConsumer()
-	tp := "reduced_plan"
-	payload := domain.InboundBillingEvent{TenantID: uuid.New(), SubscriptionState: "trial", PlanCode: "starter", TrialProfile: &tp}
-	env := makeBillingEnv("bc13", "TenantPlanChanged", payload)
-	require.NoError(t, c.Handle(context.Background(), env))
-	require.Len(t, eff.recomputedWith, 1)
-	assert.Equal(t, domain.CauseTrialChange, eff.recomputedWith[0])
+	require.Error(t, c.Handle(context.Background(), env))
+	assert.Empty(t, eff.recomputedWith, "malformed subscription event must not recompute")
 }
 
 // BC-14: TenantQuotaAddOnChanged with unknown reason → acked without service call.

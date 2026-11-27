@@ -59,7 +59,12 @@ func (r *SnapshotRepository) Upsert(ctx context.Context, snap *domain.Entitlemen
 			      trial_profile         = EXCLUDED.trial_profile,
 			      cause                 = EXCLUDED.cause,
 			      computed_at           = EXCLUDED.computed_at
-			WHERE entitlement_snapshots.version < EXCLUDED.version`,
+			WHERE entitlement_snapshots.version < EXCLUDED.version
+			  -- Never replace a snapshot computed from a newer Core tenant row
+			  -- (I-17 record_version) with one computed from an older read: two
+			  -- concurrent recomputes are ordered by version at write time, not
+			  -- by when they read I-17 (B-3 lost update).
+			  AND entitlement_snapshots.source_record_version <= EXCLUDED.source_record_version`,
 			snap.TenantID,
 			snap.Version,
 			snap.SourceRecordVersion,

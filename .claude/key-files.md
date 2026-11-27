@@ -38,7 +38,7 @@ Critical implementation files for `commercial-entitlements`. See also [`architec
 
 - **`internal/adapter/inbound/http/router.go`** — single source of truth for the full route table. Register new routes here and in the corresponding handler file. All routes under `/internal/v1/`.
 
-- **`internal/adapter/inbound/http/middleware.go`** — `RequireActiveTenant`, `RequireOperatorRole`, `HandleError` (maps `domain.DomainError` sentinels → HTTP status + error code).
+- **`internal/adapter/inbound/http/middleware.go`** — `internalServiceRequired(billingPrincipal)` (admits `x-service-token` callers, or Billing by last-XFCC mTLS principal), `billingReadOnly(billingPrincipal)` (confines Billing to GET ENT-I1, 403 elsewhere), `principalFromXFCC`, `operatorRequired`, `tenantIDGate`.
 
 - **`internal/adapter/outbound/postgres/migrations/000001_initial_schema.up.sql`** — full initial schema: all tables, ENUMs, RLS policies, triggers, grants in one consolidated migration. The authoritative source for the data model.
 

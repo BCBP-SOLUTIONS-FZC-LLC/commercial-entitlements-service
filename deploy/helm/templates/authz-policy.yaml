@@ -4,7 +4,7 @@
 {{- end }}
 # Istio AuthorizationPolicy for callers of commercial-entitlements.
 #
-# commercial-entitlements is called BY: Billing (quota/entitlement reads).
+# commercial-entitlements is called BY: Billing (ENT-I1 entitlement read only).
 # commercial-entitlements calls OUT TO: IAM Catalog (via egress) — that is NOT
 # an ingress rule here and must NOT appear in this policy.
 #
@@ -20,10 +20,18 @@
 #   - commercial-billing ServiceAccount exists in billing namespace with
 #     Istio sidecar injection enabled
 #
-# Route suffixes (must stay in sync with commercialSystemAllowedRoutes
-# in internal/adapter/inbound/http/middleware.go):
-#   Billing → GET */effective-set
-#           → GET */quota-ceilings
+# Billing (B-2, F-2): the commercial-billing principal may only call
+#   GET /api/v1/internal/tenants/{id}/entitlements   (ENT-I1)
+# Istio `paths` match exact, prefix ("/x*") or suffix ("*/x") only — a
+# mid-path "*" is matched literally — so this layer admits GET on the
+# internal tenant prefix, and the app's billingReadOnly
+# (internal/adapter/inbound/http/middleware.go) narrows it to ENT-I1: GET
+# ENT-I2 (/plans/current) answers 403 there, and every non-GET internal
+# route and every non-internal route is denied here. A suffix rule
+# ("*/entitlements") is NOT used: it would also admit ENT-T1, which
+# billingReadOnly does not guard.
+# Do NOT add the billing namespace to existingCallerNamespaces: that rule
+# admits every route and would defeat W-10.
 apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
 metadata:
@@ -47,7 +55,7 @@ spec:
             namespaces:
               {{- toYaml .Values.callers.istio.existingCallerNamespaces | nindent 14 }}
     {{- if .Values.billingCaller.enabled }}
-    # Billing service (commercial-billing SA) — entitlement/quota read routes only.
+    # Billing service (commercial-billing SA) — ENT-I1 read only.
     - from:
         - source:
             principals:
@@ -56,7 +64,6 @@ spec:
         - operation:
             methods: ["GET"]
             paths:
-              - "*/effective-set"
-              - "*/quota-ceilings"
+              - "/api/v1/internal/tenants/*"
     {{- end }}
 {{- end }}

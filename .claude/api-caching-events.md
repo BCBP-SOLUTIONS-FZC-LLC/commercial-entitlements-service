@@ -134,17 +134,18 @@ Schema governance: `api/asyncapi.yaml` is the design-time source of truth. Schem
 
 | Queue env var | Queue name | Consumer struct | Event types handled |
 |---|---|---|---|
-| `SQS_BILLING_ENTITLEMENTS_QUEUE_URL` | `billing-entitlements-q` | `BillingEventConsumer` | `TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated` → Recompute; `TenantQuotaAddOnChanged{reason:purchase}` → ApplyBillingPurchase (E-1); `TenantQuotaAddOnChanged{reason:refund}` → ApplyBillingRefund (C-5 / BL-OQ-23) |
+| `SQS_BILLING_ENTITLEMENTS_QUEUE_URL` | `billing-entitlements-q` | `BillingEventConsumer` | `TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated` → decoded into per-type structs (B-5; undecodable → DLQ), Recompute(billing_event); `TenantQuotaAddOnChanged{reason:purchase}` → ApplyBillingPurchase (E-1; `billing_ref` held by another tenant → `billing_ref_conflict_total`, ack, B-8); `TenantQuotaAddOnChanged{reason:refund}` → ApplyBillingRefund (C-5 / BL-OQ-23) |
 | `SQS_TENANT_ENTITLEMENTS_QUEUE_URL` | `tenant-entitlements-q` | `TenantEventConsumer` | `TenantIdentityProvisioned`, `TenantSubscriptionUpdated`, `TenantSuspended`, `TenantReactivated` (source=operator), `TrialExpired` → Recompute; `TenantConverted`, `TenantOffboarded` → handleOffboard (Recompute + optional PurgeTrial) |
 | `SQS_CATALOG_ENTITLEMENTS_QUEUE_URL` | `catalog-entitlements-q` | `CatalogConsumer` | `PlanCatalogChanged` → InvalidatePlan cache + Temporal fan-out |
-| `SQS_MEMBERSHIP_ENTITLEMENTS_QUEUE_URL` | `membership-entitlements-q` | `MembershipConsumer` | `TenantMembershipsPurged` → Recompute; `TenantStateChanged{cause:TrialReactivated}` → Recompute (E-3 read-race fix; published after O&M commit via transactional outbox, ensuring I-17 reflects post-revert state) |
+| `SQS_MEMBERSHIP_ENTITLEMENTS_QUEUE_URL` | `membership-entitlements-q` | `MembershipConsumer` | `TenantMembershipsPurged` → Recompute; `TenantStateChanged` → Recompute when cause is `TrialReactivated` (E-3), a Billing subscription cause (`TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantPaymentPastDue` — B-3, settles the Billing/Core race), or plan/status changed (published after O&M commit via transactional outbox, so I-17 reflects the new state) |
 
 Each queue has a `-dlq` with `maxReceiveCount = 5` RedrivePolicy. `platform-events` forwards at `SQS_MAX_RECEIVE_COUNT` 4 (one below the RedrivePolicy). Idempotency via `processed_events` / `inbox.Store.Process`.
 
 **All consumers:**
 - Dedup: `processOnce` / `ackUnknown` from `consumer/dedup.go`; `InboxRepository.ProcessOnce` claims and applies in one tx.
 - DLQ: via `events.WithDLQForwarding` in `sqspipeline.NewConsumer`.
-- Schema validation: `sqspipeline.Handler` validates inbound payloads against `ValidatingCodec`; rejects with `consumed_event_rejected_total{reason="schema_violation"}` and forwards to DLQ.
+- Glue framing: `sqspipeline.NewConsumer` adds `events.WithConsumerCodec(events.GlueDecodeCodec{})` — strips the 18-byte Glue header from envelopes carrying `dataschema` (B-1). Without it every Glue-framed message is retried and dead-lettered.
+- Schema validation: `sqspipeline.Handler` validates inbound payloads with `ValidatingCodec.ValidateConsumed(queue, eventType)` against the queue's `consumedSchemaFiles` entry (`eventbus/validating_codec.go`; per queue because `TenantReactivated` has two producers); rejects with `consumed_event_rejected_total{reason="schema_violation"}` and forwards to DLQ on first delivery (B-4). Unregistered types pass (forward-compat).
 - Unknown event types: acked via `ackUnknown` (forward-compat); counted in `unknown_event_acknowledged_total`.
 
 ## Event schema registration

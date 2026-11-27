@@ -574,14 +574,28 @@ func (s *AddonService) ApplyBillingPurchase(ctx context.Context, req port.ApplyB
 				map[string]interface{}{"billing_ref": req.BillingRef, "addon_id": existing.ID})
 			return nil
 		}
-		return s.addons.Insert(txCtx, a)
+		err = s.addons.Insert(txCtx, a)
+		if !errors.Is(err, domain.ErrBillingRefAlreadyClaimed) {
+			return err
+		}
+		// Lost a race with a concurrent grant of the same billing_ref for
+		// this tenant: that is a replay, not a conflict.
+		again, gerr := s.addons.GetByBillingRef(txCtx, req.TenantID, req.BillingRef)
+		switch {
+		case gerr == nil && again != nil:
+			return nil
+		case gerr != nil && !errors.Is(gerr, domain.ErrAddonNotFound):
+			// A real read error is not a conflict: retry, don't raise the
+			// billing_ref conflict alert.
+			return gerr
+		}
+		return err
 	})
 	if txErr != nil {
-		if errors.Is(txErr, domain.ErrBillingRefAlreadyClaimed) {
-			s.logger().Error("billing purchase: billing_ref claimed by another tenant — dropping event",
-				map[string]interface{}{"billing_ref": req.BillingRef, "tenant_id": req.TenantID})
-			return nil
-		}
+		// ErrBillingRefAlreadyClaimed is returned to the caller (B-8): the
+		// billing_ref is held by another tenant's pack, a duplicate or
+		// conflicting paid grant. The Billing consumer counts and alerts on
+		// it and acks the event; nothing is granted.
 		return txErr
 	}
 

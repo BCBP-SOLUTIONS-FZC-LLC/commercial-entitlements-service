@@ -219,7 +219,7 @@ Payload: `tenant_id`, `version`, `previous_version`, `cause`, `changed_keys`, `c
 | `SQS_BILLING_ENTITLEMENTS_QUEUE_URL` | `billing-entitlements-q` | Billing Service | `TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated` → Recompute; `TenantQuotaAddOnChanged{reason:purchase}` → ApplyBillingPurchase (E-1); `TenantQuotaAddOnChanged{reason:refund}` → ApplyBillingRefund (C-5) |
 | `SQS_TENANT_ENTITLEMENTS_QUEUE_URL` | `tenant-entitlements-q` | Realm Provisioner (via `iam.tenant.events`) | `TenantIdentityProvisioned`, `TenantSubscriptionUpdated` → Recompute; `TenantMembershipsPurged`, `TenantConverted`, `TenantOffboarded` → handleOffboard (Recompute + optional PurgeTrial) |
 | `SQS_CATALOG_ENTITLEMENTS_QUEUE_URL` | `catalog-entitlements-q` | Catalog / Admin Config Service | `PlanCatalogChanged` → InvalidatePlan cache + Temporal fan-out |
-| `SQS_MEMBERSHIP_ENTITLEMENTS_QUEUE_URL` | `membership-entitlements-q` | IAM Org Membership (via `iam.membership.events`) | `TenantMembershipsPurged` → Recompute; `TenantStateChanged{cause:TrialReactivated}` → Recompute (E-3 read-race fix) |
+| `SQS_MEMBERSHIP_ENTITLEMENTS_QUEUE_URL` | `membership-entitlements-q` | IAM Org Membership (via `iam.membership.events`) | `TenantMembershipsPurged` → Recompute; `TenantStateChanged` → Recompute when cause is `TrialReactivated` (E-3), a Billing subscription cause (`TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantPaymentPastDue`; B-3), or plan/status changed; otherwise ack |
 
 Each queue has a `-dlq` with `maxReceiveCount = 5` RedrivePolicy. `platform-events` forwards at `SQS_MAX_RECEIVE_COUNT` = 4 (one below the RedrivePolicy). Idempotency via `processed_events` / `inbox.Store.Process`.
 
@@ -449,6 +449,7 @@ Full invariant list: `.claude/CLAUDE.md` · LLD: `docs/lld/commercial-lld-entitl
 | `TEMPORAL_HOST_PORT` | — | Temporal; optional — if unset, catalog fan-out is skipped (degrades gracefully) |
 | `SNS_TOPIC_ENTITLEMENTS_ARN` | — | **Required outside dev.** SNS topic for `tenant_entitlements_changed` |
 | `SQS_BILLING_ENTITLEMENTS_QUEUE_URL` | — | Billing lifecycle events queue |
+| `BILLING_CALLER_PRINCIPAL` | — (Helm: `cluster.local/ns/billing/sa/commercial-billing` when `billingCaller.enabled`) | Billing's mTLS principal; a request whose last `X-Forwarded-Client-Cert` URI matches is admitted to `/api/v1/internal` and confined to GET ENT-I1 (B-2). Unset disables principal admission |
 | `SQS_TENANT_ENTITLEMENTS_QUEUE_URL` | — | Tenant lifecycle events queue |
 | `SQS_CATALOG_ENTITLEMENTS_QUEUE_URL` | — | Plan catalog change events queue |
 | `SQS_MEMBERSHIP_ENTITLEMENTS_QUEUE_URL` | — | Membership events queue |
@@ -494,7 +495,7 @@ Read paths (`GET /entitlements`, quota ceiling reads) have **no** synchronous cr
 | **In-mesh services / BFF** | ENT-I1b `POST /internal/tenants/:id/entitlements/recompute` | Trigger a full 5-step recompute when the caller knows state has changed |
 | **In-mesh services** | ENT-I2 `GET /internal/tenants/:id/plans/current` | Read the tenant's current plan definition from cache |
 | **Operator tooling** | ENT-O1..O7 (overrides, trial profile, addons, shortfalls) | Lifecycle management of overrides, addon packs, trial profiles, shortfall resolution |
-| **Billing Service** | ENT-O5 `POST /operator/tenants/:id/entitlements/addons` | Grant a quota addon pack after a purchase event |
+| **Billing Service** (mTLS principal `cluster.local/ns/billing/sa/commercial-billing`) | ENT-I1 `GET /internal/tenants/:id/entitlements` only | Add-on eligibility and purchase checks (`addon_eligibility.llm_tokens`, `limits.llm_token_quota_monthly`). Add-on grants arrive as `TenantQuotaAddOnChanged` events, not HTTP |
 
 ### 3. Async event dependencies
 
@@ -505,7 +506,7 @@ Read paths (`GET /entitlements`, quota ceiling reads) have **no** synchronous cr
 | `billing-entitlements-q` | **Billing Service** | `TenantPlanChanged` → Recompute; `TenantSubscriptionCancelled` → Recompute; `TenantReactivated` → Recompute; `TenantQuotaAddOnChanged{reason:purchase}` → ApplyBillingPurchase (grant addon pack); `TenantQuotaAddOnChanged{reason:refund}` → ApplyBillingRefund (remove/adjust pack) |
 | `tenant-entitlements-q` | **Realm Provisioner** (on `iam.tenant.events`) | `TenantIdentityProvisioned` → Recompute (initial); `TenantSubscriptionUpdated` → Recompute; `TenantMembershipsPurged` → handleOffboard (Recompute + PurgeTrial); `TenantConverted` → handleOffboard; `TenantOffboarded` → handleOffboard |
 | `catalog-entitlements-q` | **Catalog / Admin Config Service** (on `iam.catalog.events`) | `PlanCatalogChanged` → InvalidatePlan (Postgres + Valkey) + Temporal fan-out to all tenants on that plan |
-| `membership-entitlements-q` | **IAM Org Membership** (on `iam.membership.events`) | `TenantMembershipsPurged` → Recompute (tenant offboard); `TenantStateChanged{cause:TrialReactivated}` → Recompute (E-3: re-applies trial limits after a plan revert; published after IAM commits so I-17 always reflects the new state) |
+| `membership-entitlements-q` | **IAM Org Membership** (on `iam.membership.events`) | `TenantMembershipsPurged` → Recompute (tenant offboard); `TenantStateChanged` → Recompute when cause is `TrialReactivated` (E-3), a Billing subscription cause (`TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantPaymentPastDue`; B-3), or plan/status changed; otherwise ack (published after IAM commits so I-17 always reflects the new state) |
 
 **Events this service produces** and their downstream consumers:
 

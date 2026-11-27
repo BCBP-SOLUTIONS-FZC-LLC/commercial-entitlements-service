@@ -435,7 +435,7 @@ func TestExpireAddons_RecomputeFailsNonFatal(t *testing.T) {
 
 // ── ApplyBillingPurchase: BillingRefAlreadyClaimed ─────────────────────────
 
-func TestApplyBillingPurchase_BillingRefAlreadyClaimed_Silenced(t *testing.T) {
+func TestApplyBillingPurchase_BillingRefAlreadyClaimed_ReturnedToCaller(t *testing.T) {
 	snaps := newSnapshotRepo()
 	overrides := newOverrideRepo()
 	addons := newAddonRepo()
@@ -444,15 +444,16 @@ func TestApplyBillingPurchase_BillingRefAlreadyClaimed_Silenced(t *testing.T) {
 	effectSvc := service.NewEffectiveSetService(snaps, overrides, addons, trials, &fakeCatalogSvc{}, &fakeIAMClient{}, nil, tx).WithLogger(port.NopLogger{})
 	svc := service.NewAddonService(addons, newDrawdownRepo(), newShortfallRepo(), effectSvc, tx).WithLogger(port.NopLogger{})
 
-	// Make GetByBillingRef return ErrBillingRefAlreadyClaimed to simulate conflict
-	addons.getBilErr = domain.ErrBillingRefAlreadyClaimed
+	// The billing_ref is held by another tenant's pack: Insert reports the
+	// conflict (ON CONFLICT DO NOTHING) and this tenant has no such pack.
+	addons.insertErr = domain.NewError(domain.ErrBillingRefAlreadyClaimed, "billing_ref already claimed")
 
 	err := svc.ApplyBillingPurchase(context.Background(), port.ApplyBillingPurchaseRequest{
 		TenantID: uuid.New(), Resource: "llm_tokens", Delta: 100_000,
 		BillingRef: "inv_conflict", PurchasedAt: time.Now().UTC(),
 	})
-	// Error is silenced (logged but not returned)
-	require.NoError(t, err)
+	// B-8: returned so the Billing consumer can count, alert and ack it.
+	require.ErrorIs(t, err, domain.ErrBillingRefAlreadyClaimed)
 }
 
 func TestApplyBillingPurchase_InsertError(t *testing.T) {

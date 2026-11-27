@@ -127,7 +127,7 @@ func (r *fakeSnapshotRepo) Upsert(_ context.Context, snap *domain.EntitlementSna
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	existing, ok := r.snaps[snap.TenantID]
-	if ok && existing.Version >= snap.Version {
+	if ok && (existing.Version >= snap.Version || existing.SourceRecordVersion > snap.SourceRecordVersion) {
 		return false, nil
 	}
 	cp := *snap

@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "InboundBillingTenantReactivatedPayload",
+  "type": "object",
+  "required": [
+    "tenant_id",
+    "source",
+    "reactivated_at"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "source": {
+      "type": "string",
+      "const": "billing"
+    },
+    "reactivated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "previous_status": {
+      "type": "string",
+      "enum": [
+        "past_due",
+        "cancelled"
+      ]
+    }
+  }
+}

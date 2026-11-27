@@ -139,6 +139,16 @@ func IncConsumedEventRejected(consumer, eventType, reason string) {
 	}
 }
 
+// IncBillingRefConflict increments the billing-ref-conflict counter (B-8):
+// a Billing add-on event whose billing_ref is already held by another
+// tenant's pack. eventType and reason are bounded (TenantQuotaAddOnChanged;
+// purchase).
+func IncBillingRefConflict(eventType, reason string) {
+	if BillingRefConflictTotal != nil {
+		BillingRefConflictTotal.WithLabelValues(eventType, reason).Inc()
+	}
+}
+
 // IncRLSViolation increments the RLS-violations counter.
 // violationType should be "cross_tenant_access" for the standard alert.
 func IncRLSViolation(violationType string) {

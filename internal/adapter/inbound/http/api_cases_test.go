@@ -172,7 +172,7 @@ func TestGetEntitlements_Internal_NoServiceToken_401(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
-	internalServiceRequired()(c)
+	internalServiceRequired("")(c)
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
@@ -182,7 +182,7 @@ func TestGetEntitlements_Internal_WrongServiceToken_401(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set(headerServiceToken, "wrong-but-present-token")
 	c.Request = req
-	internalServiceRequired()(c)
+	internalServiceRequired("")(c)
 	assert.NotEqual(t, http.StatusUnauthorized, w.Code, "internalServiceRequired only checks presence, any token passes")
 }
 
@@ -242,7 +242,7 @@ func TestGetEntitlements_StaleRecordVersion_ComputeSkipped(t *testing.T) {
 func TestBillingReadOnly_AllowedRoute_200(t *testing.T) {
 	r := gin.New()
 	allowedPath := "/api/v1/internal/tenants/:id/entitlements"
-	r.Use(billingReadOnly())
+	r.Use(billingReadOnly(""))
 	r.GET(allowedPath, func(c *gin.Context) { c.Status(http.StatusOK) })
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/internal/tenants/abc/entitlements", nil)
@@ -253,7 +253,7 @@ func TestBillingReadOnly_AllowedRoute_200(t *testing.T) {
 
 func TestBillingReadOnly_RecomputeDenied_403(t *testing.T) {
 	r := gin.New()
-	r.Use(billingReadOnly())
+	r.Use(billingReadOnly(""))
 	r.POST("/api/v1/internal/tenants/:id/entitlements/recompute", func(c *gin.Context) { c.Status(http.StatusOK) })
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/tenants/abc/entitlements/recompute", nil)
@@ -264,7 +264,7 @@ func TestBillingReadOnly_RecomputeDenied_403(t *testing.T) {
 
 func TestBillingReadOnly_NonBillingCaller_NotRestricted(t *testing.T) {
 	r := gin.New()
-	r.Use(billingReadOnly())
+	r.Use(billingReadOnly(""))
 	r.POST("/api/v1/internal/tenants/:id/entitlements/drawdown", func(c *gin.Context) { c.Status(http.StatusCreated) })
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/tenants/abc/entitlements/drawdown", nil)
@@ -369,7 +369,7 @@ func TestRecompute_NoServiceToken_401(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
-	internalServiceRequired()(c)
+	internalServiceRequired("")(c)
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
@@ -443,13 +443,13 @@ func TestGetCurrentPlan_NoServiceToken_401(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
-	internalServiceRequired()(c)
+	internalServiceRequired("")(c)
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
 func TestBillingReadOnly_PlansDenied_403(t *testing.T) {
 	r := gin.New()
-	r.Use(billingReadOnly())
+	r.Use(billingReadOnly(""))
 	r.GET("/api/v1/internal/tenants/:id/plans/current", func(c *gin.Context) { c.Status(http.StatusOK) })
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/internal/tenants/abc/plans/current", nil)
@@ -606,7 +606,7 @@ func TestDrawdown_NoServiceToken_401(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
-	internalServiceRequired()(c)
+	internalServiceRequired("")(c)
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
@@ -621,7 +621,7 @@ func TestDrawdown_SumConstraint_SatisfiedAlways(t *testing.T) {
 
 func TestBillingReadOnly_DrawdownDenied_403(t *testing.T) {
 	r := gin.New()
-	r.Use(billingReadOnly())
+	r.Use(billingReadOnly(""))
 	r.POST("/api/v1/internal/tenants/:id/entitlements/drawdown", func(c *gin.Context) { c.Status(http.StatusCreated) })
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/tenants/abc/entitlements/drawdown", nil)

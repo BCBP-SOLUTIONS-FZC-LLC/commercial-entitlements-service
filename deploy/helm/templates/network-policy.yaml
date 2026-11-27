@@ -53,7 +53,7 @@ spec:
           protocol: TCP
     {{- end }}
 
-    # Billing Service (billingCaller) — calls entitlement/quota routes.
+    # Billing Service (billingCaller) — ENT-I1 entitlement read only (B-2).
     # commercial-entitlements does NOT call IAM-org-membership inbound;
     # it calls IAM Catalog outbound (see egress below).
     {{- if .Values.billingCaller.enabled }}

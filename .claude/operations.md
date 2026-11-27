@@ -21,13 +21,13 @@
 
 | Action | Required | Notes |
 |--------|----------|-------|
-| Read effective set | Calling service (in-mesh mTLS) | No JWT; NetworkPolicy enforced |
+| Read effective set | Calling service (in-mesh mTLS) | No JWT; NetworkPolicy enforced; Billing admitted by mTLS principal (`BILLING_CALLER_PRINCIPAL`) |
 | Trigger recompute | Calling service (in-mesh mTLS) | |
 | Set/remove overrides | Operator tooling (in-mesh) | Recorded in override_history |
-| Grant/revoke addon | Billing service (in-mesh) | |
+| Grant/revoke addon | Operator tooling (in-mesh); Billing only via `TenantQuotaAddOnChanged` event | Billing HTTP is confined to GET ENT-I1 (B-2) |
 | Record drawdown | Quota enforcer (in-mesh) | Idempotent via request_id |
 | Resolve shortfall | Operator tooling (in-mesh) | |
-| Set trial assignment | IAM/billing (in-mesh) | |
+| Set trial assignment | Operator tooling (in-mesh) | |
 | Catalog refresh | Internal cron / calling service | |
 
 ## Observability
@@ -57,6 +57,7 @@ All metrics are Tier 3 service-specific (`commercial_entitlements_*`). Required 
 | `commercial_entitlements_duplicate_messages_total` | Counter | `consumer`, `event_type` | Duplicate events detected and skipped by inbox dedup layer (Tier-3 complement to Tier-1 `platform_duplicate_messages_total`) |
 | `commercial_entitlements_unknown_event_acknowledged_total` | Counter | `consumer`, `event_type` | Events with no registered handler acknowledged for forward compatibility |
 | `commercial_entitlements_consumed_event_rejected_total` | Counter | `consumer`, `event_type`, `reason` | Inbound SQS events rejected before reaching the domain handler; `reason=schema_violation` → ValidatingCodec check failed and message forwarded to DLQ |
+| `commercial_entitlements_billing_ref_conflict_total` | Counter | `event_type`, `reason` | Billing add-on events whose `billing_ref` is already held by another tenant's pack; nothing granted, event acked (B-8); drives `CommercialEntitlementsBillingRefConflict` (critical) |
 | `commercial_entitlements_rls_violations_total` | Counter | `violation_type` | PostgreSQL RLS policy violations (SQLSTATE 42501 + "row-level security" message); `violation_type=cross_tenant_access`; any non-zero value is a critical compliance signal |
 
 **Label cardinality:** no `tenant_id`/`user_id`/`request_id`/`event_id`/`session_id` label anywhere (prohibited by standard).
@@ -141,6 +142,7 @@ See `.env-example` for the full list. Key env vars:
 | `TEMPORAL_HOST_PORT` | — | Temporal; optional — skipped if unset |
 | `SNS_TOPIC_ENTITLEMENTS_ARN` | — | SNS topic for produced events |
 | `SQS_BILLING_ENTITLEMENTS_QUEUE_URL` | — | Billing events queue |
+| `BILLING_CALLER_PRINCIPAL` | — (Helm sets `cluster.local/ns/billing/sa/commercial-billing` when `billingCaller.enabled`) | Billing's mTLS principal; a request whose last `X-Forwarded-Client-Cert` URI matches is admitted to the internal group and confined to GET ENT-I1 (B-2). Unset disables principal admission |
 | `SQS_TENANT_ENTITLEMENTS_QUEUE_URL` | — | Tenant lifecycle queue |
 | `SQS_CATALOG_ENTITLEMENTS_QUEUE_URL` | — | Catalog changes queue |
 | `SQS_MEMBERSHIP_ENTITLEMENTS_QUEUE_URL` | — | Membership changes queue |

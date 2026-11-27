@@ -2,7 +2,7 @@ asyncapi: "3.0.0"
 
 info:
   title: Commercial Entitlements Service — Event Contracts
-  version: "1.5.0"
+  version: "1.6.0"
   description: |
     Publishes `tenant_entitlements_changed` whenever a tenant's effective
     entitlement set is recomputed.
@@ -10,14 +10,22 @@ info:
     `reason: "purchase"` creates a new quota addon pack (expiry = purchased_at + 12 months,
     idempotent on billing_ref); `reason: "refund"` reduces unused tokens on the referenced
     pack (C-5 / BL-OQ-23, E-1 / BL-OQ-4).
+    Also consumes Billing's `TenantPlanChanged`, `TenantSubscriptionCancelled` and
+    `TenantReactivated` from `billing-entitlements-q`; each triggers a Recompute
+    that re-reads plan and status from Core (I-17). Every message on
+    `billing-entitlements-q` may be Glue-framed (18-byte header + `dataschema`);
+    the consumer strips the header before validating against the schemas below.
     Consumes iam-realm-provisioner's tenant lifecycle events from `tenant-entitlements-q`:
     TenantIdentityProvisioned and TenantSubscriptionUpdated trigger Recompute; TenantSuspended,
     TenantReactivated (source=operator), and TrialExpired trigger Recompute and update
     entitlement state; TenantConverted, TenantOffboarded trigger handleOffboard.
-    Consumes O&M's `TenantStateChanged{cause:TrialReactivated}` from
-    `membership-entitlements-q` to trigger a recompute after a conversion revert.
-    Published by iam-org-membership via transactional outbox — receipt guarantees
-    I-17 reflects the post-revert state (E-3 read-race fix).
+    Consumes O&M's `TenantStateChanged` from `membership-entitlements-q` and
+    recomputes when cause is TrialReactivated (conversion revert), when cause is
+    one of Billing's subscription events (TenantPlanChanged,
+    TenantSubscriptionCancelled, TenantReactivated, TenantPaymentPastDue), or
+    when plan or status changed. Published by iam-org-membership via
+    transactional outbox — receipt guarantees I-17 reflects the new state
+    (E-3 read-race fix; B-3 Billing/Core ordering).
   contact:
     name: BCBP Solutions Platform Team
     email: platform@bcbpsolutions.com
@@ -94,13 +102,17 @@ operations:
     action: receive
     channel:
       $ref: "#/channels/membershipEntitlementsQueue"
-    summary: "Consume O&M TenantStateChanged to recompute after a conversion revert."
+    summary: "Consume O&M TenantStateChanged to recompute after Core applies a plan or status change."
     description: |
       iam-org-membership publishes TenantStateChanged via transactional outbox after
-      every tenant state transition. Only cause=TrialReactivated triggers a recompute;
-      all other causes are silently acknowledged (they arrive via dedicated events on
-      tenant-entitlements-q). Because the event is published after O&M's DB commit,
-      a subsequent I-17 call always reflects the post-revert state (E-3 read-race fix).
+      every tenant plan or status transition; cause is the source event type.
+      A recompute runs when cause is TrialReactivated, when cause is one of
+      Billing's subscription events (TenantPlanChanged, TenantSubscriptionCancelled,
+      TenantReactivated, TenantPaymentPastDue — Billing publishes these to Core and
+      to billing-entitlements-q unordered, so this relay is the recompute that
+      settles on Core's committed state, B-3), or when plan or status changed.
+      Anything else is acknowledged. Because the event is published after O&M's DB
+      commit, a subsequent I-17 call always reflects the new state (E-3).
     messages:
       - $ref: "#/components/messages/InboundTenantStateChanged"
 
@@ -119,6 +131,28 @@ operations:
       billing_ref (C-5 / BL-OQ-23).
     messages:
       - $ref: "#/components/messages/InboundTenantQuotaAddOnChanged"
+
+  consumeBillingSubscriptionEvents:
+    action: receive
+    channel:
+      $ref: "#/channels/billingEntitlementsQueue"
+    summary: "Consume Billing's subscription plan, cancellation and reactivation events."
+    description: |
+      Billing publishes TenantPlanChanged, TenantSubscriptionCancelled and
+      TenantReactivated on billing.events. Each triggers a Recompute
+      (cause billing_event) that re-reads plan and status from Core (I-17); only
+      tenant_id is read from the payload. Core applies the same events on its own
+      queue, unordered with this one, so Core's TenantStateChanged relay
+      (consumeTenantStateChanged) performs the settling recompute (B-3).
+      A payload that fails its schema is dead-lettered on first delivery; one that
+      does not decode is retried and dead-lettered (B-4, B-5).
+      The SNS subscription filter for billing-entitlements-q must admit all four
+      types: EventType IN [TenantQuotaAddOnChanged, TenantPlanChanged,
+      TenantSubscriptionCancelled, TenantReactivated] (B-6).
+    messages:
+      - $ref: "#/components/messages/InboundBillingTenantPlanChanged"
+      - $ref: "#/components/messages/InboundBillingTenantSubscriptionCancelled"
+      - $ref: "#/components/messages/InboundBillingTenantReactivated"
 
 components:
   messages:
@@ -159,6 +193,36 @@ components:
         status: active
       payload:
         $ref: "#/components/schemas/InboundTenantQuotaAddOnChangedPayload"
+
+    InboundBillingTenantPlanChanged:
+      name: TenantPlanChanged
+      title: Tenant Plan Changed (inbound from Billing)
+      summary: "Billing changed a tenant's subscription plan."
+      contentType: application/json
+      x-lifecycle:
+        status: active
+      payload:
+        $ref: "#/components/schemas/InboundBillingTenantPlanChangedPayload"
+
+    InboundBillingTenantSubscriptionCancelled:
+      name: TenantSubscriptionCancelled
+      title: Tenant Subscription Cancelled (inbound from Billing)
+      summary: "Billing cancelled a tenant's subscription."
+      contentType: application/json
+      x-lifecycle:
+        status: active
+      payload:
+        $ref: "#/components/schemas/InboundBillingTenantSubscriptionCancelledPayload"
+
+    InboundBillingTenantReactivated:
+      name: TenantReactivated
+      title: Tenant Reactivated (inbound from Billing)
+      summary: "Billing reactivated a past-due or cancelled subscription (source: billing)."
+      contentType: application/json
+      x-lifecycle:
+        status: active
+      payload:
+        $ref: "#/components/schemas/InboundBillingTenantReactivatedPayload"
 
   schemas:
     TenantEntitlementsChangedPayload:
@@ -293,3 +357,80 @@ components:
           type: string
           description: "What triggered the state change (e.g. TrialReactivated)."
       additionalProperties: true
+
+    InboundBillingTenantPlanChangedPayload:
+      type: object
+      required:
+        - tenant_id
+        - plan
+        - previous_plan
+        - effective_at
+        - billing_ref
+      additionalProperties: true
+      description: |
+        Mirrors Billing's tenant_plan_changed.json (B-5). Only tenant_id is read;
+        the new plan is re-read from Core (I-17).
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        plan:
+          type: string
+          enum: [starter, pro, enterprise]
+        previous_plan:
+          type: string
+          enum: [starter, pro, enterprise]
+        direction:
+          type: string
+          enum: [upgrade, downgrade]
+        effective_at:
+          type: string
+          format: date-time
+        billing_ref:
+          type: string
+        billing_subscription_id:
+          type: string
+          format: uuid
+
+    InboundBillingTenantSubscriptionCancelledPayload:
+      type: object
+      required:
+        - tenant_id
+        - cancelled_at
+        - reason
+      additionalProperties: true
+      description: Mirrors Billing's tenant_subscription_cancelled.json (B-5).
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        cancelled_at:
+          type: string
+          format: date-time
+        reason:
+          type: string
+          enum: [dunning_exhausted, customer, auto_renew_off, operator_reversal]
+
+    InboundBillingTenantReactivatedPayload:
+      type: object
+      required:
+        - tenant_id
+        - source
+        - reactivated_at
+      additionalProperties: true
+      description: |
+        Mirrors Billing's tenant_reactivated.json (B-5). Distinct from
+        iam-realm-provisioner's TenantReactivated on tenant-entitlements-q.
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        source:
+          type: string
+          const: billing
+        reactivated_at:
+          type: string
+          format: date-time
+        previous_status:
+          type: string
+          enum: [past_due, cancelled]

@@ -82,6 +82,7 @@ make ci             # tidy + fmt-check + vet + lint + arch-lint + check-metrics 
 |-------|---------|
 | `invariant-reviewer` | Before any PR — checks all ENT-INV-*, CONC, EVT, RLS, MIG, CACHE invariants against the diff |
 | `docs-consistency-reviewer` | Before any PR that changes behaviour, routes, events, env vars, CronJob names — catches stale docs |
+| `contract-checker` | When another team sends a hand-off or contract change, before replying, or before changing a route, event, schema or auth rule — compares our contracts with the sibling repos' published contracts and code |
 
 ## Skills
 

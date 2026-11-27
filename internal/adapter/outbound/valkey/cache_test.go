@@ -44,7 +44,12 @@ func redisAddr(t *testing.T) string {
 			ContainerRequest: testcontainers.ContainerRequest{
 				Image:        "redis:7-alpine",
 				ExposedPorts: []string{"6379/tcp"},
-				WaitingFor:   wait.ForLog("Ready to accept connections"),
+				// The log line can precede the host port mapping being usable
+				// (Docker Desktop forwards asynchronously); wait for both.
+				WaitingFor: wait.ForAll(
+					wait.ForLog("Ready to accept connections"),
+					wait.ForListeningPort("6379/tcp"),
+				),
 			},
 			Started: true,
 		})
@@ -81,9 +86,19 @@ func newTestCache(t *testing.T) *Cache {
 	c := New(addr)
 	t.Cleanup(func() { _ = c.Close() })
 
-	// Flush between tests for isolation.
+	// Flush between tests for isolation. Use a separate client with normal
+	// timeouts: the service client's 50 ms read / 100 ms dial budget is
+	// deliberate (CACHE-1: the cache is advisory and must fail fast), but a
+	// cold first connection under -race on Docker Desktop can exceed it,
+	// which made this setup step flaky.
 	ctx := context.Background()
-	require.NoError(t, c.rdb.FlushDB(ctx).Err())
+	admin := redis.NewClient(&redis.Options{Addr: addr, DialTimeout: 5 * time.Second,
+		ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second})
+	defer func() { _ = admin.Close() }()
+	require.NoError(t, admin.FlushDB(ctx).Err())
+	// Warm the service client's pool so a test's first command doesn't pay
+	// the cold-dial cost against its own tight timeouts.
+	require.Eventually(t, func() bool { return c.rdb.Ping(ctx).Err() == nil }, 5*time.Second, 20*time.Millisecond)
 	return c
 }
 
@@ -446,7 +461,9 @@ func TestNew_URLForm(t *testing.T) {
 	t.Cleanup(func() { _ = c.Close() })
 
 	ctx := context.Background()
-	assert.NoError(t, c.Health(ctx))
+	// The first dial is cold and the client's budget is 100 ms (CACHE-1);
+	// allow it to connect before asserting the URL form works.
+	assert.Eventually(t, func() bool { return c.Health(ctx) == nil }, 5*time.Second, 20*time.Millisecond)
 }
 
 // ── WithLogger ────────────────────────────────────────────────────────────────

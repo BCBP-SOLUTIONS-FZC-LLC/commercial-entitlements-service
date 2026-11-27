@@ -142,7 +142,7 @@ func TestBillingConsumer_AddonRefund_CallsApplyBillingRefund(t *testing.T) {
 		"resource":     "llm_tokens",
 		"delta":        int64(-50_000),
 		"reason":       "refund",
-		"billing_ref":  "ref_xyz",
+		"billing_ref":  uuid.NewString(),
 		"purchase_ref": uuid.New().String(),
 	})
 	require.NoError(t, c.Handle(context.Background(), env))
@@ -180,7 +180,7 @@ func TestBillingConsumer_AddonRefund_ServiceError_PropagatesNACK(t *testing.T) {
 		"resource":     "llm_tokens",
 		"delta":        int64(-10_000),
 		"reason":       "refund",
-		"billing_ref":  "ref_err",
+		"billing_ref":  uuid.NewString(),
 		"purchase_ref": uuid.New().String(),
 	})
 	err := c.Handle(context.Background(), env)
@@ -264,4 +264,64 @@ func TestBillingConsumer_AddonPurchase_OtherError_Retries(t *testing.T) {
 		TenantID: uuid.New(), Resource: "llm_tokens", Delta: 100_000, Reason: "purchase", BillingRef: "pur_x",
 	})
 	require.Error(t, c.Handle(context.Background(), env))
+}
+
+// ── F-3: refund billing_ref recorded for another tenant ───────────────────
+
+func TestBillingConsumer_AddonRefund_BillingRefOtherTenant_CountsAndAcks(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_refund_ref_conflict_total"}, []string{"event_type", "reason"})
+	saved := metrics.BillingRefConflictTotal
+	metrics.BillingRefConflictTotal = counter
+	t.Cleanup(func() { metrics.BillingRefConflictTotal = saved })
+
+	c, _, addon := newBillingConsumer()
+	addon.applyRefundErr = domain.NewError(domain.ErrBillingRefAlreadyClaimed, "refund billing_ref already recorded for another tenant")
+	env := makeBillingEnv("f3", "TenantQuotaAddOnChanged", map[string]any{
+		"tenant_id": uuid.NewString(), "resource": "llm_tokens", "delta": -1000, "reason": "refund",
+		"billing_ref": uuid.NewString(), "purchase_ref": uuid.NewString(),
+	})
+	require.NoError(t, c.Handle(context.Background(), env), "a cross-tenant refund ref cannot succeed on retry, so it is acked")
+	assert.True(t, addon.refundCalled)
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(counter)
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	require.Len(t, mfs, 1)
+	m := mfs[0].GetMetric()[0]
+	assert.Equal(t, 1.0, m.GetCounter().GetValue())
+	assert.Equal(t, "refund_ref_other_tenant", m.GetLabel()[1].GetValue())
+}
+
+func TestBillingConsumer_AddonRefund_NonUUIDBillingRef_DeadLettered(t *testing.T) {
+	c, _, addon := newBillingConsumer()
+	env := makeBillingEnv("f3b", "TenantQuotaAddOnChanged", map[string]any{
+		"tenant_id": uuid.NewString(), "resource": "llm_tokens", "delta": -1000, "reason": "refund",
+		"billing_ref": "not-a-uuid", "purchase_ref": uuid.NewString(),
+	})
+	require.Error(t, c.Handle(context.Background(), env))
+	assert.False(t, addon.refundCalled)
+}
+
+func TestBillingConsumer_AddonRefund_RefReusedForOtherPurchase_LabelledAndAcked(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_refund_ref_reuse_total"}, []string{"event_type", "reason"})
+	saved := metrics.BillingRefConflictTotal
+	metrics.BillingRefConflictTotal = counter
+	t.Cleanup(func() { metrics.BillingRefConflictTotal = saved })
+
+	c, _, addon := newBillingConsumer()
+	addon.applyRefundErr = domain.NewError(domain.ErrBillingRefAlreadyClaimed, "reused").
+		WithDetails(map[string]any{"conflict": domain.RefundConflictOtherPurchase})
+	env := makeBillingEnv("f3c", "TenantQuotaAddOnChanged", map[string]any{
+		"tenant_id": uuid.NewString(), "resource": "llm_tokens", "delta": -1000, "reason": "refund",
+		"billing_ref": uuid.NewString(), "purchase_ref": uuid.NewString(),
+	})
+	require.NoError(t, c.Handle(context.Background(), env))
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(counter)
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	require.Len(t, mfs, 1)
+	assert.Equal(t, domain.RefundConflictOtherPurchase, mfs[0].GetMetric()[0].GetLabel()[1].GetValue())
 }

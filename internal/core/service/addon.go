@@ -58,6 +58,7 @@ type AddonService struct {
 	addons     port.AddonRepository
 	drawdowns  port.DrawdownRepository
 	shortfalls port.ShortfallRepository
+	refunds    port.RefundRepository
 	effectSvc  *EffectiveSetService
 	txRunner   port.TxRunner
 	log        port.Logger
@@ -90,6 +91,14 @@ func NewAddonService(
 		txRunner:   txRunner,
 		sfCfg:      DefaultShortfallConfig(),
 	}
+}
+
+// WithRefundRepository wires the quota_addon_refunds ledger that makes
+// ApplyBillingRefund idempotent on billing_ref (F-3). Without it
+// ApplyBillingRefund fails closed.
+func (s *AddonService) WithRefundRepository(r port.RefundRepository) *AddonService {
+	s.refunds = r
+	return s
 }
 
 // WithShortfallConfig injects configurable ENT-D11/D12 thresholds. Called by
@@ -188,7 +197,11 @@ func (s *AddonService) AddAddon(ctx context.Context, req port.AddAddonRequest) (
 	return final, nil
 }
 
-// RemoveAddon revokes an active addon pack (must be fully unused).
+// RemoveAddon revokes an active addon pack from which nothing was drawn.
+// Refunded tokens are not use (ENT-D16): an undrawn pack that was partly
+// refunded is still removable. Requires the refund ledger to tell refunds
+// from draws; without it the pack is treated as drawn wherever
+// remaining < total (fail closed).
 func (s *AddonService) RemoveAddon(ctx context.Context, req port.RemoveAddonRequest) error {
 	if req.Reason == "" {
 		return domain.NewError(domain.ErrReasonRequired, "reason is required")
@@ -204,7 +217,14 @@ func (s *AddonService) RemoveAddon(ctx context.Context, req port.RemoveAddonRequ
 		if a.TenantID != req.TenantID {
 			return domain.NewError(domain.ErrForbidden, "addon does not belong to tenant")
 		}
-		if a.RemainingTokens < a.TotalTokens {
+		if a.Status != domain.AddonStatusActive {
+			return domain.NewError(domain.ErrInvalidAction,
+				fmt.Sprintf("only an active addon pack can be removed (status %s)", a.Status))
+		}
+		if err := s.fillRefunded(txCtx, req.TenantID, []*domain.QuotaAddon{a}); err != nil {
+			return err
+		}
+		if !a.Removable() {
 			return domain.NewError(domain.ErrPackPartiallyUsed, "cannot remove a partially-used addon pack")
 		}
 
@@ -243,8 +263,41 @@ func (s *AddonService) RemoveAddon(ctx context.Context, req port.RemoveAddonRequ
 }
 
 // ListAddons returns all quota addon packs for a tenant.
+// Each pack carries RefundedTokens from the refund ledger, so callers can
+// show consumed vs refunded quantities and removability (ENT-D16).
 func (s *AddonService) ListAddons(ctx context.Context, tenantID uuid.UUID) ([]domain.QuotaAddon, error) {
-	return s.addons.ListByTenant(ctx, tenantID, nil)
+	list, err := s.addons.ListByTenant(ctx, tenantID, nil)
+	if err != nil {
+		return nil, err
+	}
+	ptrs := make([]*domain.QuotaAddon, len(list))
+	for i := range list {
+		ptrs[i] = &list[i]
+	}
+	if err := s.fillRefunded(ctx, tenantID, ptrs); err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+// fillRefunded sets RefundedTokens on each pack from the refund ledger, the
+// system of record for refunded amounts. With no ledger wired it leaves 0.
+func (s *AddonService) fillRefunded(ctx context.Context, tenantID uuid.UUID, packs []*domain.QuotaAddon) error {
+	if s.refunds == nil || len(packs) == 0 {
+		return nil
+	}
+	ids := make([]uuid.UUID, len(packs))
+	for i, a := range packs {
+		ids[i] = a.ID
+	}
+	sums, err := s.refunds.SumByAddon(ctx, tenantID, ids)
+	if err != nil {
+		return fmt.Errorf("sum refunded tokens: %w", err)
+	}
+	for _, a := range packs {
+		a.RefundedTokens = sums[a.ID]
+	}
+	return nil
 }
 
 // RecordDrawdown draws against active addon packs FIFO by expiry (ENT-D11/D12).
@@ -608,10 +661,32 @@ func (s *AddonService) ApplyBillingPurchase(ctx context.Context, req port.ApplyB
 // ApplyBillingRefund reduces unused tokens on an addon pack in response to a
 // Billing refund event (C-5). It removes at most |delta| unused tokens, never
 // below zero and never consuming already-drawn tokens (CONC-1 optimistic lock).
-// Idempotency is guaranteed by the caller via processOnce on the billing event ID.
+//
+// Idempotent on billing_ref (Billing's refund_id) via the quota_addon_refunds
+// ledger (F-3, BL-OQ-20 W-5); processOnce only dedups redeliveries within the
+// processed_events TTL. The refund row is claimed in the same transaction as
+// the pack update, before it:
+//   - claimed: the reduction is applied and recorded (0 when nothing was
+//     unused, so a later delivery still finds the row);
+//   - already recorded for this tenant: idempotent replay — the pack is not
+//     touched (the follow-up recompute is a no-op, ENT-INV-6);
+//   - recorded for another tenant, or for a different purchase of this
+//     tenant: ErrBillingRefAlreadyClaimed (Details["conflict"] says which) is
+//     returned; nothing changes; the Billing consumer counts it, alerts and acks.
+//
+// A refund that arrives before its purchase returns ErrAddonNotFound and
+// writes no row, so it is retried.
 func (s *AddonService) ApplyBillingRefund(ctx context.Context, req port.ApplyBillingRefundRequest) error {
 	if req.Delta >= 0 {
 		return domain.NewError(domain.ErrInvalidValue, "delta must be negative for a refund")
+	}
+	if req.BillingRef == uuid.Nil {
+		return domain.NewError(domain.ErrInvalidValue, "billing_ref (refund_id) is required")
+	}
+	if s.refunds == nil {
+		// Fail closed: without the ledger a redelivery after the
+		// processed_events prune would apply the refund twice.
+		return fmt.Errorf("billing refund: refund ledger not wired (WithRefundRepository)")
 	}
 
 	// Read and write inside the same transaction to close the CONC-1
@@ -619,7 +694,10 @@ func (s *AddonService) ApplyBillingRefund(ctx context.Context, req port.ApplyBil
 	txErr := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
 		a, err := s.addons.GetByBillingRef(txCtx, req.TenantID, req.PurchaseRef.String())
 		if err != nil {
-			return domain.NewError(domain.ErrAddonNotFound, "addon not found for purchase_ref")
+			if errors.Is(err, domain.ErrAddonNotFound) {
+				return domain.NewError(domain.ErrAddonNotFound, "addon not found for purchase_ref")
+			}
+			return err
 		}
 
 		// reduction = min(|delta|, remaining_tokens) — never reduces consumed tokens.
@@ -627,15 +705,66 @@ func (s *AddonService) ApplyBillingRefund(ctx context.Context, req port.ApplyBil
 		if reduction > a.RemainingTokens {
 			reduction = a.RemainingTokens
 		}
+
+		now := time.Now().UTC()
+		claimed, err := s.refunds.Claim(txCtx, &domain.QuotaAddonRefund{
+			BillingRef:    req.BillingRef,
+			TenantID:      req.TenantID,
+			AddonID:       a.ID,
+			PurchaseRef:   req.PurchaseRef,
+			TokensRemoved: reduction,
+			AppliedAt:     now,
+		})
+		if err != nil {
+			return err
+		}
+		if !claimed {
+			prior, err := s.refunds.GetForTenant(txCtx, req.TenantID, req.BillingRef)
+			if err != nil {
+				return err
+			}
+			if prior == nil {
+				return domain.NewError(domain.ErrBillingRefAlreadyClaimed, "refund billing_ref already recorded for another tenant").
+					WithDetails(map[string]any{"conflict": domain.RefundConflictOtherTenant})
+			}
+			if prior.PurchaseRef != req.PurchaseRef {
+				// Same tenant, but Billing reused the refund_id for a different
+				// purchase: not a replay. Apply nothing; surface it.
+				return domain.NewError(domain.ErrBillingRefAlreadyClaimed, "refund billing_ref already recorded for a different purchase").
+					WithDetails(map[string]any{"conflict": domain.RefundConflictOtherPurchase, "recorded_purchase_ref": prior.PurchaseRef.String()})
+			}
+			s.logger().Info("billing refund: idempotent replay, refund already applied",
+				map[string]interface{}{"billing_ref": req.BillingRef, "tenant_id": req.TenantID, "addon_id": a.ID})
+			return nil
+		}
+
 		if reduction == 0 {
 			s.logger().Info("billing refund: no unused tokens to remove",
 				map[string]interface{}{"addon_id": a.ID, "tenant_id": req.TenantID, "billing_ref": req.BillingRef})
 			return nil
 		}
 
-		now := time.Now().UTC()
-		a.TotalTokens -= reduction
+		// ENT-D16: total_tokens is the original purchased quantity and never
+		// changes; the refund lowers the effective balance and is recorded in
+		// the ledger (claimed above, so the sum below includes it).
 		a.RemainingTokens -= reduction
+		if a.RemainingTokens == 0 && a.Status == domain.AddonStatusActive {
+			refunded, err := s.refunds.SumByAddon(txCtx, req.TenantID, []uuid.UUID{a.ID})
+			if err != nil {
+				return err
+			}
+			// ENT-D16: status records the disposition of the purchased
+			// quantity, not the operation that removed the last tokens.
+			// refunded only when cumulative refunds equal total_tokens
+			// (refunds are capped at the remaining balance, so they can never
+			// exceed it; >= is equality); any mix of consumption and refunds
+			// that empties the pack is consumed.
+			if refunded[a.ID] >= a.TotalTokens {
+				a.Status = domain.AddonStatusRefunded
+			} else {
+				a.Status = domain.AddonStatusConsumed
+			}
+		}
 		a.RecordVersion++
 		a.UpdatedAt = now
 
@@ -645,6 +774,10 @@ func (s *AddonService) ApplyBillingRefund(ctx context.Context, req port.ApplyBil
 		return txErr
 	}
 
+	// Also runs on a replay: if an earlier delivery committed the refund but
+	// failed this recompute (possible outside an inbox transaction), the
+	// replay is what brings the snapshot up to date. When the snapshot is
+	// already current this writes and emits nothing (ENT-INV-6).
 	if _, err := s.effectSvc.Recompute(ctx, req.TenantID, domain.CauseAddonChange); err != nil {
 		return fmt.Errorf("billing refund: recompute failed, event will retry: %w", err)
 	}

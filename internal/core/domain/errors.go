@@ -45,6 +45,14 @@ var (
 	ErrBillingRefAlreadyClaimed = errors.New("billing_ref_already_claimed")
 )
 
+// Conflict kinds carried in DomainError.Details["conflict"] when a Billing
+// refund returns ErrBillingRefAlreadyClaimed (F-3). They are the reason label
+// of commercial_entitlements_billing_ref_conflict_total.
+const (
+	RefundConflictOtherTenant   = "refund_ref_other_tenant"
+	RefundConflictOtherPurchase = "refund_ref_other_purchase"
+)
+
 // DomainError wraps a sentinel code with a human-readable message, an
 // optional cause chain, and an optional structured details map. The HTTP
 // adapter maps Code → HTTP status (see internal/adapter/inbound/http/errors.go).

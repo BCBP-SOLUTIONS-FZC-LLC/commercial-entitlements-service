@@ -139,10 +139,10 @@ func IncConsumedEventRejected(consumer, eventType, reason string) {
 	}
 }
 
-// IncBillingRefConflict increments the billing-ref-conflict counter (B-8):
-// a Billing add-on event whose billing_ref is already held by another
-// tenant's pack. eventType and reason are bounded (TenantQuotaAddOnChanged;
-// purchase).
+// IncBillingRefConflict increments the billing-ref-conflict counter (B-8,
+// F-3): a Billing add-on event whose billing_ref is already held by another
+// tenant. eventType and reason are bounded (TenantQuotaAddOnChanged;
+// purchase | refund_ref_other_tenant | refund_ref_other_purchase).
 func IncBillingRefConflict(eventType, reason string) {
 	if BillingRefConflictTotal != nil {
 		BillingRefConflictTotal.WithLabelValues(eventType, reason).Inc()

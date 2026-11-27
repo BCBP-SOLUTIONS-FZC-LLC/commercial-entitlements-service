@@ -142,18 +142,27 @@ type AddAddonBody struct {
 }
 
 type AddonResponse struct {
-	ID              uuid.UUID  `json:"id"`
-	TenantID        uuid.UUID  `json:"tenant_id"`
-	LimitKey        string     `json:"limit_key"`
-	TotalTokens     int64      `json:"total_tokens"`
-	RemainingTokens int64      `json:"remaining_tokens"`
-	GrantedBy       uuid.UUID  `json:"granted_by"`
-	Reason          string     `json:"reason"`
-	Status          string     `json:"status"`
-	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
-	RecordVersion   int64      `json:"record_version"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID       uuid.UUID `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+	LimitKey string    `json:"limit_key"`
+	// TotalTokens is the original purchased/granted quantity; immutable.
+	TotalTokens int64 `json:"total_tokens"`
+	// RemainingTokens is the effective, still-usable balance.
+	RemainingTokens int64 `json:"remaining_tokens"`
+	// RefundedTokens is the sum of applied Billing refunds (refund ledger).
+	RefundedTokens int64 `json:"refunded_tokens"`
+	// ConsumedTokens = total − remaining − refunded (drawn by usage). For an
+	// expired or revoked pack it also includes the forfeited balance.
+	ConsumedTokens int64 `json:"consumed_tokens"`
+	// Removable: active and nothing drawn — ENT-O5 DELETE would succeed.
+	Removable     bool       `json:"removable"`
+	GrantedBy     uuid.UUID  `json:"granted_by"`
+	Reason        string     `json:"reason"`
+	Status        string     `json:"status"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	RecordVersion int64      `json:"record_version"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 func addonToResponse(a *domain.QuotaAddon) AddonResponse {
@@ -163,6 +172,9 @@ func addonToResponse(a *domain.QuotaAddon) AddonResponse {
 		LimitKey:        string(a.LimitKey),
 		TotalTokens:     a.TotalTokens,
 		RemainingTokens: a.RemainingTokens,
+		RefundedTokens:  a.RefundedTokens,
+		ConsumedTokens:  a.ConsumedTokens(),
+		Removable:       a.Removable(),
 		GrantedBy:       a.GrantedBy,
 		Reason:          a.Reason,
 		Status:          string(a.Status),

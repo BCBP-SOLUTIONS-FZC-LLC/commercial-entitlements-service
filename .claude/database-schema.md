@@ -48,7 +48,8 @@ CREATE TYPE trial_profile AS ENUM (
 | `entitlement_snapshots` | PK `tenant_id` (one row per tenant). `version BIGINT` (monotonically increasing; upsert only applies when incoming > stored — ENT-INV-1). `plan TEXT`, `state entitlement_state`, `limits JSONB`, `feature_flags JSONB`, `model_tier TEXT`, `trial_profile TEXT`. `cause effective_set_cause`. `computed_at TIMESTAMPTZ`. |
 | `entitlement_overrides` | PK `id UUID`. `tenant_id`, `limit_key TEXT`, `value BIGINT`, `expires_at TIMESTAMPTZ` (nullable — no expiry = permanent). `set_by TEXT`, `reason TEXT`. `record_version BIGINT`. Partial unique index `uq_overrides_active (tenant_id, limit_key) WHERE deleted_at IS NULL`. |
 | `override_history` | Append-only audit of every override lifecycle event. `tenant_id`, `limit_key`, `action override_action`, `old_value`/`new_value`, `actor TEXT`, `occurred_at`. No RLS (audit-only). |
-| `quota_addons` | Quota addon packs. `id`, `tenant_id`, `limit_key TEXT`, `total_tokens BIGINT`, `remaining_tokens BIGINT`, `status quota_addon_status`. `expires_at TIMESTAMPTZ` (nullable). `granted_by TEXT`, `reason TEXT`. `record_version`. Optimistic locking on `remaining_tokens` decrements. |
+| `quota_addons` | Quota addon packs. `id`, `tenant_id`, `limit_key TEXT`, `total_tokens BIGINT`, `remaining_tokens BIGINT`, `status quota_addon_status` (`active|consumed|expired|revoked|refunded`). `total_tokens` is the original purchased quantity and is **immutable** — refunds reduce `remaining_tokens` and are recorded in `quota_addon_refunds` (ENT-D16); consumed = total − remaining − Σ refunds; removable only when active and nothing drawn. `expires_at TIMESTAMPTZ` (nullable). `granted_by TEXT`, `reason TEXT`. `record_version`. Optimistic locking on `remaining_tokens` decrements. |
+| `quota_addon_refunds` | Append-only ledger of applied Billing add-on refunds (F-3). `billing_ref UUID PK` (Billing `refund_id`), `tenant_id`, `addon_id` FK, `purchase_ref UUID`, `tokens_removed BIGINT >= 0` (0 when nothing was unused), `applied_at`. RLS forced; app role SELECT, INSERT. Claimed with `ON CONFLICT DO NOTHING` in the refund's transaction → refunds idempotent on `refund_id` beyond the `processed_events` TTL. |
 | `quota_addon_drawdowns` | Per-request drawdown records. `id`, `addon_id`, `tenant_id`, `limit_key`, `tokens_consumed BIGINT`, `period_start TEXT (YYYY-MM)`, `request_id UUID` (idempotency key), `recorded_at`. Unique on `(tenant_id, request_id)` (ENT-INV-3). |
 | `addon_shortfalls` | Shortfall lifecycle. `id`, `tenant_id`, `limit_key`, `requested BIGINT`, `available BIGINT`, `deficit BIGINT`. `status shortfall_status`. `auto_threshold TEXT`, `disposition shortfall_disposition`. `created_at`, `updated_at`. `record_version`. |
 | `tenant_trial_assignments` | PK `tenant_id`. One trial assignment per tenant at a time. `plan_code TEXT`, `profile trial_profile`, `starts_at`, `ends_at`, `set_by`. `record_version`. Upserted on conflict. |
@@ -60,7 +61,7 @@ CREATE TYPE trial_profile AS ENUM (
 
 ## Row-Level Security
 
-Every tenant-scoped table (`entitlement_snapshots`, `entitlement_overrides`, `quota_addons`, `quota_addon_drawdowns`, `addon_shortfalls`, `tenant_trial_assignments`, `trial_entitlement_overrides`) has:
+Every tenant-scoped table (`entitlement_snapshots`, `entitlement_overrides`, `quota_addons`, `quota_addon_drawdowns`, `quota_addon_refunds`, `addon_shortfalls`, `tenant_trial_assignments`, `trial_entitlement_overrides`) has:
 
 ```sql
 ENABLE ROW LEVEL SECURITY;
@@ -105,6 +106,10 @@ END; $$ LANGUAGE plpgsql;
 
 Current migrations in `internal/adapter/outbound/postgres/migrations/`:
 - **`000001_initial_schema.{up,down}.sql`** — all tables, ENUMs, RLS, triggers, grants in one consolidated migration (service never deployed; no incremental history to preserve).
+- **`000002_addon_billing_ref`** — `quota_addons.billing_ref` + partial unique index (purchase idempotency).
+- **`000003_fix_quota_addons_grant`, `000004_fix_app_role_grants`** — grants to the real app role `commercial_entitlements_app`.
+- **`000005_quota_addon_refunds`** — append-only refund ledger keyed by Billing `refund_id` (F-3); system of record for refunded amounts.
+- **`000006_quota_addon_status_refunded`** — adds `refunded` to `quota_addon_status` (ENT-D16).
 
 `postgres.MigrateSchema` runs `outbox.ApplySchema` then `auditoutbox.ApplySchema` **then** domain migrations (MIG-2). Runs once per release via the Helm pre-install/pre-upgrade hook Job (`cmd/migrate`); server runs at startup only when `RUN_MIGRATIONS` is unset or true.
 

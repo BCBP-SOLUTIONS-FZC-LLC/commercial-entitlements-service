@@ -126,7 +126,7 @@ type ApplyBillingRefundRequest struct {
 	TenantID    uuid.UUID
 	PurchaseRef uuid.UUID
 	Delta       int64
-	BillingRef  string
+	BillingRef  uuid.UUID // Billing refund_id — the idempotency key (F-3)
 }
 
 // RecordDrawdownRequest deducts tokens from addon packs for a billing period.

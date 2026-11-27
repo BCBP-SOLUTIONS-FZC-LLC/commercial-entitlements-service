@@ -87,7 +87,7 @@ type InboundBillingAddonRefundEvent struct {
 	Resource    string    `json:"resource"`
 	Delta       int64     `json:"delta"`
 	Reason      string    `json:"reason"`
-	BillingRef  string    `json:"billing_ref"`
+	BillingRef  uuid.UUID `json:"billing_ref"` // Billing refund_id; idempotency key (F-3)
 	PurchaseRef uuid.UUID `json:"purchase_ref"`
 }
 

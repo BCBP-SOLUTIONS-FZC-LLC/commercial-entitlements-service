@@ -48,6 +48,24 @@ type AddonRepository interface {
 	SumRemainingByTenantAndKey(ctx context.Context, tenantID uuid.UUID, limitKey domain.LimitKey) (int64, error)
 }
 
+// RefundRepository is the append-only ledger of applied Billing add-on
+// refunds (quota_addon_refunds, F-3). It makes ApplyBillingRefund idempotent
+// on Billing's refund_id independently of the processed_events TTL.
+type RefundRepository interface {
+	// Claim records the refund. It returns false, with no error and without
+	// aborting the caller's transaction, when the billing_ref is already
+	// recorded (ON CONFLICT DO NOTHING) — for this tenant or, invisibly under
+	// RLS, for another.
+	Claim(ctx context.Context, r *domain.QuotaAddonRefund) (bool, error)
+	// GetForTenant returns the refund recorded for (tenantID, billingRef), or
+	// nil with no error when this tenant has none (under RLS another
+	// tenant's row is invisible).
+	GetForTenant(ctx context.Context, tenantID, billingRef uuid.UUID) (*domain.QuotaAddonRefund, error)
+	// SumByAddon returns the total refunded tokens per addon for the given
+	// packs of tenantID; packs with no refund are absent from the map.
+	SumByAddon(ctx context.Context, tenantID uuid.UUID, addonIDs []uuid.UUID) (map[uuid.UUID]int64, error)
+}
+
 // DrawdownRepository persists quota addon drawdown records.
 type DrawdownRepository interface {
 	Insert(ctx context.Context, d *domain.QuotaAddonDrawdown) error

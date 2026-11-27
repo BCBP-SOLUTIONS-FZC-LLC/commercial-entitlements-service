@@ -321,6 +321,7 @@ func main() {
 	overrideSvc := service.NewOverrideService(overrideRepo, effectSvc, txRunner).WithLogger(log)
 	addonSvc := service.NewAddonService(addonRepo, drawdownRepo, shortfallRepo, effectSvc, txRunner).
 		WithLogger(log).
+		WithRefundRepository(pgadapter.NewRefundRepository(pool)). // F-3: refund idempotency on billing_ref
 		WithShortfallConfig(loadShortfallConfig()).
 		WithAddonMetricsHooks(
 			func(key domain.LimitKey, hadShortfall bool) { metrics.IncDrawdown(key, hadShortfall) },

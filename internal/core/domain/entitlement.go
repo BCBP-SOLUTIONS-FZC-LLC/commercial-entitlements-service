@@ -76,6 +76,14 @@ const (
 	CauseShortfallResolution EffectiveSetCause = "shortfall_resolution"
 )
 
+// EffectiveSetCauses lists every EffectiveSetCause, in the order of the
+// TenantEntitlementsChanged schema's cause enum (api/asyncapi.yaml). A test
+// keeps this list, the embedded schema and LLD §7.1 identical (F-4).
+var EffectiveSetCauses = []EffectiveSetCause{
+	CausePlanChange, CauseOverrideChange, CauseAddonChange, CauseTrialChange, CauseCatalogRefresh,
+	CauseBillingEvent, CauseManualRecompute, CauseTenantLifecycle, CauseShortfallResolution,
+}
+
 // EffectiveSet is the computed, merged entitlement set for one tenant at a
 // point in time. It is derived by the EffectiveSetService from plan baseline,
 // trial-profile, trial overrides, operator overrides, and addon quota balance.

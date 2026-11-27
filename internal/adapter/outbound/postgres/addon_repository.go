@@ -89,6 +89,10 @@ func (r *AddonRepository) GetByBillingRef(ctx context.Context, tenantID uuid.UUI
 }
 
 // Update applies mutations to an existing addon pack.
+//
+// total_tokens is deliberately not written: it is the original purchased or
+// granted quantity and is immutable (ENT-D16). Refunds reduce
+// remaining_tokens and are recorded in quota_addon_refunds.
 func (r *AddonRepository) Update(ctx context.Context, a *domain.QuotaAddon) error {
 	return withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
 		tag, err := tx.Exec(ctx, `

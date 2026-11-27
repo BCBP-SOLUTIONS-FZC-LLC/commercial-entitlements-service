@@ -112,11 +112,11 @@ Common starting points:
 
 ### CommercialEntitlementsBillingRefConflict
 
-**Meaning.** A Billing `TenantQuotaAddOnChanged{reason:purchase}` carried a `billing_ref` already held by another tenant's add-on pack. Nothing was granted and the event was acked (B-8). A customer may have paid without receiving tokens.
+**Meaning.** A Billing `TenantQuotaAddOnChanged` carried a `billing_ref` already held by another tenant. Nothing was changed and the event was acked. `reason=purchase` (B-8): the purchase_id belongs to another tenant's add-on pack — a customer may have paid without receiving tokens. `reason=refund_ref_other_tenant` (F-3): the refund_id is already recorded for another tenant — the refund was not applied to this tenant's pack. `reason=refund_ref_other_purchase` (F-3): Billing reused a refund_id for a different purchase of the same tenant — the second refund was not applied.
 
 **Triage.**
 1. `sum by (event_type, reason) (increase(commercial_entitlements_billing_ref_conflict_total[1h]))`.
-2. Loki: `{service="commercial-entitlements"} |= "billing_ref already claimed"` — gives `event_id`, `billing_ref`, `tenant_id`.
+2. Loki: `{service="commercial-entitlements"} |= "already claimed"` (purchase) or `|= "refund billing_ref already recorded"` (refund; the log carries `conflict` and `purchase_ref`) — gives `event_id`, `billing_ref`, `tenant_id`.
 3. Ask Billing which tenant owns the `billing_ref`.
 
 **Mitigate.** Reconcile with Billing before refunding or granting manually via ENT-O5 (`POST /api/v1/operator/tenants/:id/entitlements/addons`).

@@ -24,6 +24,11 @@ definitions:
     type: object
   http.AddonResponse:
     properties:
+      consumed_tokens:
+        description: |-
+          ConsumedTokens = total − remaining − refunded (drawn by usage). For an
+          expired or revoked pack it also includes the forfeited balance.
+        type: integer
       created_at:
         type: string
       expires_at:
@@ -38,13 +43,22 @@ definitions:
         type: string
       record_version:
         type: integer
-      remaining_tokens:
+      refunded_tokens:
+        description: RefundedTokens is the sum of applied Billing refunds (refund
+          ledger).
         type: integer
+      remaining_tokens:
+        description: RemainingTokens is the effective, still-usable balance.
+        type: integer
+      removable:
+        description: 'Removable: active and nothing drawn — ENT-O5 DELETE would succeed.'
+        type: boolean
       status:
         type: string
       tenant_id:
         type: string
       total_tokens:
+        description: TotalTokens is the original purchased/granted quantity; immutable.
         type: integer
       updated_at:
         type: string

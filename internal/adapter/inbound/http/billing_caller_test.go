@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
+
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 )
@@ -124,4 +126,25 @@ func TestPrincipalFromXFCC(t *testing.T) {
 	} {
 		assert.Equal(t, want, principalFromXFCC(in), in)
 	}
+}
+
+// ENT-D16: listings expose refunded and consumed quantities and removability;
+// total_tokens is the original purchased quantity.
+func TestAddonToResponse_RefundedConsumedRemovable(t *testing.T) {
+	a := &domain.QuotaAddon{ID: uuid.New(), TotalTokens: 10_000, RemainingTokens: 5_000, RefundedTokens: 2_000,
+		Status: domain.AddonStatusActive}
+	r := addonToResponse(a)
+	assert.Equal(t, int64(10_000), r.TotalTokens)
+	assert.Equal(t, int64(2_000), r.RefundedTokens)
+	assert.Equal(t, int64(3_000), r.ConsumedTokens)
+	assert.False(t, r.Removable)
+
+	undrawn := &domain.QuotaAddon{TotalTokens: 10_000, RemainingTokens: 8_000, RefundedTokens: 2_000, Status: domain.AddonStatusActive}
+	assert.True(t, addonToResponse(undrawn).Removable)
+
+	refunded := &domain.QuotaAddon{TotalTokens: 10_000, RefundedTokens: 10_000, Status: domain.AddonStatusRefunded}
+	rr := addonToResponse(refunded)
+	assert.Equal(t, "refunded", rr.Status)
+	assert.Equal(t, int64(0), rr.ConsumedTokens)
+	assert.False(t, rr.Removable)
 }

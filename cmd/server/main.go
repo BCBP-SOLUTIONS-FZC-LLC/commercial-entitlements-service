@@ -207,12 +207,18 @@ func main() {
 		panic(fmt.Sprintf("init validating codec: %v", err))
 	}
 	outboxPublisher := eventbusadapter.New(eventbusadapter.EventSource, enqueueCodec).WithLogger(log)
-	consumedValidator := validatorFunc(func(eventType string, payload []byte) error {
-		if err := enqueueCodec.Validate(eventType, payload); !errors.Is(err, eventbusadapter.ErrNoSchema) {
-			return err
+	// consumedValidator validates an inbound payload against the schema this
+	// service registered for (queue, event type) — B-4. An unregistered type
+	// passes (forward-compat); a registered one that fails is dead-lettered by
+	// sqspipeline.Handler on first delivery.
+	consumedValidator := func(queue string) validatorFunc {
+		return func(eventType string, payload []byte) error {
+			if err := enqueueCodec.ValidateConsumed(queue, eventType, payload); !errors.Is(err, eventbusadapter.ErrNoSchema) {
+				return err
+			}
+			return nil
 		}
-		return nil
-	})
+	}
 	txRunner := pgadapter.NewTxRunner(pool, outboxPublisher)
 
 	// ── 6b. Audit outbox ─────────────────────────────────────────────────
@@ -383,7 +389,7 @@ func main() {
 		cons, err := sqspipeline.NewConsumer(
 			sqspipeline.EnvForQueue(sqsEnv, url, envInt(wiring.concEnv, 2)),
 			sqsClient,
-			sqspipeline.Handler(wiring.name, wiring.handleFn, consumedValidator, dlqPublisher, log),
+			sqspipeline.Handler(wiring.name, wiring.handleFn, consumedValidator(wiring.name), dlqPublisher, log),
 			dlqPublisher,
 			log,
 		)
@@ -428,6 +434,9 @@ func main() {
 		ShortfallHandler:   shortfallH,
 		TrialHandler:       trialH,
 		PlansHandler:       plansH,
+		// B-2: Billing's mTLS principal, admitted to GET ENT-I1 only.
+		// Helm sets it from billingCaller; unset disables principal admission.
+		BillingPrincipal: os.Getenv("BILLING_CALLER_PRINCIPAL"),
 		Postgres: pingerFunc(func(ctx context.Context) error {
 			if hs := pool.Health(ctx); !hs.Healthy {
 				return fmt.Errorf("database not healthy")

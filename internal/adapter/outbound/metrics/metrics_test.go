@@ -279,6 +279,13 @@ func TestIncRLSViolation_NilGuard(t *testing.T) {
 	RLSViolationsTotal = saved
 }
 
+func TestIncBillingRefConflict_NilGuard(t *testing.T) {
+	saved := BillingRefConflictTotal
+	BillingRefConflictTotal = nil
+	assert.NotPanics(t, func() { IncBillingRefConflict("TenantQuotaAddOnChanged", "purchase") })
+	BillingRefConflictTotal = saved
+}
+
 // ── Inc* with registered metrics ─────────────────────────────────────────
 
 func TestIncUnknownEventAcknowledged_Registered(t *testing.T) {

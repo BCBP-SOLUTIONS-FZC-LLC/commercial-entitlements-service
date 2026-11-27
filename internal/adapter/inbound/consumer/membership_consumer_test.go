@@ -57,11 +57,11 @@ func TestMembershipConsumer_TenantStateChanged_TrialReactivated_TriggersRecomput
 	assert.Len(t, eff.recomputedWith, 1)
 }
 
-func TestMembershipConsumer_TenantStateChanged_OtherCause_Acks(t *testing.T) {
+func TestMembershipConsumer_TenantStateChanged_OtherCauseNoChange_Acks(t *testing.T) {
 	c, eff := newMembershipConsumer()
 	env := membershipEnv("m4", "TenantStateChanged", uuid.New(), map[string]any{"cause": "Suspended"})
 	require.NoError(t, c.Handle(context.Background(), env))
-	assert.Empty(t, eff.recomputedWith, "non-TrialReactivated cause must be acked without recompute")
+	assert.Empty(t, eff.recomputedWith, "an unrelated cause with no plan/status change must be acked without recompute")
 }
 
 func TestMembershipConsumer_TenantStateChanged_MalformedPayload_Acks(t *testing.T) {
@@ -87,4 +87,29 @@ func TestMembershipConsumer_WithInbox_Duplicate_SkipsFn(t *testing.T) {
 	env := membershipEnv("m10", "TenantMembershipsPurged", uuid.New())
 	require.NoError(t, c.Handle(context.Background(), env))
 	assert.Empty(t, eff.recomputedWith)
+}
+
+// ── B-3 (BL-OQ-28): Billing-originated relays ─────────────────────────────
+
+func TestMembershipConsumer_TenantStateChanged_BillingCauses_RecomputeAsBillingEvent(t *testing.T) {
+	for _, cause := range []string{"TenantPlanChanged", "TenantSubscriptionCancelled", "TenantReactivated", "TenantPaymentPastDue"} {
+		c, eff := newMembershipConsumer()
+		env := membershipEnv("b3-"+cause, "TenantStateChanged", uuid.New(), map[string]any{"cause": cause})
+		require.NoError(t, c.Handle(context.Background(), env), cause)
+		require.Len(t, eff.recomputedWith, 1, cause)
+		assert.Equal(t, domain.CauseBillingEvent, eff.recomputedWith[0], cause)
+	}
+}
+
+func TestMembershipConsumer_TenantStateChanged_PlanOrStatusChanged_Recomputes(t *testing.T) {
+	for name, fields := range map[string]map[string]any{
+		"plan":   {"cause": "SomeFutureCause", "plan": "pro", "previous_plan": "starter", "status": "active", "previous_status": "active"},
+		"status": {"cause": "TenantSuspended", "plan": "pro", "previous_plan": "pro", "status": "suspended", "previous_status": "active"},
+	} {
+		c, eff := newMembershipConsumer()
+		env := membershipEnv("chg-"+name, "TenantStateChanged", uuid.New(), fields)
+		require.NoError(t, c.Handle(context.Background(), env), name)
+		require.Len(t, eff.recomputedWith, 1, name)
+		assert.Equal(t, domain.CauseTenantLifecycle, eff.recomputedWith[0], name)
+	}
 }

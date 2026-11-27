@@ -161,7 +161,7 @@ func (h *AddonHandler) ListDrawdowns(c *gin.Context) {
 }
 
 // RecordDrawdownInternal handles ENT-I3: POST /api/v1/internal/tenants/:id/entitlements/drawdown
-// Called by billing or usage services to deduct quota from addon packs.
+// Called by Usage & Metering to deduct quota from addon packs.
 //
 //	@Summary	Record a quota drawdown (internal)
 //	@Tags		internal

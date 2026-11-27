@@ -44,7 +44,7 @@ commercial-entitlements/
 │   │   │   ├── snapshot.go     # EntitlementSnapshot, EffectiveSetCause constants
 │   │   │   ├── trial.go        # TenantTrialAssignment, TrialEntitlementOverride, TrialProfile
 │   │   │   ├── event.go        # DomainEvent, EventType, TenantEntitlementsChangedPayload,
-│   │   │   │                   # InboundBillingEvent, InboundTenantEvent, InboundMembershipEvent,
+│   │   │   │                   # InboundBillingPlanChangedEvent, InboundBillingSubscriptionCancelledEvent, InboundBillingReactivatedEvent, InboundTenantEvent, InboundMembershipEvent,
 │   │   │   │                   # InboundTenantStateChangedEvent (EVT-10)
 │   │   │   ├── event_helpers.go # NewTenantEvent constructor
 │   │   │   └── errors.go       # ErrSnapshotNotFound, ErrAddonNotFound, ErrOverrideNotFound,
@@ -85,10 +85,10 @@ commercial-entitlements/
 │       │   │   ├── tenant_consumer.go      # tenant-entitlements-q
 │       │   │   ├── catalog_consumer.go     # catalog-entitlements-q (cache invalidation + Temporal fan-out)
 │       │   │   ├── membership_consumer.go  # membership-entitlements-q: TenantMembershipsPurged,
-│       │   │   │                           #   TenantStateChanged{cause:TrialReactivated} (E-3; EVT-10)
+│       │   │   │                           #   TenantStateChanged (TrialReactivated E-3; Billing causes B-3; EVT-10)
 │       │   │   └── dedup.go               # processOnce / ackUnknown over port.Inbox
 │       │   └── sqspipeline/
-│       │       └── consumer.go            # EnvForQueue defaults, NewConsumer, Handler, RequireDLQ
+│       │       └── consumer.go            # EnvForQueue defaults, NewConsumer (+GlueDecodeCodec, B-1), Handler, RequireDLQ
 │       ├── outbound/
 │       │   ├── postgres/
 │       │   │   ├── db.go                  # withPool, TxRunner (+ WithAuditRecorder), wrapConnErr, DSNFromEnv

@@ -263,9 +263,10 @@ networkPolicy:
   additionalIngressRules: []
   additionalEgressRules: []
 
-# Billing Service calls commercial-entitlements for entitlement/quota data.
+# Billing Service reads ENT-I1 (GET /api/v1/internal/tenants/:id/entitlements) only.
 # NetworkPolicy: admits pods in the billing namespace to the API port.
-# Istio AuthorizationPolicy: limits them to billing-specific routes.
+# Istio AuthorizationPolicy: admits its principal to GET /api/v1/internal/tenants/*;
+# the app's billingReadOnly narrows that to ENT-I1. Also sets BILLING_CALLER_PRINCIPAL.
 billingCaller:
   enabled: true
   namespace: billing

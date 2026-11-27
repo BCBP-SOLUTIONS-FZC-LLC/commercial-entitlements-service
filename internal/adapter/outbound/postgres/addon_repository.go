@@ -25,19 +25,36 @@ func NewAddonRepository(pool *pgcommon.Pool) *AddonRepository {
 var _ port.AddonRepository = (*AddonRepository)(nil)
 
 // Insert creates a new quota addon pack.
+//
+// A billing_ref already held by another row returns ErrBillingRefAlreadyClaimed
+// without raising a unique violation (B-8, BL-OQ-28): ON CONFLICT DO NOTHING
+// leaves the caller's transaction usable. A raised violation would abort it,
+// and the Billing consumer runs this inside the inbox transaction, so the
+// "drop and ack" would never commit — the event would retry and dead-letter.
+// Rows can be invisible to this tenant under RLS, so the conflicting row may
+// belong to another tenant; the caller decides.
 func (r *AddonRepository) Insert(ctx context.Context, a *domain.QuotaAddon) error {
+	inserted := true
 	err := withPool(ctx, r.pool, func(tx pgcommon.Tx) error {
-		_, err := tx.Exec(ctx, `
+		tag, err := tx.Exec(ctx, `
 			INSERT INTO quota_addons
 				(id, tenant_id, limit_key, total_tokens, remaining_tokens, granted_by,
 				 reason, billing_ref, status, expires_at, record_version, created_at, updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+			ON CONFLICT (billing_ref) WHERE billing_ref IS NOT NULL DO NOTHING`,
 			a.ID, a.TenantID, string(a.LimitKey), a.TotalTokens, a.RemainingTokens,
 			a.GrantedBy, a.Reason, a.BillingRef, string(a.Status), a.ExpiresAt,
 			a.RecordVersion, a.CreatedAt, a.UpdatedAt,
 		)
-		return err
+		if err != nil {
+			return err
+		}
+		inserted = tag.RowsAffected() == 1
+		return nil
 	})
+	if err == nil && !inserted {
+		return domain.NewError(domain.ErrBillingRefAlreadyClaimed, "billing_ref already claimed")
+	}
 	if pgcommon.IsUniqueViolation(err) && pgcommon.ConstraintName(err) == "uq_quota_addons_billing_ref" {
 		return domain.NewError(domain.ErrBillingRefAlreadyClaimed, "billing_ref already claimed by a different tenant")
 	}

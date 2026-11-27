@@ -7,10 +7,13 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
+	"github.com/google/uuid"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
 )
@@ -64,7 +67,9 @@ func (c *BillingEventConsumer) Handle(ctx context.Context, env events.Envelope[j
 
 // handleAddonChanged routes TenantQuotaAddOnChanged to the purchase or refund
 // handler based on the reason field (E-1 / BL-OQ-4, C-5 / BL-OQ-20).
-// Unknown reasons are forward-compat acknowledged.
+// The consumed schema limits reason to purchase|refund, so in the wired
+// pipeline an unknown reason is dead-lettered by sqspipeline.Handler before it
+// gets here (B-4); the default branch only acks when no validator is wired.
 func (c *BillingEventConsumer) handleAddonChanged(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	// Peek at the reason before full deserialisation.
 	var peek struct {
@@ -101,13 +106,24 @@ func (c *BillingEventConsumer) handleAddonPurchase(ctx context.Context, env even
 			map[string]interface{}{"delta": payload.Delta, "billing_ref": payload.BillingRef})
 		return nil //nolint:nilerr
 	}
-	return c.addonSvc.ApplyBillingPurchase(ctx, port.ApplyBillingPurchaseRequest{
+	err := c.addonSvc.ApplyBillingPurchase(ctx, port.ApplyBillingPurchaseRequest{
 		TenantID:    payload.TenantID,
 		Resource:    payload.Resource,
 		Delta:       payload.Delta,
 		BillingRef:  payload.BillingRef,
 		PurchasedAt: payload.PurchasedAt,
 	})
+	if errors.Is(err, domain.ErrBillingRefAlreadyClaimed) {
+		// B-8: the billing_ref already belongs to another tenant's pack — a
+		// duplicate or conflicting paid grant. Nothing was granted. Count it
+		// (drives CommercialEntitlementsBillingRefConflict) and ack: a retry
+		// cannot succeed, and the DLQ would hide a money signal.
+		metrics.IncBillingRefConflict(env.Type, payload.Reason)
+		c.log.Error("billing consumer: billing_ref already claimed by another tenant — add-on NOT granted; operator review required",
+			map[string]interface{}{"event_id": env.ID, "billing_ref": payload.BillingRef, "tenant_id": payload.TenantID})
+		return nil
+	}
+	return err
 }
 
 // handleAddonRefund processes TenantQuotaAddOnChanged {reason: "refund"} from Billing.
@@ -131,19 +147,55 @@ func (c *BillingEventConsumer) handleAddonRefund(ctx context.Context, env events
 	})
 }
 
+// handleSubscriptionEvent handles Billing's TenantPlanChanged,
+// TenantSubscriptionCancelled and TenantReactivated by recomputing from Core's
+// I-17, not from the event. Core applies the same Billing event on its own
+// queue and the two consumers are unordered, so this read can still see the
+// old plan or status; the authoritative second recompute comes from Core's
+// TenantStateChanged relay (MembershipConsumer, B-3).
+//
+// The payload is decoded into the type's own struct (B-5). A payload that
+// does not decode, or has no tenant_id, is returned as an error so it is
+// retried and dead-lettered instead of silently acked.
 func (c *BillingEventConsumer) handleSubscriptionEvent(ctx context.Context, env events.Envelope[json.RawMessage]) error {
-	var payload domain.InboundBillingEvent
-	if err := json.Unmarshal(env.Payload, &payload); err != nil {
-		c.log.Warn("billing consumer: unmarshal failed",
-			map[string]interface{}{"event_type": env.Type, "error": err.Error()})
-		return nil //nolint:nilerr // ack malformed events to prevent DLQ storms
+	tenantID, err := billingSubscriptionTenant(env)
+	if err != nil {
+		c.log.Error("billing consumer: subscription event did not decode — sending to DLQ",
+			map[string]interface{}{"event_type": env.Type, "event_id": env.ID, "error": err.Error()})
+		return err
 	}
-
-	cause := domain.CauseBillingEvent
-	if payload.TrialProfile != nil {
-		cause = domain.CauseTrialChange
-	}
-
-	_, err := c.effectSvc.Recompute(ctx, payload.TenantID, cause)
+	_, err = c.effectSvc.Recompute(ctx, tenantID, domain.CauseBillingEvent)
 	return err
+}
+
+// billingSubscriptionTenant decodes a Billing subscription event into its own
+// payload type and returns its tenant.
+func billingSubscriptionTenant(env events.Envelope[json.RawMessage]) (uuid.UUID, error) {
+	var (
+		tenantID uuid.UUID
+		err      error
+	)
+	switch env.Type {
+	case "TenantPlanChanged":
+		var p domain.InboundBillingPlanChangedEvent
+		err = json.Unmarshal(env.Payload, &p)
+		tenantID = p.TenantID
+	case "TenantSubscriptionCancelled":
+		var p domain.InboundBillingSubscriptionCancelledEvent
+		err = json.Unmarshal(env.Payload, &p)
+		tenantID = p.TenantID
+	case "TenantReactivated":
+		var p domain.InboundBillingReactivatedEvent
+		err = json.Unmarshal(env.Payload, &p)
+		tenantID = p.TenantID
+	default:
+		return uuid.Nil, fmt.Errorf("billing consumer: %q is not a subscription event", env.Type)
+	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("billing consumer: %s unmarshal failed: %w", env.Type, err)
+	}
+	if tenantID == uuid.Nil {
+		return uuid.Nil, fmt.Errorf("billing consumer: %s has no tenant_id", env.Type)
+	}
+	return tenantID, nil
 }

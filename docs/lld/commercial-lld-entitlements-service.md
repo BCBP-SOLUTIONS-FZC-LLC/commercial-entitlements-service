@@ -7,7 +7,7 @@
 | Document type | Low-Level Design (LLD) |
 | Service | Entitlements Service (`commercial-entitlements`) |
 | Go module | `github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements` |
-| Version | 1.21 |
+| Version | 1.22 |
 | Date | November 2026 |
 | Status | Draft for review |
 | Owner | Commercial Team |
@@ -20,6 +20,7 @@
 
 | Rev | Date | Change |
 |---|---|---|
+| 1.22 | 2026-11-27 | **Billing ↔ Entitlements compatibility (Billing hand-off BL-OQ-28, items B-1 to B-8).** (1) **B-1:** every SQS consumer decodes Glue-framed messages (`events.GlueDecodeCodec` in `sqspipeline.NewConsumer`); previously a Glue-framed event was retried and dead-lettered (§7.2). (2) **B-2:** Billing reaches ENT-I1 by its mTLS principal (`cluster.local/ns/billing/sa/commercial-billing`, read from the last `X-Forwarded-Client-Cert` element; env `BILLING_CALLER_PRINCIPAL`) instead of `x-service-token`; `billingReadOnly` keyed on that principal; Istio rule now `GET /api/v1/internal/tenants/*` (§5.1, §5.2, §5.3, §10.2, §13.1). (3) **B-3:** snapshot upserts now refuse a snapshot computed from an older Core `record_version` (`source_record_version` guard), and `TenantStateChanged` recomputes when `cause` is a Billing subscription event (`TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantPaymentPastDue`), when plan or status changed, or on `TrialReactivated` (§7.2). (4) **B-4:** consumed schemas are enforced per queue (`ValidatingCodec.ValidateConsumed`); a schema-invalid event is dead-lettered on first delivery. (5) **B-5:** Billing subscription payloads decoded into per-type structs; undecodable ones are dead-lettered, not acked. (6) **B-6:** AsyncAPI 1.6.0 lists all four Billing types on `billing-entitlements-q`. (7) **B-7:** this document aligned with the code (ENT-I1 callers and wire shape, §10.2 Billing row, §13.1). (8) **B-8:** a `billing_ref` held by another tenant no longer aborts the inbox transaction (`ON CONFLICT DO NOTHING`); counted in `commercial_entitlements_billing_ref_conflict_total` and alerted by `CommercialEntitlementsBillingRefConflict` (§11.3). (9) **E-4:** add-on balance kept on the trial snapshot after a conversion reversal — recorded as ENT-D14 (§16.2). |
 | 1.21 | 2026-11-27 | **IAM upstream compatibility gap closure.** (1) `iamclient/client.go` split into two base URLs: `IAM_CATALOG_BASE_URL` (iam-catalog-admin) and `IAM_ORG_BASE_URL` (iam-org-membership); API-key auth removed — both services use Istio mTLS in-mesh. (2) URL prefix corrected: `FetchPlan` → `{IAM_CATALOG_BASE_URL}/api/v1/internal/plans/:code`; `FetchTenantSubscription` → `{IAM_ORG_BASE_URL}/api/v1/internal/tenants/:id/plan-context`. (3) `FetchAllPlans` added to `port.IAMClient` — calls `GET /api/v1/internal/plans` (CAT-I2 bulk); used by `cmd/catalog-refresh` to bootstrap empty `plan_catalog_cache` on first deploy. (4) `domain.Plan` JSON tags added (`"code"`, `"llm_token_quota_monthly"`, etc.) — required because Go's JSON decoder does not strip underscores in case-insensitive matching, so snake_case catalog keys decoded silently to nil without explicit tags, breaking quota enforcement. (5) `port.TenantSubscription` JSON tags aligned to I-17 wire shape (`PlanCode→"plan"`, `State→"status"`); `FeatureFlags []string` added (`json:"feature_flags"`); dead `TrialProfile` field removed (commercial-entitlements is the system of record for trial profiles). (6) `mapSubscriptionState` extended: `past_due`/`cancelled` → `grace_period`; `trial_expired` → `suspended`. (7) `mergeFeatureFlags` added to `effective_set.go` — unions plan baseline flags with per-tenant O-4 delta from I-17 `feature_flags[]`; result sorted for stable `effectiveSetUnchanged` comparison (ENT-INV-6). (8) `InboundTenantEvent` trimmed to `{TenantID}` matching RP wire shape; `InboundMembershipEvent` gains `actor_id`; `InboundCatalogEvent` fields corrected (`plan_code`→`code`, added `change_type` and `feature_set`). (9) `TenantSuspended`, `TenantReactivated`, `TrialExpired` added to `tenant_consumer.go` Handle switch — previously silently acked, so snapshots were never updated on suspension/reactivation/trial-expiry. (10) `dedup.go` `knownEventTypes`: `TenantProvisioned` → `TenantIdentityProvisioned`; `TrialExpired`, `TrialReactivated`, `TenantConverted`, `TenantMembershipsPurged`, `TenantSubscriptionUpdated` added. §3.2 and §3.3.3 iamclient updated; §7.2 adds `TenantIdentityProvisioned` and `TenantSubscriptionUpdated` rows; §12 config: `IAM_CORE_BASE_URL` → `IAM_ORG_BASE_URL`, `IAM_CATALOG_API_KEY` removed, `IAM_CATALOG_TIMEOUT` added; §18.1 and §18.2 integration details updated; AsyncAPI bumped to v1.5.0. |
 | 1.20 | 2026-11-25 | **E-3 read-race fix: subscribe to `TenantStateChanged` from iam-org-membership.** `TenantStateChanged{cause:TrialReactivated}` added to `membership-entitlements-q` consumer (§3.3.3, §7.2, §7.7 EVT-10). `InboundTenantStateChangedEvent` domain type added (`domain/event.go`). Dead `TenantConverted` and `TenantOffboarded` case handlers removed from `membership_consumer.go` — those events arrive from Realm Provisioner on `tenant-entitlements-q`, not on `membership-entitlements-q`. `dedup.go` `knownEventTypes` updated. AsyncAPI bumped to v1.4.0. ENT-D7 decision note corrected: trial-deletion on conversion is in `tenant_consumer.go → handleOffboard`, not `membership_consumer.go`. Config env var names aligned (§14 table). |
 | 1.19 | 2026-11-24 | **LLD gap closure — sync with actual implementation.** (1) ENUM renamed `addon_status` → `quota_addon_status`; values `exhausted`/`forfeited` → `consumed`/`revoked` to match migration 000001 and domain code. (2) `quota_addons` DDL aligned: `set_by` → `granted_by`; `limit_key` column added; `purchased_at`, `expiry_deferred_since`, `expiry_attempts` removed (not in schema). FIFO ordering corrected from `purchased_at` to `expires_at ASC NULLS LAST, created_at ASC`. (3) Migration `000002_addon_billing_ref` documented (adds `billing_ref` column + `uq_quota_addons_billing_ref` unique index; E-1/BL-OQ-4). (4) QA-5 updated — unique index is a second-line idempotency guard; QA-6 updated to reflect `consumed`/`revoked` semantics. (5) §8.4 refund sequence: `GetByID(purchase_ref)` → `GetByBillingRef(tenant_id, purchase_ref)` (E-2/BL-OQ-20); new edge-case table covering malformed-event NACK (Review-1), cross-tenant billing_ref alert+ack (Review-4), recompute-retry (Review-2), refund-before-purchase retry (Review-5). (6) ENT-I1 response: `addon_eligibility` per-resource field added (E-4/BL-OQ-3). (7) §13.1 CronJobs: replaced 2 entries (`cmd/expiry`, `cmd/catalog-refresh`) with 5 reconciler jobs via `cmd/reconciler --job=<name>`; added `AuthorizationPolicy` Helm resource (E-5/BL-OQ-3). (8) §17 error taxonomy: `billing_ref_already_claimed` added (Review-4). (9) EVT-8: removed "Sequential at MVP; ENT-D1 open" — ENT-D1 resolved via `CatalogFanoutWorkflow` (§8.6). |
@@ -166,7 +167,7 @@ commercial-entitlements/
 │   │   │   │                     #   QuotaAddonDrawdown{ID, AddonID, TenantID, LimitKey, TokensConsumed, PeriodStart, RequestID},
 │   │   │   │                     #   QuotaAddonStatus enum (active/consumed/expired/revoked)
 │   │   │   ├── event.go          # TenantEntitlementsChangedPayload, EffectiveSetCause enum,
-│   │   │   │                     #   InboundBillingEvent, InboundTenantEvent, InboundMembershipEvent,
+│   │   │   │                     #   InboundBillingPlanChangedEvent, InboundBillingSubscriptionCancelledEvent, InboundBillingReactivatedEvent (B-5), InboundTenantEvent, InboundMembershipEvent,
 │   │   │   │                     #   InboundTenantStateChangedEvent (EVT-10)
 │   │   │   └── errors.go         # DomainError catalogue (ErrTenantNotFound, ErrUpstreamUnavailable, …)
 │   │   ├── port/
@@ -216,7 +217,7 @@ commercial-entitlements/
 │       │       ├── catalog_consumer.go     # catalog-entitlements-q: PlanCatalogChanged — validate, re-fetch CAT-I2,
 │       │       │                           #   start CatalogFanoutWorkflow; ack only after start succeeds (§8.6, §9.7)
 │       │       ├── membership_consumer.go  # membership-entitlements-q: TenantMembershipsPurged,
-│       │       │                           #   TenantStateChanged{cause:TrialReactivated} (E-3; EVT-10)
+│       │       │                           #   TenantStateChanged (TrialReactivated E-3; Billing causes B-3; plan/status changed; EVT-10)
 │       │       └── dedup.go               # processOnce / ackUnknown over port.Inbox
 │       └── temporal/
 │           ├── catalog_fanout_workflow.go  # CatalogFanoutWorkflow — page, bounded parallel activities, continue-as-new
@@ -253,9 +254,10 @@ commercial-entitlements/
 │           ├── eventbus/
 │           │   ├── publisher.go            # outbox.Enqueue under platform-events/v2 outbox.Runner
 │           │   ├── glue_codec.go           # GlueCodec — Glue wire header; version resolved at startup by definition
-│           │   ├── validating_codec.go     # ValidatingCodec — payload validated before publish
+│           │   ├── validating_codec.go     # ValidatingCodec — Validate (publish) + ValidateConsumed(queue, type) via consumedSchemaFiles (B-4)
 │           │   └── schemas/
-│           │       └── tenant_entitlements_changed.json  # schema-gov extract output; CI drift-gated
+│           │       ├── tenant_entitlements_changed.json  # produced; schema-gov extract output; CI drift-gated
+│           │       └── inbound_*.json        # 6 consumed schemas (incl. inbound_billing_tenant_{plan_changed,subscription_cancelled,reactivated}.json)
 │           └── metrics/
 │               ├── metrics.go              # commercial_entitlements_* Tier 2/3 metrics (§11.2)
 │               └── standard_test.go        # production registration order + metricslint checks
@@ -312,10 +314,10 @@ Runs `gincommon.ObservabilityMiddlewares(cfg)` (panic recovery, request ID, trac
 
 Outbox (`outbox.Enqueue`, `outbox.Runner`, `PrunePublished`), inbox (`pkg/inbox Store.Process`/`Prune`), SQS consumer (`eventcfg` env loading, `WithDLQForwarding`, `GlueDecodeCodec`, `DLQPublisher`) and envelope patterns all come from the library. This service is a **producer** on one topic (`entitlement-events`) and a **consumer** on four queues:
 
-- **`billing-entitlements-q`** — `TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated` (source=billing)
+- **`billing-entitlements-q`** — `TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated` (source=billing), `TenantQuotaAddOnChanged` (reason purchase|refund); may be Glue-framed (B-1)
 - **`tenant-entitlements-q`** — `TenantIdentityProvisioned`, `TenantSubscriptionUpdated`, `TenantSuspended`, `TenantReactivated` (source=operator), `TrialExpired`, `TenantConverted`, `TenantOffboarded`
 - **`catalog-entitlements-q`** — `PlanCatalogChanged`
-- **`membership-entitlements-q`** — `TenantMembershipsPurged`; `TenantStateChanged` (cause=`TrialReactivated`) — published by iam-org-membership via transactional outbox after DB commit, eliminating the I-17 read race on conversion revert (E-3, EVT-10)
+- **`membership-entitlements-q`** — `TenantMembershipsPurged`; `TenantStateChanged` — recompute when cause is `TrialReactivated` (E-3), a Billing subscription cause (`TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantPaymentPastDue`; B-3), or plan/status changed — published by iam-org-membership via transactional outbox after DB commit, so an I-17 read on receipt is safe (EVT-10)
 
 All queues follow the `<topic-short>-<consumer>-q` naming convention (HLD §9.1). DLQs are `<queue>-dlq` with `maxReceiveCount=5`; the consumer forwards to the DLQ at receive 4. Idempotency via `processed_events` through `pkg/inbox`. The service does **not** self-consume — produce/consume sets are disjoint.
 
@@ -836,7 +838,7 @@ CREATE POLICY tenant_isolation ON quota_addons
 | QA-2 | `remaining_tokens` is monotonically decreasing after creation — only the drawdown and expiry/forfeiture paths write to it; no path increases it after the initial insert. |
 | QA-3 | Pack balance survives `cancelled`/`suspended` states. All `quota_addons` rows are deleted on `TenantMembershipsPurged` — in the same transaction as the full tenant data wipe. No separate `forfeited` status exists. |
 | QA-4 | Expiry (12 calendar months via `AddDate(1,0,0)` from the event's `purchased_at`) is enforced by the `addon-expiry` reconciler job (`cmd/reconciler --job=addon-expiry`). On expiry the pack is marked `expired`, remaining tokens forfeited, effective set recomputed, and `TenantEntitlementsChanged` emitted. |
-| QA-5 | `billing_ref` is the Billing purchase ID for packs created from `TenantQuotaAddOnChanged {reason: "purchase"}`; `NULL` for operator-granted packs. Idempotency is enforced at two layers: (1) `processed_events` inbox (primary); (2) `uq_quota_addons_billing_ref` unique partial index (secondary — added in migration 000002, BL-OQ-4). A `billing_ref` arriving for a different tenant triggers `ErrBillingRefAlreadyClaimed`, logged at ERROR level and silently acknowledged (not retried). |
+| QA-5 | `billing_ref` is the Billing purchase ID for packs created from `TenantQuotaAddOnChanged {reason: "purchase"}`; `NULL` for operator-granted packs. Idempotency is enforced at two layers: (1) `processed_events` inbox (primary); (2) `uq_quota_addons_billing_ref` unique partial index (secondary — added in migration 000002, BL-OQ-4). A `billing_ref` already held by a different tenant's pack is detected by `INSERT … ON CONFLICT (billing_ref) WHERE billing_ref IS NOT NULL DO NOTHING` (0 rows → `ErrBillingRefAlreadyClaimed`, so the inbox transaction stays usable); the consumer logs at ERROR, increments `commercial_entitlements_billing_ref_conflict_total`, fires `CommercialEntitlementsBillingRefConflict`, and acks (B-8). |
 | QA-6 | `status = 'consumed'` when `remaining_tokens` reaches 0 via drawdown; `status = 'revoked'` when an operator removes a fully-unused pack. Neither state is reversible. |
 
 #### `quota_addon_drawdowns` (CD-55)
@@ -1095,6 +1097,8 @@ The `limits` column in `entitlement_snapshots` and the `limits` field in every A
 }
 ```
 
+> **As built (rev 1.22):** the API and the snapshot emit only `{"value": …}` per limit. `source`, `expires_at` and `addon_balance` described below are design intent and are **not** on the wire; `value` for `llm_token_quota_monthly` already includes the add-on balance. The fifth key is `tender_limit` (not `concurrent_tender_limit`). Callers must not depend on the extra fields.
+
 `value: null` means **unlimited** for all keys except `api_rate_limit_rps` (which is never null). `source` has three values:
 
 | `source` | Meaning |
@@ -1143,7 +1147,7 @@ The `limits` column in `entitlement_snapshots` and the `limits` field in every A
 
 | Prefix | Reachable from | Identity source |
 |---|---|---|
-| `/api/v1/internal/*` | Mesh-only (never through ingress) | mTLS caller identity; `x-user-id`, `x-tenant-id`, `x-tenant-roles` from mesh headers |
+| `/api/v1/internal/*` | Mesh-only (never through ingress) | As built: `internalServiceRequired` admits a caller that sends `x-service-token`, or whose mTLS principal (last `X-Forwarded-Client-Cert` element) equals `BILLING_CALLER_PRINCIPAL` (Billing, F-2). `x-user-id`, `x-tenant-id`, `x-tenant-roles` from mesh headers |
 | `/api/v1/tenants/*` | Tenant admin UI through ingress Envoy | As above; `x-tenant-id` must equal `:id` |
 | `/api/v1/operator/*` | `platform_operator` only, mesh-only | `x-tenant-roles` must contain `platform_operator`, checked in handler before DB access |
 
@@ -1151,7 +1155,7 @@ The `limits` column in `entitlement_snapshots` and the `limits` field in every A
 
 | Route | Required role / check |
 |---|---|
-| `GET /api/v1/internal/tenants/:id/entitlements` | mTLS caller is an admitted namespace (§10.2); `x-user-id`, `x-tenant-id`, and `x-tenant-roles` present |
+| `GET /api/v1/internal/tenants/:id/entitlements` | mTLS caller is an admitted namespace (§10.2) and sends `x-service-token`, **or** the caller is Billing by mTLS principal `cluster.local/ns/billing/sa/commercial-billing` (F-2; no `x-service-token`/`x-service-name`). `x-user-id`, `x-tenant-id`, `x-tenant-roles` present. Billing may call **only** this route, `GET` only (`billingReadOnly`; Istio rule §13.1) |
 | `GET /api/v1/internal/plans` | Same as above |
 | `GET /api/v1/tenants/:id/entitlements` | `x-tenant-roles` contains `tenant_owner` or `tenant_admin`, AND `x-tenant-id == :id` |
 | `PUT /api/v1/operator/tenants/:id/entitlement-overrides/:key` | `x-tenant-roles` contains `platform_operator`; re-checked in handler |
@@ -1172,7 +1176,7 @@ Reachable mesh-internally only (never through ingress Envoy). Identity from mTLS
 
 | # | Method & path | Caller | Purpose | Cached |
 |---|---|---|---|---|
-| ENT-I1 | `GET /api/v1/internal/tenants/:id/entitlements` | Usage & Metering, Workflow Definition (W-3), Workflow Execution (W-4), Tender Service (CD-33) | The effective entitlement set — primary read path | yes (Valkey 60 s) |
+| ENT-I1 | `GET /api/v1/internal/tenants/:id/entitlements` | Usage & Metering, Workflow Definition (W-3), Workflow Execution (W-4), Tender Service (CD-33), **Billing** (`GET` only; B-P19 eligibility, B-P20 add-on purchase check — reads `limits.llm_token_quota_monthly.value` and `addon_eligibility.llm_tokens`; 1 s timeout, fails closed) | The effective entitlement set — primary read path | yes (Valkey 60 s) |
 | ENT-I2 | `GET /api/v1/internal/plans` | Mesh services | Cached pass-through of Catalog CAT-I2 | yes (plan_catalog_cache) |
 | ENT-I3 | `POST /api/v1/internal/tenants/:id/quota-addons/drawdowns` | Usage & Metering only (`commercial-usage-metering` SA) | Record period add-on consumption at rollover; idempotent per `(tenant_id, period_start)`; FIFO drawdown (CD-55) | no |
 
@@ -1202,7 +1206,7 @@ Reachable mesh-internally only. `x-tenant-roles` must contain `platform_operator
 
 #### ENT-I1 — `GET /api/v1/internal/tenants/:id/entitlements`
 
-**The read contract.** This section is the definitive specification of the effective set response. Every field, type, null semantic and guarantee is locked here. Callers (Workflow Definition W-3, Workflow Execution W-4, Tender CD-33, Usage & Metering) may build to this contract.
+**The read contract.** This section is the definitive specification of the effective set response. Every field, type, null semantic and guarantee is locked here. Callers (Workflow Definition W-3, Workflow Execution W-4, Tender CD-33, Usage & Metering, Billing — GET only) may build to this contract.
 
 ---
 
@@ -1212,31 +1216,31 @@ Reachable mesh-internally only. `x-tenant-roles` must contain `platform_operator
 |---|---|---|---|
 | `tenant_id` | `string` (UUID) | Yes | The tenant the set applies to |
 | `version` | `integer` | Yes | Monotonically increasing version counter. Increments on every material change to `state`, any limit value, `feature_flags`, or `model_tier`. Callers may store this to detect staleness: a newer version on a subsequent call means the entry changed |
-| `plan` | `string` | Yes | Current plan code: `starter`, `pro`, or `enterprise` |
+| `plan_code` | `string` | Yes | Current plan code: `starter`, `pro`, or `enterprise` |
+| `cause` | `string` | Yes | Why the set was last recomputed (`EffectiveSetCause`, e.g. `billing_event`, `trial_change`) |
 | `state` | `string` | Yes | Derived from `tenants.status` (§8.2). Values: `active`, `read_only`, `suspended` |
 | `feature_flags` | `string[]` | Yes (may be empty `[]`) | Effective boolean feature flags: `planDefaults(plan).feature_set ∪ tenants.feature_flags`. Never `null`. Always an array. Callers check membership: `"dedicated_workflow_queue" in feature_flags` |
 | `model_tier` | `string` | Yes | Plan's `model_tier` from the Catalog: `basic`, `standard`, or `premium` |
 | `limits` | `object` | Yes | An object with exactly five keys (below) |
-| `trial_profile` | `string \| null` | No | Present and non-null only when `tenants.status = 'trial'`. Values: `trial_specific`, `reduced_plan`, `full_plan`, `custom`. `null` when the tenant is not in trial |
-| `addon_eligibility` | `object` | Yes (may be empty `{}`) | Per Billing resource eligibility for token add-on purchases (BL-OQ-3 / E-4). Keys are Billing resource names (`llm_tokens`, `api_requests`). Each value is `{eligible: bool, reason?: string}`. `reason` is set only when `eligible = false`; values: `trial` (trial tenants cannot purchase add-ons), `not_active` (subscription not active), `unlimited_quota` (plan has unlimited quota — add-ons make no sense). Billing reads this field via ENT-I1 before allowing an add-on purchase |
+| `trial_profile` | `string \| null` | No | Present and non-null only when `tenants.status = 'trial'`. Values: `trial_specific`, `reduced_plan`, `full_plan`, `custom`. Omitted when the tenant is not in trial (`omitempty`) |
+| `addon_eligibility` | `object` | Yes (may be empty `{}`) | Per Billing resource eligibility for token add-on purchases (BL-OQ-3 / E-4). Keys are Billing resource names (`llm_tokens`, `api_requests`). Each value is `{eligible: bool, reason: string | null}`; `reason` is `null` when eligible; values: `trial` (trial tenants cannot purchase add-ons), `not_active` (subscription not active), `unlimited_quota` (plan has unlimited quota — add-ons make no sense). Billing reads this field via ENT-I1 before allowing an add-on purchase |
 | `computed_at` | `string` (RFC 3339) | Yes | Timestamp at which the effective set was last computed |
 
-**Add-on balance note.** For `llm_token_quota_monthly`, when active add-on packs exist, `value` = plan/override base + `addon_balance`. The `addon_balance` field (optional integer) shows the add-on contribution; it is omitted when zero. `source` still reflects the base (`"plan"` or `"override"`). See §4.6 for full semantics.
+**Add-on balance note.** For `llm_token_quota_monthly`, `value` already includes the active add-on balance; `addon_balance` and `source` are not emitted (see §4.6 as-built note).
 
 **`limits` object — all five keys always present:**
 
 | Limit key | Type | Null means | Never null when |
 |---|---|---|---|
-| `llm_token_quota_monthly` | `{value: integer\|null, source: string}` | Unlimited | — |
-| `api_request_budget_monthly` | `{value: integer\|null, source: string}` | Unlimited | — |
-| `api_rate_limit_rps` | `{value: integer, source: string}` | — | Always — never null (CD-2, CD-16) |
-| `workflow_template_limit` | `{value: integer\|null, source: string}` | Unlimited | — |
-| `concurrent_tender_limit` | `{value: integer\|null, source: string}` | Unlimited | — |
+| `llm_token_quota_monthly` | `{value: integer\|null}` | Unlimited | — |
+| `api_request_budget_monthly` | `{value: integer\|null}` | Unlimited | — |
+| `api_rate_limit_rps` | `{value: integer}` | — | Always — never null (CD-2, CD-16) |
+| `workflow_template_limit` | `{value: integer\|null}` | Unlimited | — |
+| `tender_limit` | `{value: integer\|null}` | Unlimited | — |
 
-Each limit entry has:
-- `value`: the effective integer value, or `null` for unlimited.
-- `source`: `"plan"` | `"override"` | `"trial_profile"` (see §4.6).
-- `expires_at` (optional string, RFC 3339): present only when `source = "override"` and the override has an expiry set.
+Each limit entry has only `value`: the effective integer value (for `llm_token_quota_monthly`, including the active add-on balance), or `null` for unlimited. The `source` / `expires_at` fields described in §4.6 are not emitted (`dto.go`).
+
+Top-level fields: `tenant_id`, `version`, `plan_code`, `state`, `feature_flags`, `model_tier`, `limits`, `trial_profile` (omitted when null), `cause`, `computed_at`, `addon_eligibility`. `addon_eligibility` maps `llm_tokens` and `api_requests` to `{eligible: bool, reason: null | "trial" | "not_active" | "unlimited_quota"}`; Billing reads `addon_eligibility.llm_tokens` (BL-OQ-3).
 
 **`feature_flags` contract.** The array always contains the **merged effective set**: `planDefaults(plan.feature_set) ∪ tenants.feature_flags`. It is never the per-tenant override delta alone. Callers check membership, they do not interpret the structure. At the time of writing the catalog seeds these flags: Enterprise has `["require_mfa_all_users_allowed", "dedicated_workflow_queue"]` in its `feature_set`; Pro and Starter have `[]`. A tenant admin boolean override (`O-4`) may add or suppress a flag. The `dedicated_workflow_queue` flag is what Workflow Execution reads at W-4 to pick the start queue: when present, Execution starts on `wf-queue-{tenant_id}` and registers that queue as a side effect if it is missing; when absent, Execution uses the shared `wf-queue-default`. The first start after a new grant uses the shared queue (workers discover new queues on a 60-second poll); subsequent starts use the tenant queue. (Workflow team confirmed 2026-11-22.)
 
@@ -1246,19 +1250,23 @@ Each limit entry has:
 {
   "tenant_id":    "3fa85f64-5717-4562-b3fc-2c963f66afa6",
   "version":      42,
-  "plan":         "pro",
+  "plan_code":    "pro",
   "state":        "active",
   "feature_flags": ["sso_enabled", "llm_enabled"],
   "model_tier":   "standard",
   "limits": {
-    "llm_token_quota_monthly":    {"value": 5000000, "source": "plan"},
-    "api_request_budget_monthly": {"value": 2500000, "source": "plan"},
-    "api_rate_limit_rps":         {"value": 50,      "source": "plan"},
-    "workflow_template_limit":    {"value": 80,       "source": "override", "expires_at": "2027-03-31T00:00:00Z"},
-    "concurrent_tender_limit":    {"value": 250,      "source": "plan"}
+    "llm_token_quota_monthly":    {"value": 5000000},
+    "api_request_budget_monthly": {"value": 2500000},
+    "api_rate_limit_rps":         {"value": 50},
+    "workflow_template_limit":    {"value": 80},
+    "tender_limit":               {"value": 250}
   },
-  "trial_profile": null,
-  "computed_at":  "2026-11-01T09:12:03Z"
+  "cause":        "billing_event",
+  "computed_at":  "2026-11-01T09:12:03Z",
+  "addon_eligibility": {
+    "llm_tokens":   {"eligible": true, "reason": null},
+    "api_requests": {"eligible": true, "reason": null}
+  }
 }
 ```
 
@@ -1268,19 +1276,24 @@ Each limit entry has:
 {
   "tenant_id":    "aabbccdd-0000-0000-0000-000000000001",
   "version":      7,
-  "plan":         "pro",
-  "state":        "active",
+  "plan_code":    "pro",
+  "state":        "trial",
   "feature_flags": ["sso_enabled"],
   "model_tier":   "standard",
   "limits": {
-    "llm_token_quota_monthly":    {"value": 100000, "source": "trial_profile"},
-    "api_request_budget_monthly": {"value": 50000,  "source": "trial_profile"},
-    "api_rate_limit_rps":         {"value": 50,     "source": "plan"},
-    "workflow_template_limit":    {"value": 5,       "source": "trial_profile"},
-    "concurrent_tender_limit":    {"value": 25,      "source": "trial_profile"}
+    "llm_token_quota_monthly":    {"value": 100000},
+    "api_request_budget_monthly": {"value": 50000},
+    "api_rate_limit_rps":         {"value": 50},
+    "workflow_template_limit":    {"value": 5},
+    "tender_limit":               {"value": 25}
   },
   "trial_profile": "trial_specific",
-  "computed_at":  "2026-11-01T10:00:00Z"
+  "cause":        "trial_change",
+  "computed_at":  "2026-11-01T10:00:00Z",
+  "addon_eligibility": {
+    "llm_tokens":   {"eligible": false, "reason": "trial"},
+    "api_requests": {"eligible": false, "reason": "trial"}
+  }
 }
 ```
 
@@ -1736,10 +1749,11 @@ Each queue has a DLQ (`<queue>-dlq`, `maxReceiveCount: 5`). SNS filter policies 
 
 | Queue | Event | Action |
 |---|---|---|
-| `billing-entitlements-q` | `TenantPlanChanged` | Re-read I-17, recompute, emit `TenantEntitlementsChanged` |
-| `billing-entitlements-q` | `TenantSubscriptionCancelled` | Recompute; state → `read_only` or `suspended` per §8.2 |
-| `billing-entitlements-q` | `TenantReactivated` (source=billing) | Recompute; state → `active` |
-| `billing-entitlements-q` | `TenantQuotaAddOnChanged` | Dispatches on `reason` enum (`purchase` \| `refund`): **purchase** — inserts `quota_addons` row, idempotent on `billing_ref`, expiry = `purchased_at` + 12 months; **refund** — reduces unused tokens of `purchase_ref` pack only, never below zero; both paths recompute `llm_token_quota_monthly` and emit `TenantEntitlementsChanged` if the effective set changes |
+| `billing-entitlements-q` | *(all four types)* | Messages may be Glue-framed (18-byte header + `dataschema`/`schema_id`); every consumer strips the header with `GlueDecodeCodec` (B-1), then validates the payload against the queue's consumed schema — a violation is dead-lettered on first delivery (B-4). The SNS subscription filter must admit all four types (B-6) |
+| `billing-entitlements-q` | `TenantPlanChanged` | Decode `{tenant_id, plan, previous_plan, direction?, effective_at, billing_ref, billing_subscription_id?}` (Billing `tenant_plan_changed.json`); re-read I-17, recompute (cause `billing_event`), emit `TenantEntitlementsChanged`. Core applies the same event on `billing-orgm-q`, unordered with this queue, so this read may see the old plan — Core's `TenantStateChanged` relay settles it (row below, B-3). A payload that does not decode is dead-lettered (B-5) |
+| `billing-entitlements-q` | `TenantSubscriptionCancelled` | Decode `{tenant_id, cancelled_at, reason}`; recompute; state → `read_only` or `suspended` per §8.2. Same ordering note as above |
+| `billing-entitlements-q` | `TenantReactivated` (source=billing) | Decode `{tenant_id, source, reactivated_at, previous_status?}`; recompute; state → `active`. Same ordering note as above |
+| `billing-entitlements-q` | `TenantQuotaAddOnChanged` | Dispatches on `reason` enum (`purchase` \| `refund`): **purchase** — inserts `quota_addons` row, idempotent on `billing_ref`, expiry = `purchased_at` + 12 months; a `billing_ref` already held by **another tenant's** pack grants nothing, is counted in `commercial_entitlements_billing_ref_conflict_total` (alert `CommercialEntitlementsBillingRefConflict`) and acked (B-8); **refund** — reduces unused tokens of `purchase_ref` pack only, never below zero; both paths recompute `llm_token_quota_monthly` and emit `TenantEntitlementsChanged` if the effective set changes |
 | `tenant-entitlements-q` | `TenantIdentityProvisioned` | Recompute; provisions the initial entitlement snapshot after a new tenant realm is created |
 | `tenant-entitlements-q` | `TenantSubscriptionUpdated` | Recompute; re-read I-17 on any plan or state update that doesn't yet have a dedicated event (forward-compat) |
 | `tenant-entitlements-q` | `TenantConverted` | In one transaction: delete `tenant_trial_assignments` **and** `trial_entitlement_overrides`, keep `entitlement_overrides`, write one AL-5 entry per deleted trial override (`config.override.removed`, reason `trial_conversion`), recompute with the paid plan and emit `TenantEntitlementsChanged` (ENT-D7, ENT-INV-7) |
@@ -1749,7 +1763,7 @@ Each queue has a DLQ (`<queue>-dlq`, `maxReceiveCount: 5`). SNS filter policies 
 | `tenant-entitlements-q` | `TrialExpired` | Recompute; if not converted → state → `suspended` |
 | `catalog-entitlements-q` | `PlanCatalogChanged` | Invalidate `plan_catalog_cache`; re-fetch CAT-I2; **start `CatalogFanoutWorkflow`** (§8.6), which recomputes only the tenants on the changed plan; acknowledge after the start succeeds. **Field validation:** the event's plan identifier field is `code`, not `plan_code` — the consumer must validate against the registered schema (HLD §5.2 warning; Core's own copy had this mismatch and dead-lettered every event) |
 | `membership-entitlements-q` | `TenantMembershipsPurged` | Forfeit all `quota_addons`; delete snapshot, Valkey key, trial assignments |
-| `membership-entitlements-q` | `TenantStateChanged` (cause=`TrialReactivated`) | Recompute with current I-17 subscription state; published by iam-org-membership via transactional outbox — read is safe on receipt (E-3 read-race fix, EVT-10). Other causes silently acked (arrive via dedicated events on `tenant-entitlements-q`). |
+| `membership-entitlements-q` | `TenantStateChanged` | Published by iam-org-membership via transactional outbox after its commit, with `cause` = the source event type — an I-17 read on receipt is safe (E-3, EVT-10). Recompute with current I-17 state when: `cause` = `TrialReactivated` (cause `tenant_lifecycle`); `cause` ∈ {`TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantPaymentPastDue`} (cause `billing_event`) — **Billing-originated changes do not arrive on `tenant-entitlements-q`**; this relay is the recompute that settles them after Core applies Billing's event (B-3); or `plan`/`status` changed for any other cause. Anything else is acked. A recompute that changes nothing writes nothing (ENT-INV-6). `TenantPaymentPastDue` is not consumed from `billing-entitlements-q`; its effect arrives only through this relay |
 
 ### 7.3 Outbox pattern
 
@@ -1794,7 +1808,7 @@ The event contract lives at `api/asyncapi.yaml` (AsyncAPI 3.0 source of truth fo
 |---|---|---|
 | `additionalProperties` | `true` on all produced schemas | Open-schema model — consumers must tolerate unknown fields |
 | `x-forward-compatibility` | `required-settings: lenient-deserialization` | Downstream consumers are required to ignore unknown fields |
-| `info.version` | `1.0.0` (semantic, independent of LLD version) | Bumped on breaking changes only |
+| `info.version` | `1.6.0` (semantic, independent of LLD version) | Minor bump for each added channel, operation or message; major bump on breaking changes |
 | Consumed schemas | `additionalProperties: true`; validation only | Lenient on inbound — never fail on extra fields from producers |
 
 Schema version on outbound publishes: resolved from Glue at startup via `glue:GetSchemaByDefinition` and embedded as the 18-byte Glue wire header on every SNS message. Consumers decode with `GlueDecodeCodec` from `platform-events/v2`.
@@ -1812,7 +1826,7 @@ Schema version on outbound publishes: resolved from Glue at startup via `glue:Ge
 | EVT-7 | **`TenantEntitlementsChanged` is a push notification, not a data carrier.** The payload carries only `tenant_id`, `version`, `cause`, `changed_keys`, `previous_version`, `computed_at`. Consumers call ENT-I1 for the full effective set — they must never derive enforcement decisions from the event payload alone. |
 | EVT-8 | **Catalog refresh is fan-out safe.** On `PlanCatalogChanged`, affected tenants are recomputed in parallel via the `CatalogFanoutWorkflow` Temporal workflow (ENT-D1, resolved). Only tenants on the changed plan are recomputed; concurrency is capped at `FANOUT_MAX_PARALLEL`; continue-as-new paging prevents history overflow. See §8.6. |
 | EVT-9 | **`TenantMembershipsPurged` deletes all add-on packs.** All `quota_addons` rows are deleted in the purge transaction; no drawdown or expiry path can run after purge. `TenantEntitlementsChanged` is not emitted post-purge. |
-| EVT-10 | **`TenantStateChanged` from iam-org-membership resolves the I-17 read race on conversion revert (E-3).** O&M publishes `TenantStateChanged` via transactional outbox *after* its own DB commit. Entitlements subscribes on `membership-entitlements-q` and only acts when `cause == "TrialReactivated"` — an I-17 call made after receipt always observes the post-revert `trial` state. All other causes are silently acked because they arrive via dedicated events on `tenant-entitlements-q`. `TenantConverted` and `TenantOffboarded` are **not** produced by iam-org-membership and must never be expected on this queue. |
+| EVT-10 | **`TenantStateChanged` from iam-org-membership resolves the I-17 read race on conversion revert (E-3).** O&M publishes `TenantStateChanged` via transactional outbox *after* its own DB commit. Entitlements subscribes on `membership-entitlements-q` and recomputes when `cause` is `TrialReactivated` (an I-17 call after receipt observes the post-revert `trial` state), when `cause` is a Billing subscription event (`TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantPaymentPastDue` — Billing-originated changes do not arrive on `tenant-entitlements-q`; this relay settles the Billing/Core race, B-3), or when plan or status changed. Anything else is acked. Snapshot upserts carry Core's tenant `record_version` as `source_record_version` and never replace a snapshot computed from a newer one, so a recompute that read I-17 before Core committed cannot overwrite the relay's result. `TenantConverted` and `TenantOffboarded` are **not** produced by iam-org-membership and must never be expected on this queue. |
 
 ---
 
@@ -1999,7 +2013,7 @@ sequenceDiagram
 | Malformed `TenantQuotaAddOnChanged` payload (unmarshal failure) | Returns `fmt.Errorf(...)` → NACK → SQS retry → DLQ after max attempts. Logged at `ERROR` level. Never silently acked for financial events. |
 | Non-positive `delta` on purchase event | Logged at `WARN` and silently acked (guard against bad Billing data; not financial loss). |
 | `billing_ref` already exists for the **same** tenant | Idempotent replay — existing addon returned, no insert, no error. |
-| `billing_ref` already claimed by a **different** tenant | `ErrBillingRefAlreadyClaimed` — logged at `ERROR` level (alert), silently acked (not retried; retrying is pointless as the unique index will keep firing). |
+| `billing_ref` already claimed by a **different** tenant | `ErrBillingRefAlreadyClaimed` (insert uses `ON CONFLICT DO NOTHING`, so the inbox tx is not aborted) — logged at `ERROR`, counted in `commercial_entitlements_billing_ref_conflict_total{event_type,reason}`, alerted by `CommercialEntitlementsBillingRefConflict`, acked (not retried; nothing granted) (B-8). A same-tenant race on the same `billing_ref` is treated as a replay. |
 | Recompute fails after grant/refund commit | Returns `fmt.Errorf("... event will retry: %w", err)` → NACK → retry. Grant insert is idempotent via `billing_ref`; retries are safe. |
 | Refund arrives before its purchase | `ErrAddonNotFound` from `GetByBillingRef` → error → NACK → retry (queues are not strictly ordered). |
 
@@ -2226,7 +2240,7 @@ All inbound traffic arrives over mTLS terminated by the Envoy sidecar. The servi
 | `workflow-app` | `workflow-definition-service` | `/api/v1/internal/*` |
 | `workflow-app` | `workflow-execution-service-api` | `/api/v1/internal/*` |
 | `commercial` | `commercial-tender-service` | `/api/v1/internal/*` |
-| `commercial` | `commercial-billing-service` | (event bus only — no direct HTTP) |
+| `billing` | `commercial-billing` | `GET /api/v1/internal/tenants/:id/entitlements` (ENT-I1) only — mTLS principal `cluster.local/ns/billing/sa/commercial-billing`; Istio admits `GET /api/v1/internal/tenants/*` and `billingReadOnly` narrows it to ENT-I1 (B-2). The `billing` namespace is never in `existingCallerNamespaces` (W-10). Billing also publishes to `billing-entitlements-q` |
 | `iam` | `iam-operator-portal` | `/api/v1/operator/*` |
 | `monitoring` | `prometheus` | `:9090/metrics` |
 
@@ -2303,6 +2317,7 @@ Log levels: `ERROR` for unexpected failures, `WARN` for handled degradation (Val
 | `commercial_entitlements_expiry_fanout_overrides_total` | Counter | `result` (expired/skipped/failed) | Overrides processed by the expiry workflow |
 | `commercial_entitlements_consumer_lag_seconds` | Histogram | `queue` | SQS message age at processing |
 | `commercial_entitlements_upstream_errors_total` | Counter | `upstream` (i17/cat_i2/al5) | Upstream call failures |
+| `commercial_entitlements_billing_ref_conflict_total` | Counter | `event_type`, `reason` (purchase) | Billing add-on events whose `billing_ref` is already held by another tenant's pack; nothing granted, event acked (B-8) |
 
 ### 11.3 Alerts (PrometheusRule)
 
@@ -2324,6 +2339,7 @@ Log levels: `ERROR` for unexpected failures, `WARN` for handled degradation (Val
 | `EntitlementsExpiryFanoutFailed` | `expiry_fanout_overrides_total{result="failed"}` increase > 0 in 1 h | P2 |
 | `EntitlementsExpiryFanoutSlow` | `expiry_fanout_duration_seconds` p99 > 900 s | P3 |
 | `EntitlementsConsumerDLQ` | any `*-entitlements-q-dlq` depth > 0 | P3 |
+| `CommercialEntitlementsBillingRefConflict` | `increase(commercial_entitlements_billing_ref_conflict_total[15m]) > 0` — a paid add-on was not granted; reconcile with Billing (B-8) | P1 (critical) |
 
 ### 11.4 Distributed tracing
 
@@ -2353,6 +2369,7 @@ All configuration is via environment variables. Loaded at startup; no runtime re
 | `AUDIT_CALLER_DOMAIN` | `commercial` | platform-audit: caller domain stamped on every AL-5 entry |
 | `SNS_TOPIC_ENTITLEMENTS_ARN` | — | Entitlement events topic; empty = NoopPublisher |
 | `SQS_BILLING_ENTITLEMENTS_QUEUE_URL` | required | `billing-entitlements-q` URL |
+| `BILLING_CALLER_PRINCIPAL` | — | Billing's mTLS principal (`cluster.local/ns/billing/sa/commercial-billing`; Helm sets it when `billingCaller.enabled`). Matched against the last `X-Forwarded-Client-Cert` URI; admits Billing to `/api/v1/internal/*` where `billingReadOnly` confines it to GET ENT-I1 (B-2). Empty disables principal admission |
 | `SQS_TENANT_ENTITLEMENTS_QUEUE_URL` | required | `tenant-entitlements-q` URL |
 | `SQS_CATALOG_ENTITLEMENTS_QUEUE_URL` | required | `catalog-entitlements-q` URL |
 | `SQS_MEMBERSHIP_ENTITLEMENTS_QUEUE_URL` | required | `membership-entitlements-q` URL |
@@ -2413,7 +2430,7 @@ All configuration is via environment variables. Loaded at startup; no runtime re
 | `CronJob` — quota-reset | `0 0 1 * *` (monthly); `cmd/reconciler --job=quota-reset`; resets monthly quota counters |
 | `Job` — migrate | Helm `pre-install`/`pre-upgrade` hook; `cmd/migrate` binary; `RUN_MIGRATIONS=true` |
 | `NetworkPolicy` | Ingress from admitted namespaces (§10.2); egress to upstream services; worker and API pods also egress to the platform Temporal frontend (ENT-D1) |
-| `AuthorizationPolicy` (`authz-policy.yaml`) | Istio `AuthorizationPolicy` — restricts `commercial-billing` SPIFFE principal (`cluster.local/ns/billing/sa/commercial-billing`) to `GET /api/v1/internal/tenants/*/entitlements` only; enabled when `istio.authzPolicy.enabled: true` (E-5 / BL-OQ-3) |
+| `AuthorizationPolicy` (`authz-policy.yaml`) | Istio ALLOW policy, rendered when `callers.enabled` and `callers.istio.enabled` (staging, prod). Rule 1: namespaces in `callers.istio.existingCallerNamespaces` (`commercial`, `gateway`, `observability`). Rule 2 (when `billingCaller.enabled`): principal `{callers.istio.trustDomain}/ns/{billingCaller.namespace}/sa/{billingCaller.serviceAccountName}` → `GET /api/v1/internal/tenants/*` only. Istio `paths` support only exact/prefix/suffix, so the app's `billingReadOnly` narrows this to ENT-I1 (E-5 / BL-OQ-3, B-2). The Deployment receives the same principal as `BILLING_CALLER_PRINCIPAL` |
 | `ServiceMonitor` | Scrape `:9090/metrics` every 30 s |
 | `PrometheusRule` | Alerts defined in §11.3 |
 | `HTTPRoute` | Internal mesh routing only; no ingress gateway route |
@@ -2702,6 +2719,7 @@ Tender Service namespace, ServiceAccount, and pod label are needed to admit Tend
 | ENT-D8 | Add-on packs stay active past expiry when final usage reconciliation cannot complete because Usage & Metering is unavailable; retried on every `cmd/expiry` run and expired only after a successful drawdown; deferrals measured, audited and alerted; reconciliation correctness over strict expiry timing (§8.8, QA-4, QA-6) | Commercial + Usage & Metering | 2026-11-18 |
 | B-2 | `entitlement_override_history` is retained when `TenantMembershipsPurged` is processed: active state and operational overrides are deleted, history stays as an immutable audit record under the platform's standard audit-retention policy and may be archived; erasure only if Legal identifies a regulatory requirement (EOH-3, §15.2) | Commercial + Finance/Legal | 2026-11-18 |
 | ENT-D13 | **Atomic INCR token enforcement via Valkey (replaces existing Gateway enforcement; Amazon Bedrock).** Existing approach (Gateway → network hop → Rate Limit Service → decision) replaced with atomic counter enforcement: request arrives at Gateway → Gateway atomically increments `quota:usage:{tenant_id}:llm_token_quota_monthly:{period}` in Valkey by the request token size → result exceeds `quota:tenant:{tenant_id}:llm_token_quota_monthly`? YES → reject `429` before Bedrock is called; NO → allow → call Amazon Bedrock. Eliminates race conditions (TOCTOU) and fail-open (CD-57). Two implementation responsibilities: **(1) Entitlements (this service)** — write `quota:tenant:{tenant_id}:llm_token_quota_monthly` to Valkey on every recompute (effective base + add-on balance, refreshed on every `TenantEntitlementsChanged`); reset `quota:usage:{tenant_id}:llm_token_quota_monthly:{period}` to `0` at period rollover via drawdown recompute; Valkey already in stack (`go-redis/v9`, `VALKEY_URL`, `adapter/outbound/valkey/cache.go`). **(2) AI Team (Rate Limit Service)** — implement atomic INCR against usage counter; read quota ceiling from Valkey key written by Entitlements; no fail-open — enforce from local Valkey cache when upstream unreachable | Commercial Team + AI Team | 2026-11-18 |
+| ENT-D14 | **Add-on balance after a conversion reversal (Billing E-4, BL-OQ-27 b): kept.** When a trial→paid conversion is reversed the tenant returns to a trial snapshot, and `computeEffectiveSet` step 5 still adds the remaining balance of active `quota_addons` packs to `llm_token_quota_monthly` / `api_request_budget_monthly` (`effective_set.go`). Rationale: a token add-on is a separate purchase; Billing refunds the conversion payment but not the add-on, which is refunded only if an operator refunds it — the customer keeps what they paid for. An operator refund arrives as `TenantQuotaAddOnChanged{reason: refund}` and reduces the pack as usual. No code change; Billing needs no change | Entitlements (Commercial Team) | 2026-11-27 |
 
 ### 16.3 Sign-off
 
@@ -2741,7 +2759,7 @@ All errors follow `gincommon.ErrorResponse`: `{"code": "<snake_case>", "message"
 | 409 | `drawdown_already_recorded` | ENT-I3 | `(tenant_id, period_start)` already in `quota_addon_drawdowns` — idempotent, returns 200 |
 | 503 | `upstream_unavailable` | ENT-I1/T1 | Cannot reach Core I-17; no snapshot exists |
 | 503 | `db_unavailable` | All | Postgres pool unavailable |
-| — | `billing_ref_already_claimed` | Consumer-internal | `billing_ref` unique index violated by a different tenant; event is logged at ERROR level and silently acknowledged (not surfaced as HTTP error; not retried) |
+| — | `billing_ref_already_claimed` | Consumer-internal | `billing_ref` already held by a different tenant's pack (insert `ON CONFLICT DO NOTHING` affected 0 rows); event logged at ERROR, counted in `commercial_entitlements_billing_ref_conflict_total`, alerted (`CommercialEntitlementsBillingRefConflict`), and acknowledged (not surfaced as HTTP error; not retried) |
 
 ---
 

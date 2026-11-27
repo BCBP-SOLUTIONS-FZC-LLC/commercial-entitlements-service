@@ -9,9 +9,11 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
 )
 
@@ -31,24 +33,15 @@ func newBillingConsumer() (*BillingEventConsumer, *fakeEffectiveSvc, *fakeAddonS
 
 func TestBillingConsumer_TenantPlanChanged_TriggersRecompute(t *testing.T) {
 	c, eff, _ := newBillingConsumer()
-	payload := domain.InboundBillingEvent{TenantID: uuid.New(), SubscriptionState: "active", PlanCode: "pro"}
+	payload := domain.InboundBillingPlanChangedEvent{TenantID: uuid.New(), Plan: "pro", PreviousPlan: "starter", BillingRef: "sub_1"}
 	env := makeBillingEnv("e1", "TenantPlanChanged", payload)
 	require.NoError(t, c.Handle(context.Background(), env))
 	assert.Len(t, eff.recomputedWith, 1)
 }
 
-func TestBillingConsumer_TenantPlanChanged_WithTrialProfile_CauseTrial(t *testing.T) {
-	c, eff, _ := newBillingConsumer()
-	tp := "reduced_plan"
-	payload := domain.InboundBillingEvent{TenantID: uuid.New(), SubscriptionState: "trial", PlanCode: "starter", TrialProfile: &tp}
-	env := makeBillingEnv("e2", "TenantPlanChanged", payload)
-	require.NoError(t, c.Handle(context.Background(), env))
-	assert.Equal(t, domain.CauseTrialChange, eff.recomputedWith[0])
-}
-
 func TestBillingConsumer_TenantSubscriptionCancelled_TriggersRecompute(t *testing.T) {
 	c, eff, _ := newBillingConsumer()
-	payload := domain.InboundBillingEvent{TenantID: uuid.New()}
+	payload := domain.InboundBillingSubscriptionCancelledEvent{TenantID: uuid.New(), Reason: "customer"}
 	env := makeBillingEnv("e3", "TenantSubscriptionCancelled", payload)
 	require.NoError(t, c.Handle(context.Background(), env))
 	assert.Len(t, eff.recomputedWith, 1)
@@ -56,17 +49,42 @@ func TestBillingConsumer_TenantSubscriptionCancelled_TriggersRecompute(t *testin
 
 func TestBillingConsumer_TenantReactivated_TriggersRecompute(t *testing.T) {
 	c, eff, _ := newBillingConsumer()
-	payload := domain.InboundBillingEvent{TenantID: uuid.New()}
+	payload := domain.InboundBillingReactivatedEvent{TenantID: uuid.New(), Source: "billing"}
 	env := makeBillingEnv("e4", "TenantReactivated", payload)
 	require.NoError(t, c.Handle(context.Background(), env))
 	assert.Len(t, eff.recomputedWith, 1)
 }
 
-func TestBillingConsumer_MalformedPayload_AcksWithoutError(t *testing.T) {
+func TestBillingConsumer_MalformedPayload_ReturnsErrorForDLQ(t *testing.T) {
 	c, eff, _ := newBillingConsumer()
 	env := events.Envelope[json.RawMessage]{ID: "e5", Type: "TenantPlanChanged", Payload: json.RawMessage(`not-json`)}
-	require.NoError(t, c.Handle(context.Background(), env))
-	assert.Empty(t, eff.recomputedWith, "malformed payload must be acked without recompute")
+	require.Error(t, c.Handle(context.Background(), env), "B-5: a payload that does not decode is dead-lettered, not acked")
+	assert.Empty(t, eff.recomputedWith)
+}
+
+func TestBillingConsumer_SubscriptionEvent_MissingTenant_ReturnsError(t *testing.T) {
+	for _, typ := range []string{"TenantPlanChanged", "TenantSubscriptionCancelled", "TenantReactivated"} {
+		c, eff, _ := newBillingConsumer()
+		env := events.Envelope[json.RawMessage]{ID: "e5b-" + typ, Type: typ, Payload: json.RawMessage(`{"plan":"pro"}`)}
+		require.Error(t, c.Handle(context.Background(), env), typ)
+		assert.Empty(t, eff.recomputedWith, typ)
+	}
+}
+
+func TestBillingConsumer_SubscriptionEvents_DecodeBillingWireShape(t *testing.T) {
+	tenant := uuid.New()
+	for typ, body := range map[string]string{
+		"TenantPlanChanged": `{"tenant_id":"` + tenant.String() + `","plan":"pro","previous_plan":"starter","direction":"upgrade",` +
+			`"effective_at":"2026-11-27T10:00:00Z","billing_ref":"sub_1","billing_subscription_id":"` + uuid.NewString() + `"}`,
+		"TenantSubscriptionCancelled": `{"tenant_id":"` + tenant.String() + `","cancelled_at":"2026-11-27T10:00:00Z","reason":"customer"}`,
+		"TenantReactivated":           `{"tenant_id":"` + tenant.String() + `","source":"billing","reactivated_at":"2026-11-27T10:00:00Z","previous_status":"past_due"}`,
+	} {
+		c, eff, _ := newBillingConsumer()
+		env := events.Envelope[json.RawMessage]{ID: "wire-" + typ, Type: typ, Payload: json.RawMessage(body)}
+		require.NoError(t, c.Handle(context.Background(), env), typ)
+		require.Len(t, eff.recomputedWith, 1, typ)
+		assert.Equal(t, domain.CauseBillingEvent, eff.recomputedWith[0], typ)
+	}
 }
 
 // ── Handle — addon purchase ───────────────────────────────────────────────
@@ -204,8 +222,46 @@ func TestBillingConsumer_UnknownEventType_AcksWithoutError(t *testing.T) {
 func TestBillingConsumer_WithInbox_Duplicate_SkipsFn(t *testing.T) {
 	eff := &fakeEffectiveSvc{}
 	c := NewBillingEventConsumer(&fakeInbox{duplicate: true}, eff, nil, &fakeAddonSvc{}, nopConsumerLogger{})
-	payload := domain.InboundBillingEvent{TenantID: uuid.New()}
+	payload := domain.InboundBillingPlanChangedEvent{TenantID: uuid.New(), Plan: "pro", PreviousPlan: "starter", BillingRef: "sub_1"}
 	env := makeBillingEnv("e14", "TenantPlanChanged", payload)
 	require.NoError(t, c.Handle(context.Background(), env))
 	assert.Empty(t, eff.recomputedWith, "duplicate must skip the fn")
+}
+
+// ── B-8: re-claimed billing_ref ───────────────────────────────────────────
+
+func TestBillingConsumer_AddonPurchase_BillingRefClaimed_CountsAndAcks(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_billing_ref_conflict_total"}, []string{"event_type", "reason"})
+	saved := metrics.BillingRefConflictTotal
+	metrics.BillingRefConflictTotal = counter
+	t.Cleanup(func() { metrics.BillingRefConflictTotal = saved })
+
+	c, _, addon := newBillingConsumer()
+	addon.applyPurchaseErr = domain.NewError(domain.ErrBillingRefAlreadyClaimed, "billing_ref already claimed")
+	env := makeBillingEnv("b8", "TenantQuotaAddOnChanged", domain.InboundBillingAddonPurchaseEvent{
+		TenantID: uuid.New(), Resource: "llm_tokens", Delta: 100_000, Reason: "purchase",
+		BillingRef: "pur_dup", PurchasedAt: time.Now().UTC(),
+	})
+
+	require.NoError(t, c.Handle(context.Background(), env), "a conflict cannot succeed on retry, so it is acked")
+	assert.True(t, addon.purchaseCalled)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(counter)
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	require.Len(t, mfs, 1)
+	require.Len(t, mfs[0].GetMetric(), 1)
+	m := mfs[0].GetMetric()[0]
+	assert.Equal(t, 1.0, m.GetCounter().GetValue())
+	assert.Equal(t, "TenantQuotaAddOnChanged", m.GetLabel()[0].GetValue())
+	assert.Equal(t, "purchase", m.GetLabel()[1].GetValue())
+}
+
+func TestBillingConsumer_AddonPurchase_OtherError_Retries(t *testing.T) {
+	c, _, addon := newBillingConsumer()
+	addon.applyPurchaseErr = errors.New("db down")
+	env := makeBillingEnv("b8b", "TenantQuotaAddOnChanged", domain.InboundBillingAddonPurchaseEvent{
+		TenantID: uuid.New(), Resource: "llm_tokens", Delta: 100_000, Reason: "purchase", BillingRef: "pur_x",
+	})
+	require.Error(t, c.Handle(context.Background(), env))
 }

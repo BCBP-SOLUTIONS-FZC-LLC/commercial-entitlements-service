@@ -266,6 +266,12 @@ func (s *EffectiveSetService) recomputeCore(ctx context.Context, tenantID uuid.U
 	es.Version = nextVersion
 
 	snap := effectiveSetToSnap(es)
+	// Stamp the Core tenant row version this set was computed from, so the
+	// upsert refuses to overwrite a snapshot built from a newer I-17 read.
+	// Without it, a recompute that read the old plan but reached the upsert
+	// last (e.g. Billing's event racing Core's TenantStateChanged relay, B-3)
+	// would win on version and keep the old plan.
+	snap.SourceRecordVersion = sub.RecordVersion
 
 	// Pre-compute which limit keys changed so the event payload is populated.
 	changedKeys := computeChangedKeys(es.Limits, existingSnap)

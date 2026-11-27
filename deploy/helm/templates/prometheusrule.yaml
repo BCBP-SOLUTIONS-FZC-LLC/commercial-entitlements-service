@@ -186,6 +186,22 @@ spec:
               Either the producer broke its contract or this service's
               api/asyncapi.yaml is stale.
 
+        - alert: CommercialEntitlementsBillingRefConflict
+          expr: |
+            sum by (domain, service, environment, event_type) (increase(commercial_entitlements_billing_ref_conflict_total[15m])) > 0
+          for: 0m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: A paid Billing add-on was not granted (billing_ref conflict)
+            description: >-
+              commercial-entitlements dropped a {{ "{{ $labels.event_type }}" }} event because
+              its billing_ref is already held by another tenant's add-on pack. The customer
+              paid but nothing was granted, or Billing reused a reference. Find the
+              billing_ref in the "billing_ref already claimed" error log and reconcile
+              with Billing before refunding or granting manually (ENT-O5).
+
     - name: commercial_entitlements_cache
       rules:
         - alert: CommercialEntitlementsCacheMissSpike

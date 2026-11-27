@@ -103,13 +103,38 @@ type InboundBillingAddonPurchaseEvent struct {
 	PurchasedAt time.Time `json:"purchased_at"`
 }
 
-// InboundBillingEvent represents a billing subscription event from upstream.
-type InboundBillingEvent struct {
-	TenantID          uuid.UUID `json:"tenant_id"`
-	SubscriptionState string    `json:"subscription_state"`
-	PlanCode          string    `json:"plan_code"`
-	TrialProfile      *string   `json:"trial_profile,omitempty"`
-	OccurredAt        time.Time `json:"occurred_at"`
+// InboundBillingPlanChangedEvent is the payload of TenantPlanChanged consumed
+// from billing.events. Field names mirror Billing's tenant_plan_changed.json
+// (B-5, BL-OQ-28). Only TenantID drives the handler: the new plan is read
+// from Core (I-17), which owns tenant plan and status.
+type InboundBillingPlanChangedEvent struct {
+	TenantID              uuid.UUID `json:"tenant_id"`
+	Plan                  string    `json:"plan"`
+	PreviousPlan          string    `json:"previous_plan"`
+	Direction             string    `json:"direction,omitempty"`
+	EffectiveAt           time.Time `json:"effective_at"`
+	BillingRef            string    `json:"billing_ref"`
+	BillingSubscriptionID string    `json:"billing_subscription_id,omitempty"`
+}
+
+// InboundBillingSubscriptionCancelledEvent is the payload of
+// TenantSubscriptionCancelled consumed from billing.events
+// (Billing tenant_subscription_cancelled.json).
+type InboundBillingSubscriptionCancelledEvent struct {
+	TenantID    uuid.UUID `json:"tenant_id"`
+	CancelledAt time.Time `json:"cancelled_at"`
+	Reason      string    `json:"reason"`
+}
+
+// InboundBillingReactivatedEvent is the payload of TenantReactivated consumed
+// from billing.events (Billing tenant_reactivated.json; source is always
+// "billing"). Not to be confused with RP's TenantReactivated on
+// tenant-entitlements-q, which is decoded as InboundTenantEvent.
+type InboundBillingReactivatedEvent struct {
+	TenantID       uuid.UUID `json:"tenant_id"`
+	Source         string    `json:"source"`
+	ReactivatedAt  time.Time `json:"reactivated_at"`
+	PreviousStatus string    `json:"previous_status,omitempty"`
 }
 
 // InboundTenantEvent is the common base for tenant lifecycle events from

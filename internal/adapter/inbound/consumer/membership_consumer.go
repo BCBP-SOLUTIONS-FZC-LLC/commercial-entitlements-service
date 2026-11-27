@@ -63,17 +63,44 @@ func (c *MembershipConsumer) handlePurge(ctx context.Context, env events.Envelop
 	return err
 }
 
+// billingStateCauses are the TenantStateChanged causes that relay a Billing
+// subscription event Core applied on its own queue (billing-orgm-q). Core sets
+// cause to the source event type.
+var billingStateCauses = map[string]struct{}{
+	"TenantPlanChanged":           {},
+	"TenantSubscriptionCancelled": {},
+	"TenantReactivated":           {},
+	"TenantPaymentPastDue":        {},
+}
+
 // handleTenantStateChanged processes TenantStateChanged events from iam-org-membership.
-// Only cause=="TrialReactivated" triggers a recompute; other causes are ack'd silently
-// because they arrive via dedicated events on tenant-entitlements-q.
+//
+// Core publishes this relay through its outbox after it has committed the new
+// plan or status, so an I-17 read made here always sees it. It recomputes when:
+//   - cause is TrialReactivated (E-1, E-3);
+//   - cause is one of Billing's subscription events (B-3, BL-OQ-28): Billing
+//     publishes those to both Core and this service, unordered, so this
+//     service's own read on billing-entitlements-q can see the old plan or
+//     status — this relay is the recompute that settles it;
+//   - plan or status changed, whatever the cause.
+//
+// Recompute is a no-op when the computed set equals the latest snapshot
+// (ENT-INV-6), so a relay that duplicates a recompute already done writes
+// nothing and emits no event.
 func (c *MembershipConsumer) handleTenantStateChanged(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	var payload domain.InboundTenantStateChangedEvent
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
 		return nil //nolint:nilerr // ack malformed
 	}
-	if payload.Cause != "TrialReactivated" {
-		return nil //nolint:nilerr
+	_, isBilling := billingStateCauses[payload.Cause]
+	changed := payload.Plan != payload.PreviousPlan || payload.Status != payload.PreviousStatus
+	if !isBilling && !changed && payload.Cause != "TrialReactivated" {
+		return nil
 	}
-	_, err := c.effectSvc.Recompute(ctx, payload.TenantID, domain.CauseTenantLifecycle)
+	cause := domain.CauseTenantLifecycle
+	if isBilling {
+		cause = domain.CauseBillingEvent
+	}
+	_, err := c.effectSvc.Recompute(ctx, payload.TenantID, cause)
 	return err
 }

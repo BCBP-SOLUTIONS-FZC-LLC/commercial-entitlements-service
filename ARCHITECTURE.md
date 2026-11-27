@@ -39,7 +39,7 @@ graph TD
         eventbus["eventbus/\nPublisher.EnqueueOrdered keyed {tenant_id} under advisory lock\nGlueCodec (commercial-entitlements-events)\nschemas/tenant_entitlements_changed.json embedded via go:embed"]
         iamclient["iamclient/\nIAMCatalogClient (HTTP)\nGET /internal/plans from IAM_CATALOG_BASE_URL"]
         auditrecorder["auditrecorder/\nplatform-audit auditoutbox.Enqueuer\npending_audit_entries in business tx (PA-INV-3)"]
-        metrics["metrics/\nregistry.go — 14 commercial_entitlements_* Tier 3 collectors\nbusiness.go — nil-safe helpers + prewarm"]
+        metrics["metrics/\nregistry.go — 19 commercial_entitlements_* Tier 3 collectors\nbusiness.go — nil-safe helpers + prewarm"]
     end
 
     subgraph temporal_grp["Temporal Adapter — internal/adapter/temporal/"]
@@ -224,6 +224,6 @@ See [`docs/observability/README.md`](docs/observability/README.md) for the full 
 | `service` | `commercial-entitlements` |
 | `environment` | `APP_ENV` (`local\|dev\|test\|staging\|prod`) |
 
-Three-tier metrics: Tier 1 `platform_*` (platform libraries), no Tier 2 yet, Tier 3 `commercial_entitlements_*` (14 collectors in `internal/adapter/outbound/metrics/registry.go`).
+Three-tier metrics: Tier 1 `platform_*` (platform libraries), no Tier 2 yet, Tier 3 `commercial_entitlements_*` (19 collectors in `internal/adapter/outbound/metrics/registry.go`).
 
 Reconciler CronJobs share the server identity and push to `PROMETHEUS_PUSHGATEWAY_URL`, grouped by `cronjob`.

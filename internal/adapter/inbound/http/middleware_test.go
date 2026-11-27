@@ -104,7 +104,7 @@ func TestInternalServiceRequired_WithToken_Passes(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set(headerServiceToken, "secret-token")
 	c.Request = req
-	internalServiceRequired()(c)
+	internalServiceRequired("")(c)
 	assert.NotEqual(t, http.StatusUnauthorized, w.Code)
 }
 
@@ -112,7 +112,7 @@ func TestInternalServiceRequired_NoToken_Unauthorized(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
-	internalServiceRequired()(c)
+	internalServiceRequired("")(c)
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
@@ -124,14 +124,14 @@ func TestBillingReadOnly_NonBillingCaller_Passes(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/operator/tenants/abc/something", nil)
 	req.Header.Set(headerServiceName, "some-other-service")
 	c.Request = req
-	billingReadOnly()(c)
+	billingReadOnly("")(c)
 	assert.NotEqual(t, http.StatusForbidden, w.Code)
 }
 
 func TestBillingReadOnly_BillingOnAllowedRoute_Passes(t *testing.T) {
 	r := gin.New()
 	allowedPath := "/api/v1/internal/tenants/:id/entitlements"
-	r.Use(billingReadOnly())
+	r.Use(billingReadOnly(""))
 	r.GET(allowedPath, func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	w := httptest.NewRecorder()
@@ -143,7 +143,7 @@ func TestBillingReadOnly_BillingOnAllowedRoute_Passes(t *testing.T) {
 
 func TestBillingReadOnly_BillingOnOtherRoute_Forbidden(t *testing.T) {
 	r := gin.New()
-	r.Use(billingReadOnly())
+	r.Use(billingReadOnly(""))
 	r.POST("/api/v1/operator/tenants/:id/something", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	w := httptest.NewRecorder()

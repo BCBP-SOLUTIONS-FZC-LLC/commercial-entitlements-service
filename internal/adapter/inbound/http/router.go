@@ -39,6 +39,12 @@ type RouterConfig struct {
 	TrialHandler       *TrialHandler
 	PlansHandler       *PlansHandler
 
+	// BillingPrincipal is Billing's mTLS principal
+	// ("cluster.local/ns/billing/sa/commercial-billing"). A request carrying it
+	// in X-Forwarded-Client-Cert is admitted to the internal group and confined
+	// to GET ENT-I1 (B-2). Empty disables principal admission.
+	BillingPrincipal string
+
 	Postgres  Pinger
 	Cache     Pinger
 	Outbox    Pinger
@@ -127,10 +133,11 @@ func NewRouter(cfg RouterConfig) *Router {
 	api := engine.Group("/api/v1")
 
 	// Internal service-to-service routes (ENT-I1, ENT-I2, ENT-I3).
-	// protected by internalServiceRequired() middleware (x-service-token).
+	// internalServiceRequired admits x-service-token callers and Billing by its
+	// mTLS principal; billingReadOnly confines Billing to GET ENT-I1.
 	internal := api.Group("/internal")
-	internal.Use(internalServiceRequired())
-	internal.Use(billingReadOnly())
+	internal.Use(internalServiceRequired(cfg.BillingPrincipal))
+	internal.Use(billingReadOnly(cfg.BillingPrincipal))
 	{
 		internalTenant := internal.Group("/tenants/:id")
 		internalTenant.Use(tenantIDGate())

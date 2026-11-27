@@ -199,6 +199,38 @@ func TestP5Addon003_DuplicateBillingRef(t *testing.T) {
 	assert.ErrorIs(t, err, domain.ErrBillingRefAlreadyClaimed, "got: %v", err)
 }
 
+// Test Case ID:      P5-ADDON-003b
+// Module:            commercial-entitlements · Persistence
+// Feature:           quota_addons · billing_ref held by another tenant, inside a tx (B-8)
+// Scenario:          Tenant B inserts tenant A's billing_ref in a tx, then keeps using the tx
+// Expected Result:   ErrBillingRefAlreadyClaimed, and the tx is NOT aborted (it commits)
+func TestP5Addon003b_BillingRefClaimedByOtherTenant_TxStaysUsable(t *testing.T) {
+	t.Parallel()
+	appPool, _, _, tenantA := setupTestDB(t)
+	repo := pgadapter.NewAddonRepository(appPool)
+	runner := pgadapter.NewTxRunner(appPool, nil)
+
+	ref := "pur_cross_tenant_001"
+	a := sampleAddon(tenantA, domain.LimitKeyLLMTokenQuotaMonthly)
+	a.BillingRef = &ref
+	require.NoError(t, repo.Insert(withTenant(context.Background(), tenantA), a))
+
+	tenantB := uuid.New()
+	ctxB := withTenant(context.Background(), tenantB)
+	var insertErr, afterErr error
+	txErr := runner.RunInTx(ctxB, func(txCtx context.Context) error {
+		b := sampleAddon(tenantB, domain.LimitKeyLLMTokenQuotaMonthly)
+		b.BillingRef = &ref
+		insertErr = repo.Insert(txCtx, b)
+		// A statement after the conflict must still run in this transaction.
+		_, afterErr = repo.GetByBillingRef(txCtx, tenantB, ref)
+		return nil
+	})
+	require.NoError(t, txErr, "the transaction must commit after a billing_ref conflict")
+	assert.ErrorIs(t, insertErr, domain.ErrBillingRefAlreadyClaimed)
+	assert.ErrorIs(t, afterErr, domain.ErrAddonNotFound, "tenant B has no pack; got: %v", afterErr)
+}
+
 // Test Case ID:      P5-ADDON-004
 // Module:            commercial-entitlements · Persistence
 // Feature:           quota_addons · Update (optimistic lock)

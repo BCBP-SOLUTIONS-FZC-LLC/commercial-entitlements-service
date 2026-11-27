@@ -9,7 +9,9 @@
 // and pins:
 //
 //   - Istio AuthorizationPolicy (L7): one ALLOW policy with the billing
-//     principal restricted to GET */effective-set and */quota-ceilings.
+//     principal restricted to GET on the internal tenant prefix
+//     (/api/v1/internal/tenants/*); the app's billingReadOnly narrows it to
+//     ENT-I1 (B-2). The billing namespace is never in the namespace-wide rule.
 //   - NetworkPolicy (L4): billing namespace pods are admitted on the API
 //     port only; no rule admits every namespace unconditionally.
 //
@@ -119,8 +121,9 @@ func findResource(docs []map[string]any, kind, name string) []map[string]any {
 // ── AuthorizationPolicy tests ──────────────────────────────────────────────
 
 // TestHelmAuthzPolicy_BillingAllowedRoutesOnly asserts the Istio
-// AuthorizationPolicy limits billing to GET */effective-set and
-// */quota-ceilings only.
+// AuthorizationPolicy limits billing to GET on /api/v1/internal/tenants/*
+// (B-2): ENT-I1 is reachable, every non-GET and every non-internal route is
+// not. billingReadOnly narrows the GET prefix to ENT-I1 in the app.
 func TestHelmAuthzPolicy_BillingAllowedRoutesOnly(t *testing.T) {
 	docs := renderChart(t, stagingSets...)
 	policies := findResource(docs, "AuthorizationPolicy", "callers")
@@ -139,7 +142,7 @@ func TestHelmAuthzPolicy_BillingAllowedRoutesOnly(t *testing.T) {
 	}
 
 	// Find the billing principal rule.
-	var billingPaths []string
+	var billingPaths, billingMethods []string
 	for _, r := range rules {
 		rule := r.(map[string]any)
 		froms, _ := rule["from"].([]any)
@@ -163,15 +166,61 @@ func TestHelmAuthzPolicy_BillingAllowedRoutesOnly(t *testing.T) {
 			for _, path := range paths {
 				billingPaths = append(billingPaths, path.(string))
 			}
+			methods, _ := ops["methods"].([]any)
+			for _, m := range methods {
+				billingMethods = append(billingMethods, m.(string))
+			}
 		}
 	}
 
 	sort.Strings(billingPaths)
-	want := []string{"*/effective-set", "*/quota-ceilings"}
-	sort.Strings(want)
+	want := []string{"/api/v1/internal/tenants/*"}
 
 	if !reflect.DeepEqual(billingPaths, want) {
 		t.Fatalf("billing allowed paths:\n  got:  %v\n  want: %v", billingPaths, want)
+	}
+	if !reflect.DeepEqual(billingMethods, []string{"GET"}) {
+		t.Fatalf("billing allowed methods: got %v, want [GET]", billingMethods)
+	}
+}
+
+// TestHelmAuthzPolicy_BillingNamespaceNotWideOpen asserts the billing
+// namespace is never in the namespace-wide rule, which admits every route
+// and would defeat W-10 (B-2).
+func TestHelmAuthzPolicy_BillingNamespaceNotWideOpen(t *testing.T) {
+	overlays := [][]string{stagingSets}
+	for _, env := range []string{"values-staging.yaml", "values-prod.yaml"} {
+		overlays = append(overlays, append(append([]string{}, sharedSets...), "-f", filepath.Join(chartDir(), env)))
+	}
+	for _, sets := range overlays {
+		docs := renderChart(t, sets...)
+		for _, p := range findResource(docs, "AuthorizationPolicy", "callers") {
+			spec, _ := p["spec"].(map[string]any)
+			rules, _ := spec["rules"].([]any)
+			for _, r := range rules {
+				froms, _ := r.(map[string]any)["from"].([]any)
+				for _, f := range froms {
+					src, _ := f.(map[string]any)["source"].(map[string]any)
+					nss, _ := src["namespaces"].([]any)
+					for _, ns := range nss {
+						if ns == "billing" {
+							t.Fatalf("billing namespace is in a namespace-wide ALLOW rule (%v)", sets)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestHelmDeployment_BillingCallerPrincipalEnv asserts the server receives
+// Billing's principal, matching the AuthorizationPolicy rule (B-2).
+func TestHelmDeployment_BillingCallerPrincipalEnv(t *testing.T) {
+	docs := renderChart(t, stagingSets...)
+	rendered := fmt.Sprint(findResource(docs, "Deployment", ""))
+	want := "cluster.local/ns/billing/sa/commercial-billing"
+	if !strings.Contains(rendered, "BILLING_CALLER_PRINCIPAL") || !strings.Contains(rendered, want) {
+		t.Fatalf("Deployment does not set BILLING_CALLER_PRINCIPAL=%s", want)
 	}
 }
 

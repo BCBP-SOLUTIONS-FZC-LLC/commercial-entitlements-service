@@ -240,7 +240,7 @@ jobs:
   # Deploys the image with Helm, waits for rollout, verifies the deployed digest
   # matches what was pushed, then checks the error rate for 2 minutes.
   # On failure, automatically rolls back and fails the release.
-  # Requires: KUBECONFIG_B64 secret, K8S_NAMESPACE var (optional), PROMETHEUS_URL var (optional).
+  # Requires: KUBECONFIG_B64 secret, K8S_NAMESPACE var (optional, default "commercial" — the namespace Billing and the chart assume), PROMETHEUS_URL var (optional).
   deploy-gate:
     name: Post-deploy health gate
     runs-on: ubuntu-latest
@@ -275,7 +275,7 @@ jobs:
             --install \
             --wait \
             --timeout=5m \
-            --namespace="${{ vars.K8S_NAMESPACE || 'default' }}" \
+            --namespace="${{ vars.K8S_NAMESPACE || 'commercial' }}" \
             --set image.tag="${{ needs.docker.outputs.version }}" \
             --atomic
 
@@ -284,7 +284,7 @@ jobs:
         run: |
           EXPECTED_DIGEST="${{ needs.docker.outputs.digest }}"
           ACTUAL=$(kubectl get deployment commercial-entitlements \
-            --namespace="${{ vars.K8S_NAMESPACE || 'default' }}" \
+            --namespace="${{ vars.K8S_NAMESPACE || 'commercial' }}" \
             -o jsonpath='{.spec.template.spec.containers[0].image}')
           echo "Expected digest: ${EXPECTED_DIGEST}"
           echo "Deployed image:  ${ACTUAL}"
@@ -302,7 +302,7 @@ jobs:
       - name: Wait for rollout
         run: |
           kubectl rollout status deployment/commercial-entitlements \
-            --namespace="${{ vars.K8S_NAMESPACE || 'default' }}" \
+            --namespace="${{ vars.K8S_NAMESPACE || 'commercial' }}" \
             --timeout=5m
 
       - name: Health gate — error rate < 1% for 2 minutes
@@ -320,7 +320,7 @@ jobs:
           if awk "BEGIN{exit !($RATE > 0.01)}"; then
             echo "ERROR: 5xx rate ${RATE} exceeds 1% threshold — rolling back"
             helm rollback commercial-entitlements \
-              --namespace="${{ vars.K8S_NAMESPACE || 'default' }}" \
+              --namespace="${{ vars.K8S_NAMESPACE || 'commercial' }}" \
               --wait
             exit 1
           fi

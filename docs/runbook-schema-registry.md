@@ -8,7 +8,7 @@
 - The UUID is fixed for the life of the pod. There is **no refresher**.
 - **Startup fails fast** if the definition is not registered — the pod will not accept traffic.
 
-On the consume side: `events.GlueDecodeCodec` strips the 18-byte header without a registry call. Consumed payloads are validated against embedded schemas in `internal/adapter/inbound/sqspipeline/`.
+On the consume side: `events.GlueDecodeCodec` strips the 18-byte header without a registry call. Consumed payloads are validated by `ValidatingCodec.ValidateConsumed(queue, eventType)` against the embedded `internal/adapter/outbound/eventbus/schemas/inbound_*.json` file mapped for that queue in `consumedSchemaFiles` (`validating_codec.go`). It is keyed by queue because `TenantReactivated` has two producers. Unmapped types pass.
 
 ## Registry
 

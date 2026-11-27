@@ -753,10 +753,16 @@ func (s *AddonService) ApplyBillingRefund(ctx context.Context, req port.ApplyBil
 			if err != nil {
 				return err
 			}
+			// ENT-D16: status records the disposition of the purchased
+			// quantity, not the operation that removed the last tokens.
+			// refunded only when cumulative refunds equal total_tokens
+			// (refunds are capped at the remaining balance, so they can never
+			// exceed it; >= is equality); any mix of consumption and refunds
+			// that empties the pack is consumed.
 			if refunded[a.ID] >= a.TotalTokens {
-				a.Status = domain.AddonStatusRefunded // whole purchase refunded
+				a.Status = domain.AddonStatusRefunded
 			} else {
-				a.Status = domain.AddonStatusConsumed // emptied by draws + refunds
+				a.Status = domain.AddonStatusConsumed
 			}
 		}
 		a.RecordVersion++

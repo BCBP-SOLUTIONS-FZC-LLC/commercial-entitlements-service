@@ -1285,3 +1285,41 @@ func TestListAddons_CarriesRefundedConsumedRemovable(t *testing.T) {
 	assert.Equal(t, int64(3_000), list[0].ConsumedTokens())
 	assert.False(t, list[0].Removable())
 }
+
+// ENT-D16: status reflects the disposition of the purchased quantity, not the
+// operation that removed the last tokens. Refund-then-draw and draw-then-refund
+// with the same split both end consumed.
+func TestPackStatus_DispositionNotLastOperation(t *testing.T) {
+	ctx := context.Background()
+
+	// 2k refunded, then a drawdown empties the remaining 8k.
+	drawID := uuid.New()
+	svc, addons, _, a, tenantID, purchaseRef := refundFixture(t, 10_000)
+	require.NoError(t, svc.ApplyBillingRefund(ctx, port.ApplyBillingRefundRequest{
+		TenantID: tenantID, PurchaseRef: purchaseRef, Delta: -2_000, BillingRef: uuid.New()}))
+	_, err := svc.RecordDrawdown(ctx, port.RecordDrawdownRequest{
+		TenantID: tenantID, LimitKey: domain.LimitKeyLLMTokenQuotaMonthly,
+		TokensConsumed: 8_000, PeriodStart: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), RequestID: &drawID})
+	require.NoError(t, err)
+	first, _ := addons.GetByID(ctx, a.ID)
+	assert.Equal(t, int64(0), first.RemainingTokens)
+	assert.Equal(t, domain.AddonStatusConsumed, first.Status, "refund then draw")
+
+	// 8k drawn, then a refund removes the last 2k.
+	svc2, addons2, _, b, tenant2, purchase2 := refundFixture(t, 2_000)
+	require.NoError(t, svc2.ApplyBillingRefund(ctx, port.ApplyBillingRefundRequest{
+		TenantID: tenant2, PurchaseRef: purchase2, Delta: -2_000, BillingRef: uuid.New()}))
+	second, _ := addons2.GetByID(ctx, b.ID)
+	assert.Equal(t, int64(0), second.RemainingTokens)
+	assert.Equal(t, domain.AddonStatusConsumed, second.Status, "draw then refund")
+
+	// Only cumulative refunds equal to total_tokens give refunded.
+	svc3, addons3, _, c, tenant3, purchase3 := refundFixture(t, 10_000)
+	for _, d := range []int64{-1_000, -4_000, -5_000} {
+		require.NoError(t, svc3.ApplyBillingRefund(ctx, port.ApplyBillingRefundRequest{
+			TenantID: tenant3, PurchaseRef: purchase3, Delta: d, BillingRef: uuid.New()}))
+	}
+	third, _ := addons3.GetByID(ctx, c.ID)
+	assert.Equal(t, domain.AddonStatusRefunded, third.Status)
+	assert.Equal(t, int64(10_000), third.TotalTokens)
+}

@@ -111,7 +111,8 @@ commercial-entitlements/
 │       │   │   ├── validating_codec.go    # ValidatingCodec (embedded schemas/*.json)
 │       │   │   └── schemas/               # one JSON Schema Draft-07 per event type (//go:embed)
 │       │   ├── iamclient/
-│       │   │   └── client.go              # HTTP client for IAM plan catalog + tenant subscription
+│       │   │   └── client.go              # IAM_CATALOG_BASE_URL (iam-catalog-admin: FetchPlan, FetchAllPlans) +
+│       │   │                              #   IAM_ORG_BASE_URL (iam-org-membership: FetchTenantSubscription); Istio mTLS, no API key
 │       │   ├── auditrecorder/
 │       │   │   └── recorder.go            # platform-audit outbox mode (pending_audit_entries on tx)
 │       │   └── metrics/

@@ -2,7 +2,7 @@ asyncapi: "3.0.0"
 
 info:
   title: Commercial Entitlements Service — Event Contracts
-  version: "1.4.0"
+  version: "1.5.0"
   description: |
     Publishes `tenant_entitlements_changed` whenever a tenant's effective
     entitlement set is recomputed.
@@ -10,6 +10,10 @@ info:
     `reason: "purchase"` creates a new quota addon pack (expiry = purchased_at + 12 months,
     idempotent on billing_ref); `reason: "refund"` reduces unused tokens on the referenced
     pack (C-5 / BL-OQ-23, E-1 / BL-OQ-4).
+    Consumes iam-realm-provisioner's tenant lifecycle events from `tenant-entitlements-q`:
+    TenantIdentityProvisioned and TenantSubscriptionUpdated trigger Recompute; TenantSuspended,
+    TenantReactivated (source=operator), and TrialExpired trigger Recompute and update
+    entitlement state; TenantConverted, TenantOffboarded trigger handleOffboard.
     Consumes O&M's `TenantStateChanged{cause:TrialReactivated}` from
     `membership-entitlements-q` to trigger a recompute after a conversion revert.
     Published by iam-org-membership via transactional outbox — receipt guarantees
@@ -41,6 +45,14 @@ channels:
         queue:
           name: billing-entitlements-q
 
+  tenantEntitlementsQueue:
+    address: "arn:aws:sqs:{region}:{account}:tenant-entitlements-q"
+    description: "SQS queue receiving iam-realm-provisioner tenant lifecycle events."
+    bindings:
+      sqs:
+        queue:
+          name: tenant-entitlements-q
+
   membershipEntitlementsQueue:
     address: "arn:aws:sqs:{region}:{account}:membership-entitlements-q"
     description: "SQS queue receiving IAM Org & Membership lifecycle events."
@@ -60,6 +72,23 @@ operations:
       and addon-balance changes all produce this event.
     messages:
       - $ref: "#/components/messages/TenantEntitlementsChanged"
+
+  consumeTenantLifecycleEvents:
+    action: receive
+    channel:
+      $ref: "#/channels/tenantEntitlementsQueue"
+    summary: "Consume iam-realm-provisioner tenant lifecycle events."
+    description: |
+      iam-realm-provisioner publishes tenant lifecycle events on iam-tenant-events →
+      tenant-entitlements-q (CD-6, CD-49). All events carry a minimal payload {tenant_id}.
+      TenantIdentityProvisioned and TenantSubscriptionUpdated → Recompute (initial snapshot
+      and forward-compat plan-change signal). TenantSuspended, TenantReactivated (source=operator),
+      and TrialExpired → Recompute; entitlement state updated from I-17 on receipt.
+      TenantConverted and TenantOffboarded → handleOffboard: delete tenant_trial_assignments
+      and trial_entitlement_overrides in one tx, then Recompute (ENT-INV-7).
+      All types are deduplicated via processed_events (IDEMP-1..4).
+    messages:
+      - $ref: "#/components/messages/InboundTenantLifecycle"
 
   consumeTenantStateChanged:
     action: receive
@@ -110,6 +139,16 @@ components:
         status: active
       payload:
         $ref: "#/components/schemas/InboundTenantStateChangedPayload"
+
+    InboundTenantLifecycle:
+      name: TenantLifecycleEvent
+      title: Tenant Lifecycle Event (inbound from iam-realm-provisioner)
+      summary: "iam-realm-provisioner lifecycle events on tenant-entitlements-q."
+      contentType: application/json
+      x-lifecycle:
+        status: active
+      payload:
+        $ref: "#/components/schemas/InboundTenantLifecyclePayload"
 
     InboundTenantQuotaAddOnChanged:
       name: TenantQuotaAddOnChanged
@@ -165,6 +204,21 @@ components:
           format: date-time
           description: "Wall-clock time the recomputation completed (UTC)."
       additionalProperties: true
+
+    InboundTenantLifecyclePayload:
+      type: object
+      required:
+        - tenant_id
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          description: "UUID of the tenant affected by this lifecycle event."
+      additionalProperties: true
+      description: |
+        Minimal common payload for all tenant lifecycle events from iam-realm-provisioner.
+        Each event type carries only tenant_id; additional fields vary by event and are
+        ignored by this service (ENT-INV-1: the consumer always re-reads I-17 on receipt).
 
     InboundTenantQuotaAddOnChangedPayload:
       type: object

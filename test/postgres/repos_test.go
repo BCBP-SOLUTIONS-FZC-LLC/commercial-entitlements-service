@@ -1402,10 +1402,10 @@ func TestP5Cat005_GetPlan_IncompatibleJSON(t *testing.T) {
 	appPool, seedPool, _, _ := setupTestDB(t)
 	ctx := context.Background()
 
-	// Valid JSONB but LLMTokenQuotaMonthly is a string — cannot unmarshal into *int64.
+	// Valid JSONB but llm_token_quota_monthly is a string — cannot unmarshal into *int64.
 	err := seedPool.Exec(ctx, `
 		INSERT INTO plan_catalog_cache (plan_code, display_name, record_version, definition, cached_at)
-		VALUES ('bad_plan', 'Bad Plan', 1, '{"LLMTokenQuotaMonthly":"not_a_number"}'::jsonb, now())`)
+		VALUES ('bad_plan', 'Bad Plan', 1, '{"llm_token_quota_monthly":"not_a_number"}'::jsonb, now())`)
 	require.NoError(t, err)
 
 	repo := pgadapter.NewCatalogCacheRepository(appPool)

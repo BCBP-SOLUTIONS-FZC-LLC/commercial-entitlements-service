@@ -19,7 +19,8 @@ func newCatalogConsumer() (*CatalogConsumer, *fakeCatalogSvc, *fakeCacheConsumer
 }
 
 func makeCatalogEnv(planCode string) events.Envelope[json.RawMessage] {
-	raw, _ := json.Marshal(map[string]any{"plan_code": planCode, "record_version": 1})
+	// Field name "code" matches iam-catalog-admin's planCatalogChangedData wire shape.
+	raw, _ := json.Marshal(map[string]any{"code": planCode, "change_type": "updated"})
 	return events.Envelope[json.RawMessage]{ID: "cat-1", Type: "PlanCatalogChanged", Payload: raw}
 }
 

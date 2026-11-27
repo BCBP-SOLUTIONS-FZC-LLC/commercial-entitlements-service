@@ -7,7 +7,7 @@
 | Document type | Low-Level Design (LLD) |
 | Service | Entitlements Service (`commercial-entitlements`) |
 | Go module | `github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements` |
-| Version | 1.20 |
+| Version | 1.21 |
 | Date | November 2026 |
 | Status | Draft for review |
 | Owner | Commercial Team |
@@ -20,9 +20,10 @@
 
 | Rev | Date | Change |
 |---|---|---|
+| 1.21 | 2026-11-27 | **IAM upstream compatibility gap closure.** (1) `iamclient/client.go` split into two base URLs: `IAM_CATALOG_BASE_URL` (iam-catalog-admin) and `IAM_ORG_BASE_URL` (iam-org-membership); API-key auth removed — both services use Istio mTLS in-mesh. (2) URL prefix corrected: `FetchPlan` → `{IAM_CATALOG_BASE_URL}/api/v1/internal/plans/:code`; `FetchTenantSubscription` → `{IAM_ORG_BASE_URL}/api/v1/internal/tenants/:id/plan-context`. (3) `FetchAllPlans` added to `port.IAMClient` — calls `GET /api/v1/internal/plans` (CAT-I2 bulk); used by `cmd/catalog-refresh` to bootstrap empty `plan_catalog_cache` on first deploy. (4) `domain.Plan` JSON tags added (`"code"`, `"llm_token_quota_monthly"`, etc.) — required because Go's JSON decoder does not strip underscores in case-insensitive matching, so snake_case catalog keys decoded silently to nil without explicit tags, breaking quota enforcement. (5) `port.TenantSubscription` JSON tags aligned to I-17 wire shape (`PlanCode→"plan"`, `State→"status"`); `FeatureFlags []string` added (`json:"feature_flags"`); dead `TrialProfile` field removed (commercial-entitlements is the system of record for trial profiles). (6) `mapSubscriptionState` extended: `past_due`/`cancelled` → `grace_period`; `trial_expired` → `suspended`. (7) `mergeFeatureFlags` added to `effective_set.go` — unions plan baseline flags with per-tenant O-4 delta from I-17 `feature_flags[]`; result sorted for stable `effectiveSetUnchanged` comparison (ENT-INV-6). (8) `InboundTenantEvent` trimmed to `{TenantID}` matching RP wire shape; `InboundMembershipEvent` gains `actor_id`; `InboundCatalogEvent` fields corrected (`plan_code`→`code`, added `change_type` and `feature_set`). (9) `TenantSuspended`, `TenantReactivated`, `TrialExpired` added to `tenant_consumer.go` Handle switch — previously silently acked, so snapshots were never updated on suspension/reactivation/trial-expiry. (10) `dedup.go` `knownEventTypes`: `TenantProvisioned` → `TenantIdentityProvisioned`; `TrialExpired`, `TrialReactivated`, `TenantConverted`, `TenantMembershipsPurged`, `TenantSubscriptionUpdated` added. §3.2 and §3.3.3 iamclient updated; §7.2 adds `TenantIdentityProvisioned` and `TenantSubscriptionUpdated` rows; §12 config: `IAM_CORE_BASE_URL` → `IAM_ORG_BASE_URL`, `IAM_CATALOG_API_KEY` removed, `IAM_CATALOG_TIMEOUT` added; §18.1 and §18.2 integration details updated; AsyncAPI bumped to v1.5.0. |
+| 1.20 | 2026-11-25 | **E-3 read-race fix: subscribe to `TenantStateChanged` from iam-org-membership.** `TenantStateChanged{cause:TrialReactivated}` added to `membership-entitlements-q` consumer (§3.3.3, §7.2, §7.7 EVT-10). `InboundTenantStateChangedEvent` domain type added (`domain/event.go`). Dead `TenantConverted` and `TenantOffboarded` case handlers removed from `membership_consumer.go` — those events arrive from Realm Provisioner on `tenant-entitlements-q`, not on `membership-entitlements-q`. `dedup.go` `knownEventTypes` updated. AsyncAPI bumped to v1.4.0. ENT-D7 decision note corrected: trial-deletion on conversion is in `tenant_consumer.go → handleOffboard`, not `membership_consumer.go`. Config env var names aligned (§14 table). |
 | 1.19 | 2026-11-24 | **LLD gap closure — sync with actual implementation.** (1) ENUM renamed `addon_status` → `quota_addon_status`; values `exhausted`/`forfeited` → `consumed`/`revoked` to match migration 000001 and domain code. (2) `quota_addons` DDL aligned: `set_by` → `granted_by`; `limit_key` column added; `purchased_at`, `expiry_deferred_since`, `expiry_attempts` removed (not in schema). FIFO ordering corrected from `purchased_at` to `expires_at ASC NULLS LAST, created_at ASC`. (3) Migration `000002_addon_billing_ref` documented (adds `billing_ref` column + `uq_quota_addons_billing_ref` unique index; E-1/BL-OQ-4). (4) QA-5 updated — unique index is a second-line idempotency guard; QA-6 updated to reflect `consumed`/`revoked` semantics. (5) §8.4 refund sequence: `GetByID(purchase_ref)` → `GetByBillingRef(tenant_id, purchase_ref)` (E-2/BL-OQ-20); new edge-case table covering malformed-event NACK (Review-1), cross-tenant billing_ref alert+ack (Review-4), recompute-retry (Review-2), refund-before-purchase retry (Review-5). (6) ENT-I1 response: `addon_eligibility` per-resource field added (E-4/BL-OQ-3). (7) §13.1 CronJobs: replaced 2 entries (`cmd/expiry`, `cmd/catalog-refresh`) with 5 reconciler jobs via `cmd/reconciler --job=<name>`; added `AuthorizationPolicy` Helm resource (E-5/BL-OQ-3). (8) §17 error taxonomy: `billing_ref_already_claimed` added (Review-4). (9) EVT-8: removed "Sequential at MVP; ENT-D1 open" — ENT-D1 resolved via `CatalogFanoutWorkflow` (§8.6). |
 | 1.18 | 2026-11-24 | **BL-OQ-4 / BL-OQ-20 (W-7): add-on event ownership and AL-5 audit path documented.** §7.1: explicit no-event statement — Entitlements never publishes an add-on-specific event; operator corrections and pack expiry are audited exclusively via AL-5 (`billing.token_addon.granted`, `.revoked`, `.expired`). §7.2: `TenantQuotaAddOnChanged` consumer row expanded with `reason` enum (`purchase` \| `refund`) and both code paths. §8.4: flow diagram updated to show purchase and refund dispatch, `billing_ref`-based idempotency for purchase, and `purchase_ref` lookup for refund. |
-| 1.20 | 2026-11-25 | **E-3 read-race fix: subscribe to `TenantStateChanged` from iam-org-membership.** `TenantStateChanged{cause:TrialReactivated}` added to `membership-entitlements-q` consumer (§3.3.3, §7.2, §7.7 EVT-10). `InboundTenantStateChangedEvent` domain type added (`domain/event.go`). Dead `TenantConverted` and `TenantOffboarded` case handlers removed from `membership_consumer.go` — those events arrive from Realm Provisioner on `tenant-entitlements-q`, not on `membership-entitlements-q`. `dedup.go` `knownEventTypes` updated. AsyncAPI bumped to v1.4.0. ENT-D7 decision note corrected: trial-deletion on conversion is in `tenant_consumer.go → handleOffboard`, not `membership_consumer.go`. Config env var names aligned (§14 table). |
 | 1.17 | 2026-11-22 | **ENT-D7 closed.** `TenantConverted` trial-deletion code confirmed complete (`tenant_consumer.go` → `handleOffboard`); "approved pending Product confirmation" caveat removed from §16.2. ENT-D6 trial profile limit numbers remain the only Product/Finance decision outstanding. |
 | 1.16 | 2026-11-22 | **Workflow team response incorporated; Commercial confirmations recorded.** Five LLD wording corrections: §5.2 adds `x-tenant-roles` to ENT-I1 internal-route header check; fail-closed row scoped to gated limits with W-4 queue-grant exception; freshness row updated to actual built behaviour (60 s TTL, stale-while-revalidate up to 2× TTL, 10-minute fallback, configurable via `ENTITLEMENTS_STALE_TTL`); `dedicated_workflow_queue` sentence corrected to pick-start-queue-and-register-as-side-effect; §7.1.2 Workflow subscriber rows removed (not needed at Phase 1, note added). ENT-D10 updated with: Workflow confirmation of non-conflicting queue names and Go SDK v1.46.0; Commercial confirmations of port 8080 (final, `deploy/helm/values.yaml`), pod label `app.kubernetes.io/name: commercial-entitlements` (final, `deployment.yaml`), 10-min freshness fallback accepted, and Commercial SDK currently v1.30.0 (upgrade path noted). §16.3 Workflow Team sign-off updated to Conditionally Ready. Only remaining Commercial action: publish LLD v1.15 to design repository. |
 | 1.15 | 2026-11-18 | **ENT-D3 framed as Product decision PD-LLM-1 (Commercial HLD v0.62).** Nine principles recorded (tiers differ only for draft and judge; common platform models elsewhere; sole `bge-m3` and `bge-reranker-v2-m3`; cross-family judge; Sonnet default with Opus for defined scenarios; fixed-task aliases mapped to exact Bedrock IDs by configuration; English and Arabic evaluation before any replacement) and four confirmations required before approval (ap-south-1 availability, Arabic evaluation, Finance quota validation, `draft-premium-max` routing rules). No Entitlements change. |
@@ -209,8 +210,9 @@ commercial-entitlements/
 │       │   └── consumer/
 │       │       ├── billing_consumer.go     # billing-entitlements-q: TenantPlanChanged, TenantSubscriptionCancelled,
 │       │       │                           #   TenantReactivated (source=billing), TenantQuotaAddOnChanged (CD-55)
-│       │       ├── tenant_consumer.go      # tenant-entitlements-q: TenantConverted, TenantSuspended,
-│       │       │                           #   TenantReactivated (source=operator), TenantOffboarded, TrialExpired
+│       │       ├── tenant_consumer.go      # tenant-entitlements-q: TenantIdentityProvisioned, TenantSubscriptionUpdated,
+│       │       │                           #   TenantSuspended, TenantReactivated (source=operator), TrialExpired → Recompute;
+│       │       │                           #   TenantConverted, TenantOffboarded → handleOffboard
 │       │       ├── catalog_consumer.go     # catalog-entitlements-q: PlanCatalogChanged — validate, re-fetch CAT-I2,
 │       │       │                           #   start CatalogFanoutWorkflow; ack only after start succeeds (§8.6, §9.7)
 │       │       ├── membership_consumer.go  # membership-entitlements-q: TenantMembershipsPurged,
@@ -240,8 +242,9 @@ commercial-entitlements/
 │           │                               #   quota:tenant:{id}:llm_token_quota_monthly (ENT-D13 enforcement ceiling);
 │           │                               #   quota:usage:{id}:llm_token_quota_monthly:{period} reset at rollover (ENT-D13)
 │           ├── iamclient/
-│           │   ├── core_client.go          # I-17 GET /api/v1/internal/tenants/:id/plan-context (commercial-system)
-│           │   └── catalog_client.go       # CAT-I2 GET /api/v1/internal/plans (commercial-system)
+│           │   └── client.go               # FetchPlan + FetchAllPlans → {IAM_CATALOG_BASE_URL}/api/v1/internal/plans (iam-catalog-admin, CAT-I2)
+│           │                               #   FetchTenantSubscription → {IAM_ORG_BASE_URL}/api/v1/internal/tenants/:id/plan-context (iam-org-membership, I-17)
+│           │                               #   Both services use Istio mTLS; no API key; otelhttp traced (OBS-9)
 │           ├── temporalclient/
 │           │   └── starter.go              # go.temporal.io/sdk client — implements port.WorkflowStarter
 │           ├── auditlog/
@@ -293,7 +296,7 @@ require (
 
 `core/domain` imports nothing external. `core/port` imports only `core/domain`. `core/service` imports only `core/domain` and `core/port`. `adapter/*` implements `core/port`. Enforced by `go-arch-lint` (`.go-arch-lint.yml`, `.github/scripts/arch-lint.sh`).
 
-The two outbound IAM clients (`iamclient/core_client`, `iamclient/catalog_client`) are plain `net/http` clients behind `port.IamClient`, built on the same `httpx.NewClient(timeout)` shared factory as Core's six outbound clients — `otelhttp`-instrumented, W3C traceparent injected, no hand-rolled propagation helper.
+The single outbound IAM client (`iamclient/client.go`) implements `port.IAMClient`. It reads `IAM_CATALOG_BASE_URL` (iam-catalog-admin for CAT-I2) and `IAM_ORG_BASE_URL` (iam-org-membership for I-17). Both upstreams are accessed over Istio mTLS — no API key is sent. The client is `otelhttp`-instrumented with W3C traceparent injection (OBS-9). Per-request timeout defaults to 10 s, overridable via `IAM_CATALOG_TIMEOUT`.
 
 ### 3.3 Shared library integration
 
@@ -310,7 +313,7 @@ Runs `gincommon.ObservabilityMiddlewares(cfg)` (panic recovery, request ID, trac
 Outbox (`outbox.Enqueue`, `outbox.Runner`, `PrunePublished`), inbox (`pkg/inbox Store.Process`/`Prune`), SQS consumer (`eventcfg` env loading, `WithDLQForwarding`, `GlueDecodeCodec`, `DLQPublisher`) and envelope patterns all come from the library. This service is a **producer** on one topic (`entitlement-events`) and a **consumer** on four queues:
 
 - **`billing-entitlements-q`** — `TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated` (source=billing)
-- **`tenant-entitlements-q`** — `TenantConverted`, `TenantSuspended`, `TenantReactivated` (source=operator), `TenantOffboarded`, `TrialExpired`
+- **`tenant-entitlements-q`** — `TenantIdentityProvisioned`, `TenantSubscriptionUpdated`, `TenantSuspended`, `TenantReactivated` (source=operator), `TrialExpired`, `TenantConverted`, `TenantOffboarded`
 - **`catalog-entitlements-q`** — `PlanCatalogChanged`
 - **`membership-entitlements-q`** — `TenantMembershipsPurged`; `TenantStateChanged` (cause=`TrialReactivated`) — published by iam-org-membership via transactional outbox after DB commit, eliminating the I-17 read race on conversion revert (E-3, EVT-10)
 
@@ -1737,6 +1740,8 @@ Each queue has a DLQ (`<queue>-dlq`, `maxReceiveCount: 5`). SNS filter policies 
 | `billing-entitlements-q` | `TenantSubscriptionCancelled` | Recompute; state → `read_only` or `suspended` per §8.2 |
 | `billing-entitlements-q` | `TenantReactivated` (source=billing) | Recompute; state → `active` |
 | `billing-entitlements-q` | `TenantQuotaAddOnChanged` | Dispatches on `reason` enum (`purchase` \| `refund`): **purchase** — inserts `quota_addons` row, idempotent on `billing_ref`, expiry = `purchased_at` + 12 months; **refund** — reduces unused tokens of `purchase_ref` pack only, never below zero; both paths recompute `llm_token_quota_monthly` and emit `TenantEntitlementsChanged` if the effective set changes |
+| `tenant-entitlements-q` | `TenantIdentityProvisioned` | Recompute; provisions the initial entitlement snapshot after a new tenant realm is created |
+| `tenant-entitlements-q` | `TenantSubscriptionUpdated` | Recompute; re-read I-17 on any plan or state update that doesn't yet have a dedicated event (forward-compat) |
 | `tenant-entitlements-q` | `TenantConverted` | In one transaction: delete `tenant_trial_assignments` **and** `trial_entitlement_overrides`, keep `entitlement_overrides`, write one AL-5 entry per deleted trial override (`config.override.removed`, reason `trial_conversion`), recompute with the paid plan and emit `TenantEntitlementsChanged` (ENT-D7, ENT-INV-7) |
 | `tenant-entitlements-q` | `TenantSuspended` | Recompute; state → `suspended` |
 | `tenant-entitlements-q` | `TenantReactivated` (source=operator) | Recompute; state → `active` |
@@ -2351,8 +2356,9 @@ All configuration is via environment variables. Loaded at startup; no runtime re
 | `SQS_TENANT_ENTITLEMENTS_QUEUE_URL` | required | `tenant-entitlements-q` URL |
 | `SQS_CATALOG_ENTITLEMENTS_QUEUE_URL` | required | `catalog-entitlements-q` URL |
 | `SQS_MEMBERSHIP_ENTITLEMENTS_QUEUE_URL` | required | `membership-entitlements-q` URL |
-| `IAM_CORE_BASE_URL` | required | Core service base URL for I-17 |
-| `IAM_CATALOG_BASE_URL` | required | Catalog service base URL for CAT-I2 |
+| `IAM_ORG_BASE_URL` | required | iam-org-membership base URL for I-17 (`GET /api/v1/internal/tenants/:id/plan-context`) |
+| `IAM_CATALOG_BASE_URL` | required | iam-catalog-admin base URL for CAT-I2 (`GET /api/v1/internal/plans` and `GET /api/v1/internal/plans/:code`) |
+| `IAM_CATALOG_TIMEOUT` | `10s` | Per-request HTTP timeout for all IAM client calls; override e.g. `"5s"` |
 | `AUDIT_LOG_BASE_URL` | required | Audit Log service base URL for AL-5 |
 | `RUN_MIGRATIONS` | `false` | Set `true` in the Helm migrate Job only |
 | `PG_STATEMENT_TIMEOUT` | `5s` | pgcommon statement timeout |
@@ -2741,9 +2747,9 @@ All errors follow `gincommon.ErrorResponse`: `{"code": "<snake_case>", "message"
 
 ## 18. Integration Details
 
-### 18.1 Core I-17 — `GET /api/v1/internal/tenants/:id/plan-context`
+### 18.1 iam-org-membership I-17 — `GET /api/v1/internal/tenants/:id/plan-context`
 
-Called by `iamclient/core_client.go` as `commercial-system` service account. Returns:
+Called by `iamclient/client.go` (`FetchTenantSubscription`) over Istio mTLS. Base URL: `IAM_ORG_BASE_URL`. Returns:
 
 ```json
 {
@@ -2751,15 +2757,28 @@ Called by `iamclient/core_client.go` as `commercial-system` service account. Ret
   "status":         "active",
   "plan":           "pro",
   "feature_flags":  ["sso_enabled"],
+  "trial_ends_at":  "2026-12-31T23:59:59Z",
   "record_version": 17
 }
 ```
 
-The `record_version` is compared against `entitlement_snapshots.source_record_version`. If the fetched version is lower, the result is discarded (ENT-INV-1). Timeout: 3 s. Retry: 2 attempts with 100 ms backoff (non-idempotent; GET is safe to retry).
+**Wire shape alignment:** `port.TenantSubscription` carries explicit JSON tags — `PlanCode:"plan"` and `State:"status"` — matching the I-17 field names exactly. The `feature_flags` array (O-4 per-tenant delta from operator PATCH) is merged with plan-baseline flags in `mergeFeatureFlags` before the effective set is computed. `TrialProfile` is **not** fetched from I-17 — commercial-entitlements is the system of record for trial profile assignments (`tenant_trial_assignments`).
 
-### 18.2 Catalog CAT-I2 — `GET /api/v1/internal/plans`
+**State mapping (`mapSubscriptionState`):** `active`→`active`; `trial`→`trial`; `past_due`/`cancelled`→`grace_period`; `trial_expired`→`suspended`; `grace_period`→`grace_period`; `suspended`→`suspended`; unknown→`suspended` (fail-safe restriction).
 
-Called by `iamclient/catalog_client.go`. Returns the full plan catalogue including `trial_profiles` per plan (CD-51). The `trial_profiles` object is keyed by profile (`trial_specific`, `reduced_plan`). `full_plan` is not in `trial_profiles` — it uses the plan row directly. `custom` is not in `trial_profiles` — it uses Trial-Specific as base with `trial_entitlement_overrides` on top.
+The `record_version` is compared against `entitlement_snapshots.source_record_version`. If the fetched version is lower, the result is discarded (ENT-INV-1). Timeout: `IAM_CATALOG_TIMEOUT` (default 10 s). GET is idempotent; retried up to 2 times with 100 ms backoff.
+
+### 18.2 iam-catalog-admin CAT-I2 — `GET /api/v1/internal/plans`
+
+Called by `iamclient/client.go` (`FetchPlan` / `FetchAllPlans`) over Istio mTLS. Base URL: `IAM_CATALOG_BASE_URL`.
+
+**Single-plan:** `GET /api/v1/internal/plans/:code` → `FetchPlan` (called by `CatalogService` on a cache miss).
+
+**Bulk:** `GET /api/v1/internal/plans` → `FetchAllPlans` (called by `cmd/catalog-refresh` to bootstrap an empty `plan_catalog_cache` on first deploy or fresh DB; falls back to per-code refresh on failure).
+
+**Wire shape:** `domain.Plan` carries explicit JSON tags (`"code"`, `"llm_token_quota_monthly"`, `"api_request_budget_monthly"`, etc.) matching iam-catalog-admin's `PlanResponse` snake_case fields exactly. Without these tags Go's JSON decoder would silently decode snake_case keys to nil (the decoder does not strip underscores in case-insensitive matching).
+
+Returns the full plan catalogue including `trial_profiles` per plan (CD-51). The `trial_profiles` object is keyed by profile (`trial_specific`, `reduced_plan`). `full_plan` is not in `trial_profiles` — it uses the plan row directly. `custom` is not in `trial_profiles` — it uses Trial-Specific as base with `trial_entitlement_overrides` on top.
 
 Profile-to-data-source table:
 

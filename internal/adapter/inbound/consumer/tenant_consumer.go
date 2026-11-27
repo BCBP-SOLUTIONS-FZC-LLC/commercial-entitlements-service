@@ -40,10 +40,16 @@ func NewTenantEventConsumer(
 // Handle dispatches the envelope to the appropriate handler.
 func (c *TenantEventConsumer) Handle(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	switch env.Type {
-	case "TenantIdentityProvisioned", "TenantSubscriptionUpdated":
+	// Lifecycle events that require a Recompute to reflect the new state.
+	// TenantSuspended, TenantReactivated, TrialExpired come from iam-realm-provisioner
+	// on iam-tenant-events → tenant-entitlements-q (CD-6, CD-49).
+	// TenantSubscriptionUpdated is forward-compat for a future billing signal.
+	case "TenantIdentityProvisioned", "TenantSubscriptionUpdated",
+		"TenantSuspended", "TenantReactivated", "TrialExpired":
 		return processOnce(ctx, c.inbox, TenantConsumerName, env, func(txCtx context.Context) error {
 			return c.handleLifecycleEvent(txCtx, env)
 		})
+	// Offboard events: purge trial data then Recompute.
 	case "TenantMembershipsPurged", "TenantConverted", "TenantOffboarded":
 		return processOnce(ctx, c.inbox, TenantConsumerName, env, func(txCtx context.Context) error {
 			return c.handleOffboard(txCtx, env)

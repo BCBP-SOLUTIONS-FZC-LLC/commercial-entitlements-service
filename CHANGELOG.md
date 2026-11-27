@@ -46,6 +46,30 @@ This service has never been deployed to any environment — there is no released
 
 ### Fixed
 
+- **IAM upstream compatibility gaps (iam-catalog-admin, iam-org-membership, iam-realm-provisioner):**
+
+  - **iamclient: split base URL + correct URL paths** — `baseURL` split into `catalogBaseURL` (`IAM_CATALOG_BASE_URL`, targets iam-catalog-admin) and `orgBaseURL` (`IAM_ORG_BASE_URL`, targets iam-org-membership). URL prefix corrected from `/internal/v1/` to `/api/v1/internal/` for both `FetchPlan` and `FetchTenantSubscription`. `FetchTenantSubscription` path corrected to `.../plan-context` (was `.../subscription`). Both upstreams use Istio mTLS — dead `x-api-key` header and `IAM_CATALOG_API_KEY` env var removed.
+
+  - **iamclient: `FetchAllPlans` added** — calls `GET {IAM_CATALOG_BASE_URL}/api/v1/internal/plans` (CAT-I2 bulk); added to `port.IAMClient`. `cmd/catalog-refresh` now bootstraps an empty `plan_catalog_cache` via `FetchAllPlans` on first deploy rather than failing silently with zero plan codes.
+
+  - **`domain.Plan` JSON tags** — all `Plan` fields now carry explicit `json:"..."` tags matching iam-catalog-admin's `PlanResponse` snake_case shape (`"llm_token_quota_monthly"`, `"api_request_budget_monthly"`, etc.). Without these tags Go's JSON decoder decoded snake_case keys silently to nil, breaking quota enforcement for every tenant.
+
+  - **`port.TenantSubscription` wire alignment** — JSON tags added matching I-17 shape (`PlanCode→"plan"`, `State→"status"`); `FeatureFlags []string` added (`json:"feature_flags,omitempty"`) for per-tenant O-4 operator delta; dead `TrialProfile` field removed (commercial-entitlements is the system of record for trial profiles via `tenant_trial_assignments`).
+
+  - **`mapSubscriptionState` extended** — `past_due`/`cancelled` → `grace_period`; `trial_expired` → `suspended`. Previously these were unhandled and fell through to the default `suspended`, losing the grace-period distinction.
+
+  - **`mergeFeatureFlags` in `effective_set.go`** — plan-baseline feature flags are now unioned with the per-tenant O-4 delta from I-17 `feature_flags[]`. Result is deduped and sorted for stable `effectiveSetUnchanged` comparison (ENT-INV-6). Previously only plan flags were used, ignoring operator-set per-tenant flags entirely.
+
+  - **`TenantSuspended`, `TenantReactivated`, `TrialExpired` added to `tenant_consumer.go`** — these events arrive from iam-realm-provisioner on `tenant-entitlements-q` (CD-6, CD-49) but were previously silently ACK'd without calling Recompute, so entitlement snapshots were never updated on suspension, reactivation, or trial expiry.
+
+  - **`dedup.go` `knownEventTypes` corrected** — `TenantProvisioned` (never published) replaced with `TenantIdentityProvisioned`; `TrialExpired`, `TrialReactivated`, `TenantConverted`, `TenantMembershipsPurged`, `TenantSubscriptionUpdated` added; comments updated to group by queue.
+
+  - **Inbound event wire shapes fixed** — `InboundTenantEvent` trimmed to `{TenantID}` only (RP publishes no extra fields); `InboundMembershipEvent` gains `actor_id` matching `TenantMembershipsPurgedPayload`; `InboundCatalogEvent` fields corrected (`plan_code`→`code`, stale `record_version`/`occurred_at` removed, `change_type` and `feature_set` added).
+
+  - **cmd/server startup validation** — `IAM_ORG_BASE_URL` added to required env-var check; server aborts at startup if unset.
+
+  - **LLD** updated to rev 1.21: §3.2 iamclient paragraph, §3.3.3 event list, §7.2 consumed events (added `TenantIdentityProvisioned` and `TenantSubscriptionUpdated` rows), §12 config (`IAM_CORE_BASE_URL` → `IAM_ORG_BASE_URL`, `IAM_CATALOG_API_KEY` removed, `IAM_CATALOG_TIMEOUT` added), §18.1 and §18.2 integration details. AsyncAPI bumped to v1.5.0: `tenantEntitlementsQueue` channel and `consumeTenantLifecycleEvents` operation added.
+
 - **E-3 read-race fix: conversion-revert recompute** — `membership-entitlements-q`
   consumer now subscribes to `TenantStateChanged{cause:TrialReactivated}` from
   iam-org-membership instead of relying on Realm Provisioner's `TrialReactivated`

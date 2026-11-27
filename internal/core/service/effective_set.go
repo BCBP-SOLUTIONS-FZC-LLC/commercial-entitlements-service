@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -227,12 +228,16 @@ func (s *EffectiveSetService) recomputeCore(ctx context.Context, tenantID uuid.U
 	}
 
 	// Build computed EffectiveSet.
+	// Merge plan-baseline feature flags with per-tenant operator overrides from
+	// iam-org-membership (O-4 PATCH /operator/tenants/:id/feature-flags, returned
+	// on I-17 plan-context as feature_flags[]). Plan flags are the foundation;
+	// tenant-delta flags are unioned on top (GAP-B fix).
 	computedAt := time.Now().UTC()
 	es := &domain.EffectiveSet{
 		TenantID:         tenantID,
 		PlanCode:         sub.PlanCode,
 		State:            state,
-		FeatureFlags:     plan.FeatureFlags(),
+		FeatureFlags:     mergeFeatureFlags(plan.FeatureFlags(), sub.FeatureFlags),
 		ModelTier:        plan.ModelTier,
 		Limits:           limits,
 		TrialProfile:     trialProfile,
@@ -378,6 +383,9 @@ func effectiveSetUnchanged(es *domain.EffectiveSet, snap *domain.EntitlementSnap
 	if es.PlanCode != snap.Plan || es.State != snap.State || es.ModelTier != snap.ModelTier {
 		return false
 	}
+	if !stringSlicesEqual(es.FeatureFlags, snap.FeatureFlags) {
+		return false
+	}
 	if len(es.Limits) != len(snap.Limits) {
 		return false
 	}
@@ -394,6 +402,47 @@ func effectiveSetUnchanged(es *domain.EffectiveSet, snap *domain.EntitlementSnap
 		}
 	}
 	return true
+}
+
+// stringSlicesEqual reports whether two sorted string slices are identical.
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeFeatureFlags unions planFlags (plan baseline) with tenantFlags
+// (per-tenant operator delta from iam-org-membership I-17 feature_flags[]).
+// The result is deduped and sorted for stable comparison in effectiveSetUnchanged.
+func mergeFeatureFlags(planFlags, tenantFlags []string) []string {
+	if len(tenantFlags) == 0 {
+		out := make([]string, len(planFlags))
+		copy(out, planFlags)
+		sort.Strings(out)
+		return out
+	}
+	seen := make(map[string]struct{}, len(planFlags)+len(tenantFlags))
+	merged := make([]string, 0, len(planFlags)+len(tenantFlags))
+	for _, f := range planFlags {
+		if _, ok := seen[f]; !ok {
+			seen[f] = struct{}{}
+			merged = append(merged, f)
+		}
+	}
+	for _, f := range tenantFlags {
+		if _, ok := seen[f]; !ok {
+			seen[f] = struct{}{}
+			merged = append(merged, f)
+		}
+	}
+	sort.Strings(merged)
+	return merged
 }
 
 func snapToEffectiveSet(snap *domain.EntitlementSnapshot) *domain.EffectiveSet {
@@ -467,13 +516,21 @@ func effectiveSetToSnap(es *domain.EffectiveSet) *domain.EntitlementSnapshot {
 }
 
 // mapSubscriptionState converts the upstream subscription state string to a
-// domain.EntitlementState. Unknown states default to EntitlementStateSuspended.
+// domain.EntitlementState. Covers both iam-org-membership's SubscriptionStatus
+// values and any internal grace_period/provisioning values.
+// Unknown states default to EntitlementStateSuspended (fail-safe restriction).
 func mapSubscriptionState(state string) domain.EntitlementState {
 	switch state {
 	case "active":
 		return domain.EntitlementStateActive
 	case "trial":
 		return domain.EntitlementStateTrial
+	// iam-org-membership billing-delinquency states → grace window
+	case "past_due", "cancelled":
+		return domain.EntitlementStateGracePeriod
+	// iam-org-membership trial that has elapsed → suspended (awaiting conversion)
+	case "trial_expired":
+		return domain.EntitlementStateSuspended
 	case "grace_period":
 		return domain.EntitlementStateGracePeriod
 	case "suspended":

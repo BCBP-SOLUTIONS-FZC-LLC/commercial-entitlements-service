@@ -135,7 +135,7 @@ Schema governance: `api/asyncapi.yaml` is the design-time source of truth. Schem
 | Queue env var | Queue name | Consumer struct | Event types handled |
 |---|---|---|---|
 | `SQS_BILLING_ENTITLEMENTS_QUEUE_URL` | `billing-entitlements-q` | `BillingEventConsumer` | `TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated` → Recompute; `TenantQuotaAddOnChanged{reason:purchase}` → ApplyBillingPurchase (E-1); `TenantQuotaAddOnChanged{reason:refund}` → ApplyBillingRefund (C-5 / BL-OQ-23) |
-| `SQS_TENANT_ENTITLEMENTS_QUEUE_URL` | `tenant-entitlements-q` | `TenantEventConsumer` | `TenantIdentityProvisioned`, `TenantSubscriptionUpdated` → Recompute; `TenantMembershipsPurged`, `TenantConverted`, `TenantOffboarded` → handleOffboard (Recompute + optional PurgeTrial) |
+| `SQS_TENANT_ENTITLEMENTS_QUEUE_URL` | `tenant-entitlements-q` | `TenantEventConsumer` | `TenantIdentityProvisioned`, `TenantSubscriptionUpdated`, `TenantSuspended`, `TenantReactivated` (source=operator), `TrialExpired` → Recompute; `TenantConverted`, `TenantOffboarded` → handleOffboard (Recompute + optional PurgeTrial) |
 | `SQS_CATALOG_ENTITLEMENTS_QUEUE_URL` | `catalog-entitlements-q` | `CatalogConsumer` | `PlanCatalogChanged` → InvalidatePlan cache + Temporal fan-out |
 | `SQS_MEMBERSHIP_ENTITLEMENTS_QUEUE_URL` | `membership-entitlements-q` | `MembershipConsumer` | `TenantMembershipsPurged` → Recompute; `TenantStateChanged{cause:TrialReactivated}` → Recompute (E-3 read-race fix; published after O&M commit via transactional outbox, ensuring I-17 reflects post-revert state) |
 

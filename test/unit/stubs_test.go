@@ -640,8 +640,9 @@ func (r *fakeTrialRepo) DeleteAllOverrides(_ context.Context, tenantID uuid.UUID
 // ── fakeIAMClient ──────────────────────────────────────────────────────────
 
 type fakeIAMClient struct {
-	fetchPlanFn func(ctx context.Context, planCode string) (*domain.Plan, error)
-	fetchSubFn  func(ctx context.Context, tenantID uuid.UUID) (*port.TenantSubscription, error)
+	fetchPlanFn    func(ctx context.Context, planCode string) (*domain.Plan, error)
+	fetchAllPlanFn func(ctx context.Context) ([]*domain.Plan, error)
+	fetchSubFn     func(ctx context.Context, tenantID uuid.UUID) (*port.TenantSubscription, error)
 }
 
 func (f *fakeIAMClient) FetchPlan(ctx context.Context, planCode string) (*domain.Plan, error) {
@@ -649,6 +650,18 @@ func (f *fakeIAMClient) FetchPlan(ctx context.Context, planCode string) (*domain
 		return f.fetchPlanFn(ctx, planCode)
 	}
 	return samplePlan(planCode), nil
+}
+
+func (f *fakeIAMClient) FetchAllPlans(ctx context.Context) ([]*domain.Plan, error) {
+	if f.fetchAllPlanFn != nil {
+		return f.fetchAllPlanFn(ctx)
+	}
+	plans := []*domain.Plan{
+		samplePlan("starter"),
+		samplePlan("pro"),
+		samplePlan("enterprise"),
+	}
+	return plans, nil
 }
 
 func (f *fakeIAMClient) FetchTenantSubscription(ctx context.Context, tenantID uuid.UUID) (*port.TenantSubscription, error) {

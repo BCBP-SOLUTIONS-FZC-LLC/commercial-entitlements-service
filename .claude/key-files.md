@@ -14,7 +14,7 @@ Critical implementation files for `commercial-entitlements`. See also [`architec
 
 - **`internal/core/service/catalog.go`** — `CatalogService`. Read-through cache over `IAMClient` + `CatalogCacheRepository`. Calls `IAMClient.FetchPlan` on a cache miss and stores result in `plan_catalog_cache`. On a `PlanCatalogChanged` event, invalidates both Postgres cache and Valkey `ent:plan:{code}` key, then optionally fans out via Temporal workflow. **NOT fail-open** — a cold Postgres cache + IAM outage → 503; this is the only fail-closed upstream dependency.
 
-- **`internal/core/port/outbound.go`** — all outbound port interfaces: `SnapshotRepository`, `OverrideRepository`, `AddonRepository`, `DrawdownRepository`, `ShortfallRepository`, `TrialRepository`, `CatalogCacheRepository`, `TxRunner`, `Cache` (with `DeleteUsageCounters`), `IAMClient` (FetchPlan + FetchTenantSubscription), `Inbox`, `EventPublisher`, `TemporalStarter`, `AuditRecorder`.
+- **`internal/core/port/outbound.go`** — all outbound port interfaces: `SnapshotRepository`, `OverrideRepository`, `AddonRepository`, `DrawdownRepository`, `ShortfallRepository`, `TrialRepository`, `CatalogCacheRepository`, `TxRunner`, `Cache` (with `DeleteUsageCounters`), `IAMClient` (`FetchPlan`, `FetchAllPlans`, `FetchTenantSubscription`), `TenantSubscription` (JSON-tagged to I-17 wire shape; `FeatureFlags []string`), `Inbox`, `EventPublisher`, `TemporalStarter`, `AuditRecorder`.
 
 - **`internal/core/port/inbound.go`** — service interfaces: `EffectiveSetService`, `OverrideService`, `AddonService`, `ShortfallService`, `TrialService` and all request types (SetOverrideRequest, AddAddonRequest, RecordDrawdownRequest, SetTrialRequest, etc.).
 
@@ -28,7 +28,7 @@ Critical implementation files for `commercial-entitlements`. See also [`architec
 
 - **`internal/adapter/outbound/eventbus/publisher.go`** — `Publisher.Enqueue` writes to `outbox_events` via `outbox.EnqueueOrdered`; reads `pgx.Tx` from ctx via `port.TxFromContext` (or `port.EventPublisherFromContext`) — the tx is always started by `TxRunner.RunInTx`, never by this adapter. Schema validation via `ValidatingCodec` on enqueue. **Only call site for `outbox.EnqueueOrdered`** — no other file may call it directly (arch-lint + CI check).
 
-- **`internal/adapter/outbound/iamclient/client.go`** — HTTP client for IAM plan catalog (`GET /internal/v1/plans/:code`) and tenant subscription endpoint (`GET /internal/v1/tenants/:id/subscription`). Built via `otelhttp.NewTransport` for distributed tracing. Configured via `IAM_CATALOG_BASE_URL` + `IAM_CATALOG_API_KEY`.
+- **`internal/adapter/outbound/iamclient/client.go`** — Single HTTP client implementing `port.IAMClient` for two upstream IAM services. `FetchPlan`/`FetchAllPlans` call `{IAM_CATALOG_BASE_URL}/api/v1/internal/plans[/:code]` (iam-catalog-admin, CAT-I2). `FetchTenantSubscription` calls `{IAM_ORG_BASE_URL}/api/v1/internal/tenants/:id/plan-context` (iam-org-membership, I-17). Both use Istio mTLS — no API key. `FetchAllPlans` is used by `cmd/catalog-refresh` for cold-start bootstrap. Built via `otelhttp.NewTransport` (OBS-9). Timeout: `IAM_CATALOG_TIMEOUT` (default 10 s).
 
 - **`internal/adapter/inbound/consumer/dedup.go`** — `processOnce`/`ackUnknown` helpers. `processOnce` calls `inbox.ProcessOnce(ctx, consumerName, eventID, fn)` which claims the event in `processed_events` as the first statement of `fn`'s transaction — a concurrent duplicate blocks on the row lock and is then skipped (IDEMP-1..4).
 

@@ -6,6 +6,12 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Changed — dependencies updated to latest (2026-11-27)
+
+- Every module in `go.mod` updated to its latest version (`go get -u -t ./...`, `go get -u tool`, `go mod tidy`). Runtime: `github.com/redis/go-redis/v9` v9.24.0 → v9.24.1 and indirect patch/minor bumps (e.g. `aws/smithy-go`); platform libraries were already current. Tooling: `golangci-lint` v2.5.0 → v2.15.0 (with its linters), swag's `go-openapi` dependencies (generated Swagger unchanged). Test stack: testcontainers' `moby`, `klauspost/compress`, `gopsutil`.
+- `.golangci.yml`: the test-path exclusions were under the golangci-lint v1 key `issues.exclude-rules`, which v2 ignores (`config verify` failed). Moved to `linters.exclusions.rules`; with v2.15's stricter `noctx` they now apply as intended.
+- Valkey adapter tests: the shared container now also waits for the mapped port, and per-test setup uses a separate client with normal timeouts. The service client's deliberate 50 ms read / 100 ms dial budget (CACHE-1) made the cold first command intermittently time out under `-race`.
+
 ### Fixed — Billing hand-off F-3 / F-4 (BL-OQ-20 W-5, W-6)
 
 - **F-3 Billing refunds could be applied twice.** A refund was idempotent only on the envelope ID, and `processed_events` is pruned after 8 days, so a DLQ redrive, a visibility-timeout cycle past the prune, or a re-publish under a new envelope ID removed tokens again. New append-only ledger `quota_addon_refunds` (migration `000005`, RLS, SELECT/INSERT grant) keyed by Billing `refund_id`; `ApplyBillingRefund` claims it with `ON CONFLICT DO NOTHING` in the same transaction as the pack update (replay → no change; `refund_id` of another tenant, or reused for another purchase of the same tenant → `commercial_entitlements_billing_ref_conflict_total{reason="refund_ref_other_tenant"|"refund_ref_other_purchase"}`, ack). `ApplyBillingRefundRequest.BillingRef` and the refund event's `billing_ref` are now `uuid.UUID`. `AddonService.WithRefundRepository`; without it refunds fail closed.

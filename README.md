@@ -443,8 +443,9 @@ Full invariant list: `.claude/CLAUDE.md` · LLD: `docs/lld/commercial-lld-entitl
 | `PG_STATEMENT_TIMEOUT` / `PG_LOCK_TIMEOUT` | `5s` / `2s` | Per-transaction Postgres timeouts |
 | `RUN_MIGRATIONS` | `true` | Set `false` in Kubernetes replicas (the Helm migrate Job owns the schema) |
 | `VALKEY_URL` | `localhost:6379` | Valkey advisory cache; `rediss://` required outside dev |
-| `IAM_CATALOG_BASE_URL` | — | IAM Org Membership base URL — used by `iamclient` for I-17 (tenant plan context) and plan definitions; required |
-| `IAM_CATALOG_API_KEY` | — | API key for IAM catalog endpoint |
+| `IAM_CATALOG_BASE_URL` | — | iam-catalog-admin base URL — used by `iamclient` for `FetchPlan` and `FetchAllPlans` (CAT-I2); required |
+| `IAM_ORG_BASE_URL` | — | iam-org-membership base URL — used by `iamclient` for `FetchTenantSubscription` (I-17 plan-context); required |
+| `IAM_CATALOG_TIMEOUT` | `10s` | Per-request HTTP timeout for IAM calls; override with e.g. `"5s"` or `"15s"` |
 | `TEMPORAL_HOST_PORT` | — | Temporal; optional — if unset, catalog fan-out is skipped (degrades gracefully) |
 | `SNS_TOPIC_ENTITLEMENTS_ARN` | — | **Required outside dev.** SNS topic for `tenant_entitlements_changed` |
 | `SQS_BILLING_ENTITLEMENTS_QUEUE_URL` | — | Billing lifecycle events queue |

@@ -127,6 +127,9 @@ func (s *stubAddonSvc) GetShortfall(_ context.Context, _ uuid.UUID) (*domain.Quo
 func (s *stubAddonSvc) ExpireAddons(_ context.Context) (int, error) {
 	return s.expireCount, s.expireErr
 }
+func (s *stubAddonSvc) ForfeitAddonsAtPurge(_ context.Context, _ uuid.UUID) (int, error) {
+	return 0, nil
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 

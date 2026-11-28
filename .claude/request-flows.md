@@ -110,11 +110,13 @@ SQS billing-entitlements-q → BillingEventConsumer.Handle
 ```
 SQS tenant-entitlements-q → TenantEventConsumer.Handle
   → processOnce → fn:
-      parse TenantConverted/TenantSuspended/TenantOffboarded/etc.
-      if TenantOffboarded or TrialExpired:
-        TrialService.PurgeTrialForTenant(ctx, tenantID)
+      TenantIdentityProvisioned/TenantSubscriptionUpdated/TenantSuspended/TenantReactivated/TrialExpired
+        → EffectiveSetService.Recompute(ctx, tenantID, TenantLifecycle)
+      TenantMembershipsPurged/TenantConverted/TenantOffboarded → handleOffboard:
+        if TenantMembershipsPurged: AddonService.ForfeitAddonsAtPurge (in inbox tx; error → redelivery, E-9)
+        TrialService.PurgeTrialForTenant(ctx, tenantID)  (error logged, not returned)
           RunInTx: DELETE tenant_trial_assignments, DELETE trial_entitlement_overrides
-      EffectiveSetService.Recompute(ctx, tenantID, TenantLifecycle)
+        EffectiveSetService.Recompute(ctx, tenantID, TenantLifecycle)
       COMMIT
 ```
 
@@ -122,7 +124,8 @@ SQS tenant-entitlements-q → TenantEventConsumer.Handle
 
 ```
 SQS membership-entitlements-q → MembershipConsumer.Handle
-  TenantMembershipsPurged → Recompute(TenantLifecycle)
+  TenantMembershipsPurged → AddonService.ForfeitAddonsAtPurge (in inbox tx; active packs → forfeited,
+                            AL-5 billing.token_addon.revoked; error → redelivery) → Recompute(TenantLifecycle)
   TenantStateChanged → (published by O&M via transactional outbox after DB commit — I-17 read is always safe)
     cause TrialReactivated                                  → Recompute(TenantLifecycle)
     cause TenantPlanChanged|TenantSubscriptionCancelled|

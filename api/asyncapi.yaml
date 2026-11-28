@@ -18,8 +18,10 @@ info:
     Consumes iam-realm-provisioner's tenant lifecycle events from `tenant-entitlements-q`:
     TenantIdentityProvisioned and TenantSubscriptionUpdated trigger Recompute; TenantSuspended,
     TenantReactivated (source=operator), and TrialExpired trigger Recompute and update
-    entitlement state; TenantConverted, TenantOffboarded trigger handleOffboard.
-    Consumes O&M's `TenantStateChanged` from `membership-entitlements-q` and
+    entitlement state; TenantMembershipsPurged, TenantConverted, TenantOffboarded trigger
+    handleOffboard (TenantMembershipsPurged first forfeits every active add-on pack, E-9).
+    Consumes TenantMembershipsPurged from `membership-entitlements-q` (forfeits every
+    active add-on pack, E-9, then recomputes) and O&M's `TenantStateChanged`, and
     recomputes when cause is TrialReactivated (conversion revert), when cause is
     one of Billing's subscription events (TenantPlanChanged,
     TenantSubscriptionCancelled, TenantReactivated, TenantPaymentPastDue), or
@@ -92,8 +94,10 @@ operations:
       TenantIdentityProvisioned and TenantSubscriptionUpdated → Recompute (initial snapshot
       and forward-compat plan-change signal). TenantSuspended, TenantReactivated (source=operator),
       and TrialExpired → Recompute; entitlement state updated from I-17 on receipt.
-      TenantConverted and TenantOffboarded → handleOffboard: delete tenant_trial_assignments
-      and trial_entitlement_overrides in one tx, then Recompute (ENT-INV-7).
+      TenantMembershipsPurged, TenantConverted and TenantOffboarded → handleOffboard: delete
+      tenant_trial_assignments and trial_entitlement_overrides in one tx, then Recompute
+      (ENT-INV-7). TenantMembershipsPurged first forfeits every active add-on pack (status
+      forfeited, AL-5 billing.token_addon.revoked, E-9); packs survive TenantConverted.
       All types are deduplicated via processed_events (IDEMP-1..4).
     messages:
       - $ref: "#/components/messages/InboundTenantLifecycle"

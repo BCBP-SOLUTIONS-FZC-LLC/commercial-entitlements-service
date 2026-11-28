@@ -53,6 +53,8 @@ type fakeAddonSvc struct {
 	applyRefundErr   error
 	purchaseCalled   bool
 	refundCalled     bool
+	forfeited        []uuid.UUID
+	forfeitErr       error
 }
 
 func (f *fakeAddonSvc) ApplyBillingPurchase(_ context.Context, _ port.ApplyBillingPurchaseRequest) error {
@@ -88,6 +90,10 @@ func (f *fakeAddonSvc) GetShortfall(_ context.Context, _ uuid.UUID) (*domain.Quo
 	return nil, nil
 }
 func (f *fakeAddonSvc) ExpireAddons(_ context.Context) (int, error) { return 0, nil }
+func (f *fakeAddonSvc) ForfeitAddonsAtPurge(_ context.Context, tenantID uuid.UUID) (int, error) {
+	f.forfeited = append(f.forfeited, tenantID)
+	return 1, f.forfeitErr
+}
 
 // ── fakeCatalogSvc ────────────────────────────────────────────────────────
 

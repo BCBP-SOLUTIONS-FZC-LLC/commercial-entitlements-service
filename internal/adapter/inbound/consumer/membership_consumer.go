@@ -3,8 +3,10 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
+	"github.com/google/uuid"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements/internal/core/port"
@@ -20,7 +22,14 @@ type MembershipConsumer struct {
 	inbox     port.Inbox
 	effectSvc port.EffectiveSetService
 	trialSvc  port.TrialService
+	addons    port.AddonForfeiter
 	log       port.Logger
+}
+
+// WithAddonForfeiter wires the add-on forfeiture run on TenantMembershipsPurged (E-9).
+func (c *MembershipConsumer) WithAddonForfeiter(f port.AddonForfeiter) *MembershipConsumer {
+	c.addons = f
+	return c
 }
 
 // NewMembershipConsumer wires up the MembershipConsumer.
@@ -59,8 +68,11 @@ func (c *MembershipConsumer) handlePurge(ctx context.Context, env events.Envelop
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
 		return nil //nolint:nilerr // ack malformed
 	}
+	if err := forfeitAddonsAtPurge(ctx, c.addons, c.log, MembershipConsumerName, payload.TenantID); err != nil {
+		return err
+	}
 	_, err := c.effectSvc.Recompute(ctx, payload.TenantID, domain.CauseTenantLifecycle)
-	return err
+	return purgeRecomputeResult(c.log, MembershipConsumerName, payload.TenantID, err)
 }
 
 // billingStateCauses are the TenantStateChanged causes that relay a Billing
@@ -102,5 +114,42 @@ func (c *MembershipConsumer) handleTenantStateChanged(ctx context.Context, env e
 		cause = domain.CauseBillingEvent
 	}
 	_, err := c.effectSvc.Recompute(ctx, payload.TenantID, cause)
+	return err
+}
+
+// forfeitAddonsAtPurge forfeits the tenant's add-on balance inside the inbox
+// transaction (E-9). A forfeiter is wired in cmd/server; without one the purge
+// still completes and the gap is logged.
+func forfeitAddonsAtPurge(ctx context.Context, f port.AddonForfeiter, log port.Logger, consumer string, tenantID uuid.UUID) error {
+	if f == nil {
+		if log != nil {
+			log.Warn("purge: no add-on forfeiter wired; add-on balance not forfeited",
+				map[string]interface{}{"consumer": consumer, "tenant_id": tenantID})
+		}
+		return nil
+	}
+	n, err := f.ForfeitAddonsAtPurge(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if n > 0 && log != nil {
+		log.Info("purge: add-on packs forfeited",
+			map[string]interface{}{"consumer": consumer, "tenant_id": tenantID, "packs": n})
+	}
+	return nil
+}
+
+// purgeRecomputeResult maps the recompute that follows a purge. Core may no
+// longer know a purged tenant (I-17 404 → ErrTenantNotFound). That must not
+// roll back the forfeiture committed in the same inbox transaction, or every
+// redelivery would forfeit and roll back until the event dead-letters (E-9).
+func purgeRecomputeResult(log port.Logger, consumer string, tenantID uuid.UUID, err error) error {
+	if errors.Is(err, domain.ErrTenantNotFound) {
+		if log != nil {
+			log.Warn("purge: tenant not found in Core; skipping recompute",
+				map[string]interface{}{"consumer": consumer, "tenant_id": tenantID})
+		}
+		return nil
+	}
 	return err
 }

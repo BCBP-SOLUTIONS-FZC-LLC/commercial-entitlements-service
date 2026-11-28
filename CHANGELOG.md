@@ -6,6 +6,12 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Changed — trial token add-ons (Commercial HLD v0.69 P-5; E-9, E-10)
+
+- **E-10 Trial tenants may buy token add-ons.** `addon_eligibility.llm_tokens` is now eligible in `trial` state unless the effective token quota is unlimited (`unlimited_quota`, P-5d). `api_requests` stays ineligible with `reason: "trial"`, since only token add-ons are allowed during a trial. An expired trial is `suspended`, so it gets `not_active` (P-5f). Billing enforces the cap, owner-only and USD rules. During a trial the combined limit is the trial-profile quota plus the add-on balance, and packs survive conversion; both already held.
+- **E-9 Purge never forfeited the add-on balance.** `TenantMembershipsPurged` only recomputed; the LLD said the packs were deleted, which the `ON DELETE RESTRICT` drawdown and refund ledgers would refuse anyway. Now every active pack moves to the new status `forfeited` (migration `000007`) with a zero balance, inside the inbox transaction, with one AL-5 `billing.token_addon.revoked` entry (reason `tenant_purged`). This applies on both queues that carry the event, and a failure redelivers it. `TenantConverted` / `TenantOffboarded` never forfeit. An I-17 `tenant_not_found` on the post-purge recompute no longer rolls the forfeiture back. New `port.AddonForfeiter`; consumers get it via `WithAddonForfeiter`.
+- LLD rev 1.25: QA-3, EVT-9, §4.2/§4.4 (status enum, migration 000007), §5.4 `addon_eligibility`, §7.2 purge row.
+
 ### Fixed — trial profile resolution and ENT-O3 audit (HLD v0.68 reply, E-6 / E-8)
 
 - **E-6 Default trial tenants received the paid plan's limits.** `computeEffectiveSet` applied Catalog trial-profile values only when a `tenant_trial_assignments` row existed; with no row (the default Trial-Specific case) nothing was applied, so Enterprise trials were unlimited. No row now means `trial_specific`, and ENT-I1 returns `trial_profile: "trial_specific"`. `custom` now uses the `trial_specific` entry as its base (it looked up a `custom` entry that Catalog never publishes); `full_plan` keeps the plan row. New tests cover the no-row, `trial_specific`, `reduced_plan` (with `NULL` inherit), `full_plan`, `custom` and non-trial cases.

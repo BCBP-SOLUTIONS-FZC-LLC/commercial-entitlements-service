@@ -322,10 +322,25 @@ func TestComputeAddonEligibility_Active_MissingKey(t *testing.T) {
 
 func TestComputeAddonEligibility_Trial(t *testing.T) {
 	v := int64(1000)
-	limits := map[domain.LimitKey]domain.LimitValue{domain.LimitKeyLLMTokenQuotaMonthly: {Value: &v}}
+	limits := map[domain.LimitKey]domain.LimitValue{
+		domain.LimitKeyLLMTokenQuotaMonthly:    {Value: &v},
+		domain.LimitKeyAPIRequestBudgetMonthly: {Value: &v},
+	}
+	elig := computeAddonEligibility(domain.EntitlementStateTrial, limits)
+	// HLD v0.69 P-5 (E-10): token packs allowed during a trial ...
+	assert.True(t, elig["llm_tokens"].Eligible)
+	assert.Nil(t, elig["llm_tokens"].Reason)
+	// ... no other add-on category.
+	assert.False(t, elig["api_requests"].Eligible)
+	assert.Equal(t, "trial", *elig["api_requests"].Reason)
+}
+
+func TestComputeAddonEligibility_Trial_UnlimitedTokens(t *testing.T) {
+	// P-5d: a trial with an unlimited token entitlement (e.g. full_plan on Enterprise) stays ineligible.
+	limits := map[domain.LimitKey]domain.LimitValue{domain.LimitKeyLLMTokenQuotaMonthly: {Value: nil}}
 	elig := computeAddonEligibility(domain.EntitlementStateTrial, limits)
 	assert.False(t, elig["llm_tokens"].Eligible)
-	assert.Equal(t, "trial", *elig["llm_tokens"].Reason)
+	assert.Equal(t, "unlimited_quota", *elig["llm_tokens"].Reason)
 }
 
 func TestComputeAddonEligibility_Suspended(t *testing.T) {

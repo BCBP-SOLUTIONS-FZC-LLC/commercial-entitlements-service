@@ -144,6 +144,9 @@ func (f *fakeAddonSvc) ApplyBillingRefund(_ context.Context, _ port.ApplyBilling
 	return nil
 }
 func (f *fakeAddonSvc) ExpireAddons(_ context.Context) (int, error) { return 0, nil }
+func (f *fakeAddonSvc) ForfeitAddonsAtPurge(_ context.Context, _ uuid.UUID) (int, error) {
+	return 0, nil
+}
 
 // ── fakeTrialSvc ──────────────────────────────────────────────────────────
 

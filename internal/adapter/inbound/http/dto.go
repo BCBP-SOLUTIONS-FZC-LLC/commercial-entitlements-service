@@ -152,7 +152,7 @@ type AddonResponse struct {
 	// RefundedTokens is the sum of applied Billing refunds (refund ledger).
 	RefundedTokens int64 `json:"refunded_tokens"`
 	// ConsumedTokens = total − remaining − refunded (drawn by usage). For an
-	// expired or revoked pack it also includes the forfeited balance.
+	// expired, revoked or forfeited pack it also includes the forfeited balance.
 	ConsumedTokens int64 `json:"consumed_tokens"`
 	// Removable: active and nothing drawn — ENT-O5 DELETE would succeed.
 	Removable     bool       `json:"removable"`

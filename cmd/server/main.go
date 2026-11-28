@@ -361,12 +361,12 @@ func main() {
 		effectSvc, trialSvc, addonSvc, log)
 	tenantConsumer := consumeradapter.NewTenantEventConsumer(
 		mustInbox(consumeradapter.TenantConsumerName),
-		effectSvc, trialSvc, log)
+		effectSvc, trialSvc, log).WithAddonForfeiter(addonSvc)
 	catalogConsumer := consumeradapter.NewCatalogConsumer(
 		mustInbox(consumeradapter.CatalogConsumerName), catalogSvc, cache, log)
 	membershipConsumer := consumeradapter.NewMembershipConsumer(
 		mustInbox(consumeradapter.MembershipConsumerName),
-		effectSvc, trialSvc, log)
+		effectSvc, trialSvc, log).WithAddonForfeiter(addonSvc)
 
 	for _, wiring := range []struct {
 		envKey   string

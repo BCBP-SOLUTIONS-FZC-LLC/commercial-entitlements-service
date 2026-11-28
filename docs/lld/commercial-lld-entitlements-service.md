@@ -7,7 +7,7 @@
 | Document type | Low-Level Design (LLD) |
 | Service | Entitlements Service (`commercial-entitlements`) |
 | Go module | `github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements` |
-| Version | 1.24 |
+| Version | 1.25 |
 | Date | November 2026 |
 | Status | Draft for review |
 | Owner | Commercial Team |
@@ -20,6 +20,7 @@
 
 | Rev | Date | Change |
 |---|---|---|
+| 1.25 | 2026-11-28 | **Commercial HLD v0.69 P-5 (trial token add-ons): E-9, E-10.** (1) **E-10:** `computeAddonEligibility` makes `llm_tokens` eligible in `trial` state unless the effective token quota is unlimited (P-5d); `api_requests` stays `reason: "trial"` (only token add-ons in a trial); an expired trial is `suspended` → `not_active` (P-5f). ENT-I1 shape unchanged (§5.4). The combined trial limit (trial profile + add-on balance) and keeping packs at conversion already held (step 5; ENT-D7, ENT-D14). (2) **E-9:** `TenantMembershipsPurged` now forfeits every active pack (new status `forfeited`, migration `000007`; AL-5 `billing.token_addon.revoked`, reason `tenant_purged`) on both `membership-entitlements-q` and `tenant-entitlements-q`; previously nothing forfeited the balance although QA-3/EVT-9 said rows were deleted, which the `ON DELETE RESTRICT` ledgers make impossible. This is the forfeiture of CD-55 (offboarding) and P-5a (trial expired unconverted; Entitlements' reply proposes purge as the trigger). QA-3, EVT-9, §4.2, §4.4, §7.2 updated. |
 | 1.24 | 2026-11-28 | **Trial profile resolution and ENT-O3 audit (Entitlements reply to Commercial HLD v0.68, E-6 / E-8).** (1) **E-6:** `computeEffectiveSet` step 2 now treats a trial tenant with no `tenant_trial_assignments` row as `trial_specific` and applies the Catalog Trial-Specific values; previously such tenants (the default case) received the paid plan's limits, so Enterprise trials were unlimited. `custom` now uses the `trial_specific` entry as its base (Catalog publishes no `custom` entry); `full_plan` keeps the plan row. ENT-I1 returns `trial_profile: "trial_specific"` for default trial tenants. Matches §4.2 TTA and the §5.4 null-semantics table; no schema change. (2) **E-8:** ENT-O3 requires `reason` and writes AL-5 `config.trial_profile.set` in the assignment transaction; §5.4 ENT-O3 rewritten to the implemented request/response. (3) Operator trial routes corrected to `/operator/tenants/:id/entitlements/trial-profile` and `/entitlements/trial-overrides/:key` (§4.7, §5.2, §5.3, §5.4). (4) §4.0/§4.2 `tenant_trial_assignments` DDL aligned with migration `000001` (`plan_code`, `starts_at`, `ends_at`; no `reason` column, no `profile` default); §16 error catalogue: `trial_assignment_not_found` is ENT-O3 GET only. (5) `effectiveSetUnchanged` now also compares `trial_profile`, so a profile-only change writes a snapshot and emits `TenantEntitlementsChanged` (ENT-INV-6). Pending: Audit Log to add `config.trial_profile.set` to its taxonomy. |
 | 1.23 | 2026-11-27 | **Billing hand-off F-3 / F-4 (BL-OQ-20 W-5, W-6).** (0) **ENT-D16:** `total_tokens` is immutable; a fully refunded pack moves to the new status `refunded` (migration `000006`); removability and listings account for refunded quantities from the ledger (§4.2 QA-2, QA-6, QA-7, ENT-O5). (1) **F-3:** Billing add-on refunds are idempotent on `billing_ref` (Billing `refund_id`) through the new append-only ledger `quota_addon_refunds` (migration `000005`, §4.2, §4.4): `ApplyBillingRefund` claims the row (`ON CONFLICT DO NOTHING`) in the same transaction as the pack update, so a DLQ redrive, a visibility-timeout cycle past the `processed_events` prune, or a re-publish under a new envelope ID no longer removes tokens twice. A `refund_id` already recorded for another tenant, or for a different purchase of the same tenant, applies nothing, is counted in `commercial_entitlements_billing_ref_conflict_total{reason="refund_ref_other_tenant"|"refund_ref_other_purchase"}` and acked (§7.2, EVT-3). (2) **F-4:** ENT-D15 records the Commercial TL decision that `TenantEntitlementsChanged{cause: addon_change}` — including from drawdowns — is permitted under S-8 (§16.2). §7.1 `cause` enum aligned with `api/asyncapi.yaml` and the code; a unit test fails if the domain, the schema and this table drift. |
 | 1.22 | 2026-11-27 | **Billing ↔ Entitlements compatibility (Billing hand-off BL-OQ-28, items B-1 to B-8).** (1) **B-1:** every SQS consumer decodes Glue-framed messages (`events.GlueDecodeCodec` in `sqspipeline.NewConsumer`); previously a Glue-framed event was retried and dead-lettered (§7.2). (2) **B-2:** Billing reaches ENT-I1 by its mTLS principal (`cluster.local/ns/billing/sa/commercial-billing`, read from the last `X-Forwarded-Client-Cert` element; env `BILLING_CALLER_PRINCIPAL`) instead of `x-service-token`; `billingReadOnly` keyed on that principal; Istio rule now `GET /api/v1/internal/tenants/*` (§5.1, §5.2, §5.3, §10.2, §13.1). (3) **B-3:** snapshot upserts now refuse a snapshot computed from an older Core `record_version` (`source_record_version` guard), and `TenantStateChanged` recomputes when `cause` is a Billing subscription event (`TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantPaymentPastDue`), when plan or status changed, or on `TrialReactivated` (§7.2). (4) **B-4:** consumed schemas are enforced per queue (`ValidatingCodec.ValidateConsumed`); a schema-invalid event is dead-lettered on first delivery. (5) **B-5:** Billing subscription payloads decoded into per-type structs; undecodable ones are dead-lettered, not acked. (6) **B-6:** AsyncAPI 1.6.0 lists all four Billing types on `billing-entitlements-q`. (7) **B-7:** this document aligned with the code (ENT-I1 callers and wire shape, §10.2 Billing row, §13.1). (8) **B-8:** a `billing_ref` held by another tenant no longer aborts the inbox transaction (`ON CONFLICT DO NOTHING`); counted in `commercial_entitlements_billing_ref_conflict_total` and alerted by `CommercialEntitlementsBillingRefConflict` (§11.3). (9) **E-4:** add-on balance kept on the trial snapshot after a conversion reversal — recorded as ENT-D14 (§16.2). |
@@ -167,7 +168,7 @@ commercial-entitlements/
 │   │   │   ├── addon.go          # QuotaAddon{ID, TenantID, LimitKey, TotalTokens, RemainingTokens, GrantedBy,
 │   │   │   │                     #   Reason, BillingRef, Status, ExpiresAt, RecordVersion},
 │   │   │   │                     #   QuotaAddonDrawdown{ID, AddonID, TenantID, LimitKey, TokensConsumed, PeriodStart, RequestID},
-│   │   │   │                     #   QuotaAddonStatus enum (active/consumed/expired/revoked)
+│   │   │   │                     #   QuotaAddonStatus enum (active/consumed/expired/revoked/refunded/forfeited)
 │   │   │   ├── event.go          # TenantEntitlementsChangedPayload, EffectiveSetCause enum,
 │   │   │   │                     #   InboundBillingPlanChangedEvent, InboundBillingSubscriptionCancelledEvent, InboundBillingReactivatedEvent (B-5), InboundTenantEvent, InboundMembershipEvent,
 │   │   │   │                     #   InboundTenantStateChangedEvent (EVT-10)
@@ -215,7 +216,7 @@ commercial-entitlements/
 │       │       │                           #   TenantReactivated (source=billing), TenantQuotaAddOnChanged (CD-55)
 │       │       ├── tenant_consumer.go      # tenant-entitlements-q: TenantIdentityProvisioned, TenantSubscriptionUpdated,
 │       │       │                           #   TenantSuspended, TenantReactivated (source=operator), TrialExpired → Recompute;
-│       │       │                           #   TenantConverted, TenantOffboarded → handleOffboard
+│       │       │                           #   TenantMembershipsPurged (forfeit add-ons, E-9), TenantConverted, TenantOffboarded → handleOffboard
 │       │       ├── catalog_consumer.go     # catalog-entitlements-q: PlanCatalogChanged — validate, re-fetch CAT-I2,
 │       │       │                           #   start CatalogFanoutWorkflow; ack only after start succeeds (§8.6, §9.7)
 │       │       ├── membership_consumer.go  # membership-entitlements-q: TenantMembershipsPurged,
@@ -317,7 +318,7 @@ Runs `gincommon.ObservabilityMiddlewares(cfg)` (panic recovery, request ID, trac
 Outbox (`outbox.Enqueue`, `outbox.Runner`, `PrunePublished`), inbox (`pkg/inbox Store.Process`/`Prune`), SQS consumer (`eventcfg` env loading, `WithDLQForwarding`, `GlueDecodeCodec`, `DLQPublisher`) and envelope patterns all come from the library. This service is a **producer** on one topic (`entitlement-events`) and a **consumer** on four queues:
 
 - **`billing-entitlements-q`** — `TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated` (source=billing), `TenantQuotaAddOnChanged` (reason purchase|refund); may be Glue-framed (B-1)
-- **`tenant-entitlements-q`** — `TenantIdentityProvisioned`, `TenantSubscriptionUpdated`, `TenantSuspended`, `TenantReactivated` (source=operator), `TrialExpired`, `TenantConverted`, `TenantOffboarded`
+- **`tenant-entitlements-q`** — `TenantIdentityProvisioned`, `TenantSubscriptionUpdated`, `TenantSuspended`, `TenantReactivated` (source=operator), `TrialExpired`, `TenantMembershipsPurged`, `TenantConverted`, `TenantOffboarded`
 - **`catalog-entitlements-q`** — `PlanCatalogChanged`
 - **`membership-entitlements-q`** — `TenantMembershipsPurged`; `TenantStateChanged` — recompute when cause is `TrialReactivated` (E-3), a Billing subscription cause (`TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantPaymentPastDue`; B-3), or plan/status changed — published by iam-org-membership via transactional outbox after DB commit, so an I-17 read on receipt is safe (EVT-10)
 
@@ -445,7 +446,7 @@ erDiagram
         text limit_key "NOT NULL; entitlement_limit_key ENUM value"
         bigint total_tokens "NOT NULL; CHECK > 0"
         bigint remaining_tokens "NOT NULL; CHECK >= 0 AND <= total_tokens"
-        quota_addon_status status "ENUM: active|consumed|expired|revoked|refunded; default active"
+        quota_addon_status status "ENUM: active|consumed|expired|revoked|refunded|forfeited; default active"
         text reason "non-empty; billing_purchase|goodwill|correction|…"
         text billing_ref "NULL for operator grants; Billing purchase ID (uq_quota_addons_billing_ref unique index — migration 000002)"
         uuid granted_by "operator UUID or uuid.Nil for billing purchases"
@@ -532,6 +533,7 @@ CREATE TYPE trial_profile AS ENUM ('trial_specific', 'reduced_plan', 'full_plan'
 -- 'consumed' = all tokens drawn; 'revoked' = operator-removed before any drawdown.
 CREATE TYPE quota_addon_status AS ENUM ('active', 'consumed', 'expired', 'revoked');
 -- 000006 (ENT-D16): ALTER TYPE quota_addon_status ADD VALUE 'refunded';
+-- 000007 (E-9):     ALTER TYPE quota_addon_status ADD VALUE 'forfeited';
 ```
 
 ### 4.2 Tables
@@ -794,7 +796,7 @@ CREATE POLICY tenant_isolation ON trial_entitlement_overrides
 
 #### `quota_addons` (CD-55)
 
-One row per purchased token add-on pack per tenant. The balance a tenant holds that is added on top of the plan or operator-override value for `llm_token_quota_monthly`. Packs are drawn down FIFO (soonest-expiring first, then by `created_at`). Deleted on `TenantMembershipsPurged`.
+One row per purchased token add-on pack per tenant. The balance a tenant holds that is added on top of the plan or operator-override value for `llm_token_quota_monthly`. Packs are drawn down FIFO (soonest-expiring first, then by `created_at`). Forfeited (status `forfeited`, balance 0) on `TenantMembershipsPurged`; the rows are kept because `quota_addon_drawdowns` and `quota_addon_refunds` reference them `ON DELETE RESTRICT` (E-9).
 
 ```sql
 CREATE TABLE quota_addons (
@@ -837,7 +839,7 @@ CREATE POLICY tenant_isolation ON quota_addons
 
 - Packs are drawn down FIFO ordered by `expires_at ASC NULLS LAST, created_at ASC` (soonest-expiring first to minimise waste). `idx_quota_addons_tenant_active` partial index (on `status = 'active'`) keeps FIFO scans efficient.
 - Pack expiry (12 months via `AddDate(1,0,0)` from `PurchasedAt` in the event) is enforced by the `addon-expiry` reconciler job (`cmd/reconciler --job=addon-expiry`, schedule `30 * * * *`). On expiry the pack is marked `expired`, remaining tokens forfeited, and `TenantEntitlementsChanged` emitted.
-- Add-on balance survives `cancelled` and `suspended` subscription states; deleted (all rows) on `TenantMembershipsPurged`.
+- Add-on balance survives `cancelled` and `suspended` subscription states (including an expired trial) and survives `TenantConverted` (HLD v0.69 P-5); forfeited on `TenantMembershipsPurged` (E-9).
 - **Quantities (ENT-D16).** `total_tokens` is the original purchased or granted quantity and never changes. `remaining_tokens` is the effective, still-usable balance — drawdowns and Billing refunds both reduce it. Refunded amounts live only in `quota_addon_refunds` (the system of record); consumed (drawn) = `total_tokens − remaining_tokens − Σ tokens_removed`. `AddonRepository.Update` never writes `total_tokens`.
 
 **`quota_addons` invariants:**
@@ -846,7 +848,7 @@ CREATE POLICY tenant_isolation ON quota_addons
 |---|---|
 | QA-1 | FIFO ordering by `expires_at ASC NULLS LAST, created_at ASC` — soonest-expiring active pack is drawn down first to minimise forfeiture. `idx_quota_addons_tenant_active` partial index enforces scan efficiency. |
 | QA-2 | `remaining_tokens` is monotonically decreasing after creation — only the drawdown, Billing refund and expiry/forfeiture/revocation paths write to it; no path increases it after the initial insert. `total_tokens` is immutable (ENT-D16). |
-| QA-3 | Pack balance survives `cancelled`/`suspended` states. All `quota_addons` rows are deleted on `TenantMembershipsPurged` — in the same transaction as the full tenant data wipe. No separate `forfeited` status exists. |
+| QA-3 | Pack balance survives `cancelled`/`suspended` states (an expired, unconverted trial is `suspended`) and survives conversion (P-5). On `TenantMembershipsPurged`, in the inbox transaction, every `active` pack moves to `status = 'forfeited'` with `remaining_tokens = 0` and one AL-5 `billing.token_addon.revoked` entry (actor `commercial-entitlements`, reason `tenant_purged`, `forfeited_tokens`). This is the forfeiture without refund of CD-55 (offboarding) and HLD v0.69 P-5a (trial expired without converting). Rows are not deleted: the drawdown and refund ledgers reference them `ON DELETE RESTRICT` and are 7-year financial records (E-9). |
 | QA-4 | Expiry (12 calendar months via `AddDate(1,0,0)` from the event's `purchased_at`) is enforced by the `addon-expiry` reconciler job (`cmd/reconciler --job=addon-expiry`). On expiry the pack is marked `expired`, remaining tokens forfeited, effective set recomputed, and `TenantEntitlementsChanged` emitted. |
 | QA-5 | `billing_ref` is the Billing purchase ID for packs created from `TenantQuotaAddOnChanged {reason: "purchase"}`; `NULL` for operator-granted packs. Idempotency is enforced at two layers: (1) `processed_events` inbox (primary); (2) `uq_quota_addons_billing_ref` unique partial index (secondary — added in migration 000002, BL-OQ-4). A `billing_ref` already held by a different tenant's pack is detected by `INSERT … ON CONFLICT (billing_ref) WHERE billing_ref IS NOT NULL DO NOTHING` (0 rows → `ErrBillingRefAlreadyClaimed`, so the inbox transaction stays usable); the consumer logs at ERROR, increments `commercial_entitlements_billing_ref_conflict_total`, fires `CommercialEntitlementsBillingRefConflict`, and acks (B-8). |
 | QA-6 | `status = 'consumed'` when `remaining_tokens` reaches 0 through any combination of drawdowns and refunds in which the refunded quantity is less than `total_tokens`; `status = 'refunded'` only when cumulative refunds equal the original `total_tokens` (`Σ quota_addon_refunds.tokens_removed = total_tokens`, ENT-D16). The status reflects the disposition of the purchased quantity, not which operation removed the last tokens; `status = 'revoked'` when an operator removes an active pack from which nothing was drawn. None of these states is reversible, and none counts toward the effective set (only `active` packs do). |
@@ -1103,6 +1105,7 @@ Applied at startup by `cmd/migrate` using `platform-pgcommon`'s `migrate.Runner`
 | `000003_fix_quota_addons_grant`, `000004_fix_app_role_grants` | Re-grant every table to the real app role `commercial_entitlements_app` (000001/000002 granted to a non-existent `entitlements_app`). |
 | `000005_quota_addon_refunds` | Creates `quota_addon_refunds` (§4.2) with RLS and a SELECT/INSERT grant: refund idempotency on Billing `refund_id` (F-3, BL-OQ-20 W-5). |
 | `000006_quota_addon_status_refunded` | `ALTER TYPE quota_addon_status ADD VALUE 'refunded'` (ENT-D16). The down migration refuses to run while any row uses it (Postgres cannot drop an enum value). |
+| `000007_quota_addon_status_forfeited` | `ALTER TYPE quota_addon_status ADD VALUE 'forfeited'` (E-9). Same down-migration guard as `000006`. |
 
 ### 4.5 Triggers — `touch_row`
 
@@ -1167,7 +1170,7 @@ The `limits` column in `entitlement_snapshots` and the `limits` field in every A
 | `trial_entitlement_overrides` | **This service** (custom profile only) | `PUT`/`DELETE /api/v1/operator/tenants/:id/entitlements/trial-overrides/:key` | No — operator-entered data |
 | `entitlement_snapshots` | **This service** (cache, not source of truth) | Re-compute on every event / override mutation | **Yes** — from all override tables + CAT-I2 (with `trial_profiles`) + I-17 |
 | `plan_catalog_cache` | Catalog / Admin Config Service (authoritative) | Replaced on `PlanCatalogChanged` and TTL backstop | **Yes** — from CAT-I2 |
-| `quota_addons` | **This service** | Written on `TenantQuotaAddOnChanged`; updated by drawdown, expiry, operator correction | No — business data (purchased packs) |
+| `quota_addons` | **This service** | Written on `TenantQuotaAddOnChanged`; updated by drawdown, expiry, Billing refund, operator correction, purge forfeiture (E-9) | No — business data (purchased packs) |
 | `quota_addon_drawdowns` | **This service** | Written by ENT-I3 at period close; idempotent per `(tenant_id, period_start)` | No — financial record of period consumption |
 | `quota_addon_shortfalls` | **This service** | Written by ENT-I3 when reported consumption exceeds the balance; resolved by operators (ENT-O7) | No — financial reconciliation record |
 | `pending_audit_entries` | **This service** (transient buffer) | Written in same tx as any operator mutation; deleted on AL-5 delivery | No, but harmless to lose — Audit Log is the system of record |
@@ -1261,7 +1264,7 @@ Reachable mesh-internally only. `x-tenant-roles` must contain `platform_operator
 | `model_tier` | `string` | Yes | Plan's `model_tier` from the Catalog: `basic`, `standard`, or `premium` |
 | `limits` | `object` | Yes | An object with exactly five keys (below) |
 | `trial_profile` | `string \| null` | No | Present and non-null only when `tenants.status = 'trial'`. Values: `trial_specific`, `reduced_plan`, `full_plan`, `custom`. Omitted when the tenant is not in trial (`omitempty`) |
-| `addon_eligibility` | `object` | Yes (may be empty `{}`) | Per Billing resource eligibility for token add-on purchases (BL-OQ-3 / E-4). Keys are Billing resource names (`llm_tokens`, `api_requests`). Each value is `{eligible: bool, reason: string | null}`; `reason` is `null` when eligible; values: `trial` (trial tenants cannot purchase add-ons), `not_active` (subscription not active), `unlimited_quota` (plan has unlimited quota — add-ons make no sense). Billing reads this field via ENT-I1 before allowing an add-on purchase |
+| `addon_eligibility` | `object` | Yes (may be empty `{}`) | Per Billing resource eligibility for token add-on purchases (BL-OQ-3 / E-4). Keys are Billing resource names (`llm_tokens`, `api_requests`). Each value is `{eligible: bool, reason: string | null}`; `reason` is `null` when eligible; values: `trial` (`api_requests` only: during a trial only token add-ons may be bought, HLD v0.69 P-5), `not_active` (state neither `active` nor `trial`; an expired trial is `suspended`, P-5f), `unlimited_quota` (effective quota is unlimited — add-ons make no sense; also for a trial whose token entitlement is unlimited, P-5d). `llm_tokens` is eligible during a trial (E-10); Billing enforces the trial cap, owner-only and USD rules (P-5b, P-5c, P-5e). Billing reads this field via ENT-I1 before allowing an add-on purchase |
 | `computed_at` | `string` (RFC 3339) | Yes | Timestamp at which the effective set was last computed |
 
 **Add-on balance note.** For `llm_token_quota_monthly`, `value` already includes the active add-on balance; `addon_balance` and `source` are not emitted (see §4.6 as-built note).
@@ -1329,7 +1332,7 @@ Top-level fields: `tenant_id`, `version`, `plan_code`, `state`, `feature_flags`,
   "cause":        "trial_change",
   "computed_at":  "2026-11-01T10:00:00Z",
   "addon_eligibility": {
-    "llm_tokens":   {"eligible": false, "reason": "trial"},
+    "llm_tokens":   {"eligible": true,  "reason": null},
     "api_requests": {"eligible": false, "reason": "trial"}
   }
 }
@@ -1797,12 +1800,13 @@ Each queue has a DLQ (`<queue>-dlq`, `maxReceiveCount: 5`). SNS filter policies 
 | `tenant-entitlements-q` | `TenantIdentityProvisioned` | Recompute; provisions the initial entitlement snapshot after a new tenant realm is created |
 | `tenant-entitlements-q` | `TenantSubscriptionUpdated` | Recompute; re-read I-17 on any plan or state update that doesn't yet have a dedicated event (forward-compat) |
 | `tenant-entitlements-q` | `TenantConverted` | In one transaction: delete `tenant_trial_assignments` **and** `trial_entitlement_overrides`, keep `entitlement_overrides`, write one AL-5 entry per deleted trial override (`config.override.removed`, reason `trial_conversion`), recompute with the paid plan and emit `TenantEntitlementsChanged` (ENT-D7, ENT-INV-7) |
+| `tenant-entitlements-q` | `TenantMembershipsPurged` | `handleOffboard`: forfeit all active `quota_addons` (status `forfeited`, QA-3, E-9) in the inbox transaction (a failure redelivers), purge trial data, recompute |
 | `tenant-entitlements-q` | `TenantSuspended` | Recompute; state → `suspended` |
 | `tenant-entitlements-q` | `TenantReactivated` (source=operator) | Recompute; state → `active` |
 | `tenant-entitlements-q` | `TenantOffboarded` | Delete snapshot and Valkey key; no `TenantEntitlementsChanged` emitted |
 | `tenant-entitlements-q` | `TrialExpired` | Recompute; if not converted → state → `suspended` |
 | `catalog-entitlements-q` | `PlanCatalogChanged` | Invalidate `plan_catalog_cache`; re-fetch CAT-I2; **start `CatalogFanoutWorkflow`** (§8.6), which recomputes only the tenants on the changed plan; acknowledge after the start succeeds. **Field validation:** the event's plan identifier field is `code`, not `plan_code` — the consumer must validate against the registered schema (HLD §5.2 warning; Core's own copy had this mismatch and dead-lettered every event) |
-| `membership-entitlements-q` | `TenantMembershipsPurged` | Forfeit all `quota_addons`; delete snapshot, Valkey key, trial assignments |
+| `membership-entitlements-q` | `TenantMembershipsPurged` | Forfeit all active `quota_addons` (status `forfeited`, QA-3, E-9) in the inbox transaction; then recompute. (Deleting the snapshot, Valkey key and trial assignments here is not implemented yet.) |
 | `membership-entitlements-q` | `TenantStateChanged` | Published by iam-org-membership via transactional outbox after its commit, with `cause` = the source event type — an I-17 read on receipt is safe (E-3, EVT-10). Recompute with current I-17 state when: `cause` = `TrialReactivated` (cause `tenant_lifecycle`); `cause` ∈ {`TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantPaymentPastDue`} (cause `billing_event`) — **Billing-originated changes do not arrive on `tenant-entitlements-q`**; this relay is the recompute that settles them after Core applies Billing's event (B-3); or `plan`/`status` changed for any other cause. Anything else is acked. A recompute that changes nothing writes nothing (ENT-INV-6). `TenantPaymentPastDue` is not consumed from `billing-entitlements-q`; its effect arrives only through this relay |
 
 ### 7.3 Outbox pattern
@@ -1865,7 +1869,7 @@ Schema version on outbound publishes: resolved from Glue at startup via `glue:Ge
 | EVT-6 | **No self-consumption.** This service produces `TenantEntitlementsChanged` on `entitlement-events` and never consumes that topic itself. Produce and consume sets are disjoint. |
 | EVT-7 | **`TenantEntitlementsChanged` is a push notification, not a data carrier.** The payload carries only `tenant_id`, `version`, `cause`, `changed_keys`, `previous_version`, `computed_at`. Consumers call ENT-I1 for the full effective set — they must never derive enforcement decisions from the event payload alone. |
 | EVT-8 | **Catalog refresh is fan-out safe.** On `PlanCatalogChanged`, affected tenants are recomputed in parallel via the `CatalogFanoutWorkflow` Temporal workflow (ENT-D1, resolved). Only tenants on the changed plan are recomputed; concurrency is capped at `FANOUT_MAX_PARALLEL`; continue-as-new paging prevents history overflow. See §8.6. |
-| EVT-9 | **`TenantMembershipsPurged` deletes all add-on packs.** All `quota_addons` rows are deleted in the purge transaction; no drawdown or expiry path can run after purge. `TenantEntitlementsChanged` is not emitted post-purge. |
+| EVT-9 | **`TenantMembershipsPurged` forfeits all add-on packs.** Every `active` pack becomes `forfeited` with a zero balance in the purge (inbox) transaction, on whichever queue the event arrives; a failed forfeiture fails the transaction so the event is redelivered. The recompute that follows treats `tenant_not_found` from I-17 (Core no longer knows the purged tenant) as done, so it cannot roll the forfeiture back; packs are locked in drawdown FIFO order to avoid deadlocking a concurrent drawdown. No drawdown or expiry path acts on a forfeited pack (both read only `active` packs). `TenantConverted` and `TenantOffboarded` never forfeit (P-5). |
 | EVT-10 | **`TenantStateChanged` from iam-org-membership resolves the I-17 read race on conversion revert (E-3).** O&M publishes `TenantStateChanged` via transactional outbox *after* its own DB commit. Entitlements subscribes on `membership-entitlements-q` and recomputes when `cause` is `TrialReactivated` (an I-17 call after receipt observes the post-revert `trial` state), when `cause` is a Billing subscription event (`TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantPaymentPastDue` — Billing-originated changes do not arrive on `tenant-entitlements-q`; this relay settles the Billing/Core race, B-3), or when plan or status changed. Anything else is acked. Snapshot upserts carry Core's tenant `record_version` as `source_record_version` and never replace a snapshot computed from a newer one, so a recompute that read I-17 before Core committed cannot overwrite the relay's result. `TenantConverted` and `TenantOffboarded` are **not** produced by iam-org-membership and must never be expected on this queue. |
 
 ---
@@ -2576,7 +2580,7 @@ resources:
 | `entitlement_override_history` | Indirect | `actor_id` (operator UUID) | Platform standard audit retention; kept after `TenantMembershipsPurged`, archivable after offboarding (B-2) |
 | `entitlement_snapshots` | No | No PII | Until tenant offboarded |
 | `tenant_trial_assignments` | Indirect | `set_by` (operator UUID) | Until conversion or purge |
-| `quota_addons` | No | `billing_ref` (non-PII reference) | Until pack expired/consumed/revoked or purge (deletion) |
+| `quota_addons` | No | `billing_ref` (non-PII reference) | Retained (financial record; referenced by `quota_addon_drawdowns` / `quota_addon_refunds`). Status moves to expired/consumed/revoked/refunded/forfeited; purge forfeits, never deletes (E-9) |
 | `quota_addon_drawdowns` | No | — | 7 years (financial record) |
 | `quota_addon_shortfalls` | Indirect | `resolved_by` (operator UUID) | 7 years (financial record) |
 | `pending_audit_entries` | Indirect | Included in `entry` JSON | Until delivered (deleted post-delivery) |
@@ -2589,10 +2593,10 @@ On receipt of `TenantMembershipsPurged`:
 1. Delete all `entitlement_overrides` rows for the tenant.
 2. Delete `tenant_trial_assignments` row.
 3. Delete all `trial_entitlement_overrides` rows.
-4. Delete all `quota_addons` rows for the tenant.
+4. Set every `active` `quota_addons` row to `status = 'forfeited'`, `remaining_tokens = 0`, with one AL-5 `billing.token_addon.revoked` entry each (QA-3, E-9). Rows are kept: the drawdown and refund ledgers reference them `ON DELETE RESTRICT`.
 5. Delete `entitlement_snapshots` row.
 6. Evict `ent:tenant:{id}` from Valkey.
-7. Do **not** delete `entitlement_override_history` (immutable audit record, platform audit retention, archivable after offboarding — B-2), `quota_addon_drawdowns` or `quota_addon_shortfalls` (financial records, 7 years).
+7. Do **not** delete `entitlement_override_history` (immutable audit record, platform audit retention, archivable after offboarding — B-2), `quota_addons`, `quota_addon_drawdowns`, `quota_addon_refunds` or `quota_addon_shortfalls` (financial records, 7 years).
 8. Do **not** emit `TenantEntitlementsChanged` after purge.
 
 All steps atomic in one transaction (`sysPool` with `BYPASSRLS`).
@@ -2672,7 +2676,7 @@ The `plan_trial_profiles` table exists in Catalog with 6 rows (3 plans × 2 prof
 | `workflow_template_limit` | 3 | 5 | 10 | 25 | 20 | 100 |
 | `tender_limit` (→ `concurrent_tender_limit`) | 5 | 10 | 25 | 125 | 50 | 500 |
 
-No column is left `NULL`, so no trial inherits an unlimited Enterprise value. **Rollout:** after approval an operator applies the six rows with Catalog `PATCH /api/v1/operator/plans/:code/trial-profiles/:profile`; Catalog emits `PlanCatalogChanged`, and `CatalogFanoutWorkflow` (§8.6) recomputes the trial tenants on each plan. No further Entitlements code change; E-6 (rev 1.24) was required for default trial tenants (no assignment row) to receive the Trial-Specific values at all. **Open Product points:** a trial crossing month-end receives two monthly quotas (quota resets on the 1st, UTC); token budgets to be validated with Finance against trial volume and model cost; on exhaustion a trial tenant cannot buy add-ons, so the product prompts conversion or Sales assigns `reduced_plan` or `full_plan`.
+No column is left `NULL`, so no trial inherits an unlimited Enterprise value. **Rollout:** after approval an operator applies the six rows with Catalog `PATCH /api/v1/operator/plans/:code/trial-profiles/:profile`; Catalog emits `PlanCatalogChanged`, and `CatalogFanoutWorkflow` (§8.6) recomputes the trial tenants on each plan. No further Entitlements code change; E-6 (rev 1.24) was required for default trial tenants (no assignment row) to receive the Trial-Specific values at all. **Open Product points:** a trial crossing month-end receives two monthly quotas (quota resets on the 1st, UTC); token budgets to be validated with Finance against trial volume and model cost; on exhaustion a trial tenant may buy token add-ons (`addon_eligibility.llm_tokens`, E-10; Billing enforces the trial cap, HLD v0.69 P-5), or the product prompts conversion, or Sales assigns `reduced_plan` or `full_plan`.
 
 **Field name note:** the API field and column is `tender_limit`, not `concurrent_tender_limit` (CD-16b, Catalog `dto.go:77`).
 

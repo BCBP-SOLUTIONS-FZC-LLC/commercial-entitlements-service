@@ -493,7 +493,12 @@ func snapToEffectiveSet(snap *domain.EntitlementSnapshot) *domain.EffectiveSet {
 
 // computeAddonEligibility returns per-resource eligibility for quota add-on purchases (BL-OQ-3).
 // Keys: "llm_tokens" → LLMTokenQuotaMonthly, "api_requests" → APIRequestBudgetMonthly.
-// Reasons: "not_active" (state not active), "trial" (state is trial), "unlimited_quota" (resource is unlimited).
+// Reasons: "not_active" (state neither active nor trial), "trial" (api_requests
+// during a trial: only token add-ons may be bought in a trial), "unlimited_quota"
+// (resource is unlimited). A trial tenant may buy llm_tokens packs (HLD v0.69
+// P-5, E-10) unless its token entitlement is unlimited (P-5d); an expired trial
+// is suspended and gets not_active (P-5f). Billing enforces the trial cap,
+// owner-only and USD rules (P-5b, P-5c, P-5e).
 func computeAddonEligibility(state domain.EntitlementState, limits map[domain.LimitKey]domain.LimitValue) map[string]domain.AddonResourceEligibility {
 	type resourceDef struct {
 		key      domain.LimitKey
@@ -516,7 +521,9 @@ func computeAddonEligibility(state domain.EntitlementState, limits map[domain.Li
 	}
 
 	for _, r := range resources {
-		if stateReason != nil {
+		// Token add-ons are allowed during a trial (P-5): skip the state gate.
+		trialTokens := state == domain.EntitlementStateTrial && r.key == domain.LimitKeyLLMTokenQuotaMonthly
+		if stateReason != nil && !trialTokens {
 			result[r.shortKey] = domain.AddonResourceEligibility{Eligible: false, Reason: stateReason}
 			continue
 		}

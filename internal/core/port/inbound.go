@@ -43,6 +43,18 @@ type AddonService interface {
 	ListShortfalls(ctx context.Context, tenantID uuid.UUID, statusFilter []domain.ShortfallStatus) ([]domain.QuotaAddonShortfall, error)
 	GetShortfall(ctx context.Context, id uuid.UUID) (*domain.QuotaAddonShortfall, error)
 	ExpireAddons(ctx context.Context) (int, error)
+	AddonForfeiter
+}
+
+// AddonForfeiter forfeits a purged tenant's add-on balance (E-9, CD-55,
+// HLD v0.69 P-5a). Consumers of TenantMembershipsPurged depend on this
+// narrow interface only.
+type AddonForfeiter interface {
+	// ForfeitAddonsAtPurge moves every active pack of the tenant to status
+	// forfeited with a zero balance, in the caller's transaction, and writes
+	// one billing.token_addon.revoked AL-5 entry per pack. Idempotent: a
+	// second call finds no active pack. Returns the number of packs forfeited.
+	ForfeitAddonsAtPurge(ctx context.Context, tenantID uuid.UUID) (int, error)
 }
 
 // ShortfallService lists and resolves quota shortfalls.

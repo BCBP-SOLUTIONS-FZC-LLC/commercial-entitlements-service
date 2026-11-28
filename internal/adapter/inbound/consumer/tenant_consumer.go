@@ -19,7 +19,15 @@ type TenantEventConsumer struct {
 	inbox     port.Inbox
 	effectSvc port.EffectiveSetService
 	trialSvc  port.TrialService
+	addons    port.AddonForfeiter
 	log       port.Logger
+}
+
+// WithAddonForfeiter wires the add-on forfeiture run on TenantMembershipsPurged (E-9).
+// Never run on TenantConverted: packs survive conversion (HLD v0.69 P-5).
+func (c *TenantEventConsumer) WithAddonForfeiter(f port.AddonForfeiter) *TenantEventConsumer {
+	c.addons = f
+	return c
 }
 
 // NewTenantEventConsumer wires up the TenantEventConsumer.
@@ -77,6 +85,11 @@ func (c *TenantEventConsumer) handleOffboard(ctx context.Context, env events.Env
 			map[string]interface{}{"event_type": env.Type, "error": err.Error()})
 		return nil //nolint:nilerr
 	}
+	if env.Type == "TenantMembershipsPurged" {
+		if err := forfeitAddonsAtPurge(ctx, c.addons, c.log, TenantConsumerName, payload.TenantID); err != nil {
+			return err
+		}
+	}
 	if c.trialSvc != nil {
 		if err := c.trialSvc.PurgeTrialForTenant(ctx, payload.TenantID); err != nil {
 			c.log.Warn("tenant consumer: purge trial failed",
@@ -84,5 +97,8 @@ func (c *TenantEventConsumer) handleOffboard(ctx context.Context, env events.Env
 		}
 	}
 	_, err := c.effectSvc.Recompute(ctx, payload.TenantID, domain.CauseTenantLifecycle)
+	if env.Type == "TenantMembershipsPurged" {
+		return purgeRecomputeResult(c.log, TenantConsumerName, payload.TenantID, err)
+	}
 	return err
 }

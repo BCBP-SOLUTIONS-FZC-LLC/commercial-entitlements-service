@@ -588,8 +588,11 @@ func TestRecompute_AddonEligibility_TrialState(t *testing.T) {
 	svc := newEffectSvc(newSnapshotRepo(), newOverrideRepo(), newAddonRepo(), newTrialRepo(), &fakeCatalogSvc{}, iam, nil, newTxRunner())
 	es, err := svc.Recompute(context.Background(), tenantID, domain.CauseTrialChange)
 	require.NoError(t, err)
-	assert.False(t, es.AddonEligibility["llm_tokens"].Eligible)
-	assert.Equal(t, "trial", *es.AddonEligibility["llm_tokens"].Reason)
+	// HLD v0.69 P-5 (E-10): a trial may buy token packs, not API-request packs.
+	assert.True(t, es.AddonEligibility["llm_tokens"].Eligible)
+	assert.Nil(t, es.AddonEligibility["llm_tokens"].Reason)
+	assert.False(t, es.AddonEligibility["api_requests"].Eligible)
+	assert.Equal(t, "trial", *es.AddonEligibility["api_requests"].Reason)
 }
 
 func TestRecompute_AddonEligibility_SuspendedState(t *testing.T) {

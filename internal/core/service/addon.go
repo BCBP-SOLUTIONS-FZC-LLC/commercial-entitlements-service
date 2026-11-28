@@ -583,6 +583,60 @@ func (s *AddonService) ExpireAddons(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// ForfeitAddonsAtPurge forfeits every active pack of a purged tenant (E-9).
+// The balance is forfeited without refund: at offboarding (CD-55) and for a
+// trial that expired without converting (HLD v0.69 P-5a), which reaches
+// Entitlements as the same TenantMembershipsPurged. Rows are kept (status
+// forfeited, remaining 0) because the drawdown and refund ledgers reference
+// them. Runs in the caller's transaction when one is in ctx (inbox claim).
+func (s *AddonService) ForfeitAddonsAtPurge(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	now := time.Now().UTC()
+	count := 0
+	txErr := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
+		count = 0
+		packs, err := s.addons.ListByTenant(txCtx, tenantID, nil)
+		if err != nil {
+			return fmt.Errorf("list addons: %w", err)
+		}
+		// Lock rows in drawdown FIFO order (expires_at, created_at) so a purge
+		// racing a multi-pack drawdown cannot deadlock.
+		sortAddonsFIFO(packs)
+		for i := range packs {
+			a := packs[i]
+			if a.Status != domain.AddonStatusActive {
+				continue
+			}
+			forfeited := a.RemainingTokens
+			a.Status = domain.AddonStatusForfeited
+			a.RemainingTokens = 0
+			a.RecordVersion++
+			a.UpdatedAt = now
+			if err := s.addons.Update(txCtx, &a); err != nil {
+				return fmt.Errorf("forfeit addon %s: %w", a.ID, err)
+			}
+			recordAudit(txCtx, s.log, port.AuditEntry{
+				TenantID:   &a.TenantID,
+				EntryType:  "billing.token_addon.revoked",
+				Actor:      port.AuditActor{Type: "system", ID: "commercial-entitlements"},
+				Target:     &port.AuditTarget{Type: "quota_addon", ID: a.ID.String()},
+				OccurredAt: now,
+				Metadata: map[string]any{
+					"limit_key":        string(a.LimitKey),
+					"forfeited_tokens": forfeited,
+					"reason":           "tenant_purged",
+				},
+				IdempotencyKey: addonAuditKey(a.ID, a.RecordVersion, a.UpdatedAt),
+			})
+			count++
+		}
+		return nil
+	})
+	if txErr != nil {
+		return 0, txErr
+	}
+	return count, nil
+}
+
 // ApplyBillingPurchase creates a new quota addon pack from a confirmed Billing
 // purchase event (E-1 / BL-OQ-4). Idempotent on BillingRef; expiry is
 // PurchasedAt + 12 months.
@@ -797,6 +851,26 @@ func sortAddonsByExpiry(addons []domain.QuotaAddon) {
 			return true
 		}
 		return ai.Before(*aj)
+	})
+}
+
+// sortAddonsFIFO orders packs as the drawdown FIFO query does
+// (expires_at ASC NULLS LAST, created_at ASC), with id as a final tie-break.
+func sortAddonsFIFO(addons []domain.QuotaAddon) {
+	sort.Slice(addons, func(i, j int) bool {
+		ai, aj := addons[i].ExpiresAt, addons[j].ExpiresAt
+		switch {
+		case ai != nil && aj != nil && !ai.Equal(*aj):
+			return ai.Before(*aj)
+		case ai == nil && aj != nil:
+			return false
+		case ai != nil && aj == nil:
+			return true
+		}
+		if !addons[i].CreatedAt.Equal(addons[j].CreatedAt) {
+			return addons[i].CreatedAt.Before(addons[j].CreatedAt)
+		}
+		return addons[i].ID.String() < addons[j].ID.String()
 	})
 }
 

@@ -17,6 +17,10 @@ const (
 	// AddonStatusRefunded: Billing refunded the whole purchased quantity
 	// (refunded tokens == TotalTokens); zero effective balance (ENT-D16).
 	AddonStatusRefunded QuotaAddonStatus = "refunded"
+	// AddonStatusForfeited: the tenant was purged and the unused balance was
+	// forfeited without refund (CD-55; HLD v0.69 P-5a for an unconverted
+	// trial). The row is kept for the drawdown/refund ledgers (E-9).
+	AddonStatusForfeited QuotaAddonStatus = "forfeited"
 )
 
 // QuotaAddon represents an additional quota allocation added on top of the plan.
@@ -51,8 +55,9 @@ type QuotaAddon struct {
 }
 
 // ConsumedTokens is the quantity drawn by usage. It is meaningful while the
-// pack is active or refunded; expiry and revocation zero RemainingTokens, so
-// for those statuses it also includes the forfeited balance.
+// pack is active or refunded; expiry, revocation and purge forfeiture zero
+// RemainingTokens, so for expired, revoked and forfeited packs it also includes
+// the forfeited balance.
 func (a *QuotaAddon) ConsumedTokens() int64 {
 	c := a.TotalTokens - a.RemainingTokens - a.RefundedTokens
 	if c < 0 {

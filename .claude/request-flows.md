@@ -16,7 +16,10 @@ caller → EffectiveSetService.Recompute(ctx, tenantID, cause)
   3. Build limits map from plan.BaseLimits()
   4. if state == trial:
        TrialRepository.GetAssignment(ctx, tenantID)
-         → apply plan.TrialProfiles[profile].limits (step 2 override)
+         → profile = assignment's, or trial_specific when no row (E-6)
+         → base = trial_specific for trial_specific/custom, reduced_plan for
+           reduced_plan, none for full_plan (plan row used as-is)
+         → apply plan.TrialProfiles[base] (NULL column = inherit plan) (step 2)
        TrialRepository.ListOverrides(ctx, tenantID)
          → apply per-key trial overrides (step 3 override)
   5. OverrideRepository.ListByTenant(ctx, tenantID)
@@ -164,17 +167,21 @@ caller → PUT /overrides/:limit_key
       4. IncOverrideSet(limitKey)
 ```
 
-## Trial Assignment Set
+## Trial Assignment Set (ENT-O3)
 
 ```
-caller → POST /trial
-  → TrialService.SetTrial(ctx, {tenantID, planCode, profile, startsAt, endsAt, setBy})
-      1. guard: EffectiveSetService.GetEffectiveSet → check state == trial (ENT-INV-5)
-      2. TxRunner.RunInTx:
+caller → PUT /api/v1/operator/tenants/:id/entitlements/trial-profile
+  → TrialService.AssignTrialProfile(ctx, {tenantID, planCode, profile, startsAt, endsAt, setBy, reason})
+      1. validate: profile ∈ ValidTrialProfiles (invalid_profile), ends_at in future
+         (trial_ends_at_in_past), reason non-empty (reason_required). No state guard:
+         a non-trial assignment is stored but only applies during a trial (ENT-INV-5).
+      2. existing := TrialRepository.GetAssignment → version = existing+1 or 1
+         (a read error other than not-found fails the request)
+      3. TxRunner.RunInTx:
            TrialRepository.UpsertAssignment({...})
-           EventPublisher.Enqueue(TenantEntitlementsChanged)
+           recordAudit(AL-5 config.trial_profile.set; reason, previous_profile on change)
            COMMIT
-      3. EffectiveSetService.Recompute(ctx, tenantID, TrialChange)
+      4. EffectiveSetService.Recompute(ctx, tenantID, TrialChange)  [advisory; failure logged]
 ```
 
 ## Consumer Idempotency Pattern (IDEMP-1..4)

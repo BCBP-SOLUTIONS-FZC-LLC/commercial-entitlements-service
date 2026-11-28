@@ -678,8 +678,9 @@ func TestRecompute_TrialProfile_AllLimitFields(t *testing.T) {
 	trialLLM := int64(200_000)
 	trialAPI := int64(2_000)
 	plan := samplePlan("starter")
+	// custom draws its base from the trial_specific entry (CD-51; Catalog has no custom entry).
 	plan.TrialProfiles = map[string]domain.TrialProfileLimits{
-		string(domain.TrialProfileCustom): {
+		string(domain.TrialProfileTrialSpecific): {
 			LLMTokenQuotaMonthly:    &trialLLM,
 			APIRequestBudgetMonthly: &trialAPI,
 			APIRateLimitRPS:         &rps,

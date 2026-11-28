@@ -6,6 +6,14 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed — trial profile resolution and ENT-O3 audit (HLD v0.68 reply, E-6 / E-8)
+
+- **E-6 Default trial tenants received the paid plan's limits.** `computeEffectiveSet` applied Catalog trial-profile values only when a `tenant_trial_assignments` row existed; with no row (the default Trial-Specific case) nothing was applied, so Enterprise trials were unlimited. No row now means `trial_specific`, and ENT-I1 returns `trial_profile: "trial_specific"`. `custom` now uses the `trial_specific` entry as its base (it looked up a `custom` entry that Catalog never publishes); `full_plan` keeps the plan row. New tests cover the no-row, `trial_specific`, `reduced_plan` (with `NULL` inherit), `full_plan`, `custom` and non-trial cases.
+- **E-8 ENT-O3 had no reason and no audit.** `PUT /operator/tenants/:id/entitlements/trial-profile` now requires `reason` and writes AL-5 `config.trial_profile.set` (with `previous_profile` on change) in the assignment transaction. `recordAddonAudit` renamed `recordAudit`, since it is now shared. Swagger regenerated. **Pending:** Audit Log has to add `config.trial_profile.set` to its taxonomy; until then the entries wait in `pending_audit_entries` (platform-audit treats the 422 as version skew).
+- **ENT-INV-6 guard ignored `trial_profile`.** `effectiveSetUnchanged` compared plan, state, model tier, flags and limits only, so a profile change with identical limits (e.g. `trial_specific` → `custom`, or the E-6 `NULL` → `trial_specific` backfill) left ENT-I1 stale. Existing trial tenants get one snapshot write and one `TenantEntitlementsChanged` on their next recompute. A Catalog plan with no entry for the resolved trial profile now logs a warning (the trial falls back to the plan limits).
+- `scripts/test_runner.py`, `scripts/run_need_test.py`: ENT-O3 body matched to the real contract (it never matched `AssignTrialProfileBody`).
+- LLD rev 1.24: ENT-O3 rewritten to the implemented contract; operator trial route paths corrected (`/entitlements/trial-profile`, `/entitlements/trial-overrides/:key`).
+
 ### Changed — dependencies updated to latest (2026-11-27)
 
 - Every module in `go.mod` updated to its latest version (`go get -u -t ./...`, `go get -u tool`, `go mod tidy`). Runtime: `github.com/redis/go-redis/v9` v9.24.0 → v9.24.1 and indirect patch/minor bumps (e.g. `aws/smithy-go`); platform libraries were already current. Tooling: `golangci-lint` v2.5.0 → v2.15.0 (with its linters), swag's `go-openapi` dependencies (generated Swagger unchanged). Test stack: testcontainers' `moby`, `klauspost/compress`, `gopsutil`.

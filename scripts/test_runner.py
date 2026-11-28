@@ -207,7 +207,13 @@ def build_request(tc, method, url_tmpl, exp_code):
         elif "overrides" in url and method == "PUT":
             body = {"value": {"max_users": 500}, "record_version": 1}
         elif "trial-profile" in url and method == "PUT":
-            body = {"trial_plan_code": PLAN_BASIC, "trial_days": 14}
+            body = {
+                "plan_code": PLAN_BASIC,
+                "profile": "trial_specific",
+                "starts_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "ends_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 14 * 86400)),
+                "reason": "need-test trial assignment",
+            }
         elif "trial-overrides" in url and method == "PUT":
             body = {"value": {"max_users": 10}}
         elif "addons" in url and method == "POST":

@@ -347,6 +347,7 @@ func TestTrialHandler_AssignProfile_200(t *testing.T) {
 		"profile":   profile,
 		"starts_at": now.Format(time.RFC3339),
 		"ends_at":   now.Add(24 * time.Hour).Format(time.RFC3339),
+		"reason":    "partner evaluation",
 	})
 	withOperatorRole(c, tenantID, uuid.New().String())
 	h.AssignProfile(c)

@@ -54,9 +54,16 @@ func (s *TrialService) AssignTrialProfile(ctx context.Context, req port.AssignTr
 	if req.EndsAt.IsZero() || req.EndsAt.Before(time.Now().UTC()) {
 		return nil, domain.NewError(domain.ErrTrialEndsAtInPast, "trial ends_at must be in the future")
 	}
+	if req.Reason == "" {
+		return nil, domain.NewError(domain.ErrReasonRequired, "reason is required when assigning a trial profile")
+	}
 
 	now := time.Now().UTC()
-	existing, _ := s.trials.GetAssignment(ctx, req.TenantID)
+	existing, err := s.trials.GetAssignment(ctx, req.TenantID)
+	if err != nil && !errors.Is(err, domain.ErrTrialAssignmentNotFound) {
+		// Fail rather than audit an overwrite as a first assignment.
+		return nil, fmt.Errorf("get trial assignment: %w", err)
+	}
 	var version int64 = 1
 	if existing != nil {
 		version = existing.RecordVersion + 1
@@ -79,6 +86,25 @@ func (s *TrialService) AssignTrialProfile(ctx context.Context, req port.AssignTr
 		if err := s.trials.UpsertAssignment(txCtx, assignment); err != nil {
 			return fmt.Errorf("upsert trial assignment: %w", err)
 		}
+		meta := map[string]any{
+			"plan_code": req.PlanCode,
+			"profile":   string(req.Profile),
+			"starts_at": req.StartsAt,
+			"ends_at":   req.EndsAt,
+			"reason":    req.Reason,
+		}
+		if existing != nil {
+			meta["previous_profile"] = string(existing.Profile)
+		}
+		recordAudit(txCtx, s.log, port.AuditEntry{
+			TenantID:       &req.TenantID,
+			EntryType:      "config.trial_profile.set",
+			Actor:          port.AuditActor{Type: "platform_operator", ID: req.SetBy.String()},
+			Target:         &port.AuditTarget{Type: "tenant_trial_assignment", ID: req.TenantID.String()},
+			OccurredAt:     now,
+			Metadata:       meta,
+			IdempotencyKey: trialAssignmentAuditKey(req.TenantID, version, now),
+		})
 		final = assignment
 		return nil
 	})
@@ -185,4 +211,13 @@ func (s *TrialService) PurgeTrialForTenant(ctx context.Context, tenantID uuid.UU
 			map[string]interface{}{"tenant_id": tenantID, "error": err.Error()})
 	}
 	return nil
+}
+
+// trialAssignmentAuditKey returns a v5 UUID idempotency key for one ENT-O3
+// request: uuidv5("tenant_trial_assignments:<tenant>:<version>:<request time>").
+// Both inputs are fixed before RunInTx, so a retried transaction reuses the key;
+// each new request gets a new one.
+func trialAssignmentAuditKey(tenantID uuid.UUID, recordVersion int64, updatedAt time.Time) string {
+	seed := fmt.Sprintf("tenant_trial_assignments:%s:%d:%s", tenantID, recordVersion, updatedAt.Format(time.RFC3339Nano))
+	return uuid.NewSHA1(uuid.NameSpaceDNS, []byte(seed)).String()
 }

@@ -97,6 +97,7 @@ func TestTrialService_Logger_NilBranch(t *testing.T) {
 	now := time.Now().UTC()
 	// AssignTrialProfile succeeds; recompute fails → logger().Warn with nil log
 	a, err := trialSvc.AssignTrialProfile(context.Background(), port.AssignTrialProfileRequest{
+		Reason:   "partner evaluation",
 		TenantID: tenantID, PlanCode: "starter", Profile: domain.TrialProfileFullPlan,
 		StartsAt: now, EndsAt: now.Add(24 * time.Hour), SetBy: uuid.New(),
 	})
@@ -474,7 +475,7 @@ func TestApplyBillingPurchase_InsertError(t *testing.T) {
 	require.Error(t, err)
 }
 
-// ── recordAddonAudit: with audit recorder in context ─────────────────────
+// ── recordAudit: with audit recorder in context ─────────────────────
 
 func TestAddAddon_WithAuditRecorder_RecordsEntry(t *testing.T) {
 	snaps := newSnapshotRepo()
@@ -809,6 +810,7 @@ func TestAssignTrialProfile_RecomputeFailsNonFatal(t *testing.T) {
 
 	now := time.Now().UTC()
 	a, err := svc.AssignTrialProfile(context.Background(), port.AssignTrialProfileRequest{
+		Reason:   "partner evaluation",
 		TenantID: uuid.New(), PlanCode: "starter", Profile: domain.TrialProfileFullPlan,
 		StartsAt: now, EndsAt: now.Add(24 * time.Hour), SetBy: uuid.New(),
 	})

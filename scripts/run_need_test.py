@@ -145,7 +145,13 @@ def build_request(tc, category, scenario, method, api_tmpl, ts: TenantState):
         elif "overrides" in url and method == "PUT":
             body = {"value": {"max_users": 100}, "record_version": 1}
         elif "trial-profile" in url and method == "PUT":
-            body = {"trial_plan_code": PLAN_BASIC, "trial_days": 14}
+            body = {
+                "plan_code": PLAN_BASIC,
+                "profile": "trial_specific",
+                "starts_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "ends_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 14 * 86400)),
+                "reason": "need-test trial assignment",
+            }
         elif "addons" in url and method == "POST":
             body = {"limit_key": LIMIT_USERS, "quantity": 50, "billing_ref": fresh_id()}
         elif "resolve" in url:

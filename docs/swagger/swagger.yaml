@@ -71,12 +71,15 @@ definitions:
         type: string
       profile:
         type: string
+      reason:
+        type: string
       starts_at:
         type: string
     required:
     - ends_at
     - plan_code
     - profile
+    - reason
     - starts_at
     type: object
   http.DrawdownResponse:

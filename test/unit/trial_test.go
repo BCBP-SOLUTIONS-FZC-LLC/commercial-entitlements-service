@@ -33,6 +33,7 @@ func TestAssignTrialProfile_HappyPath(t *testing.T) {
 	tenantID := uuid.New()
 	now := time.Now().UTC()
 	req := port.AssignTrialProfileRequest{
+		Reason:   "partner evaluation",
 		TenantID: tenantID,
 		PlanCode: "starter",
 		Profile:  domain.TrialProfileReducedPlan,
@@ -55,6 +56,7 @@ func TestAssignTrialProfile_VersionIncrements_OnUpdate(t *testing.T) {
 	tenantID := uuid.New()
 	now := time.Now().UTC()
 	base := port.AssignTrialProfileRequest{
+		Reason:   "partner evaluation",
 		TenantID: tenantID, PlanCode: "starter",
 		Profile:  domain.TrialProfileFullPlan,
 		StartsAt: now, EndsAt: now.Add(30 * 24 * time.Hour),
@@ -72,6 +74,7 @@ func TestAssignTrialProfile_InvalidProfile_Error(t *testing.T) {
 	svc, _, _ := newTrialService()
 	now := time.Now().UTC()
 	_, err := svc.AssignTrialProfile(context.Background(), port.AssignTrialProfileRequest{
+		Reason:   "partner evaluation",
 		TenantID: uuid.New(), PlanCode: "starter",
 		Profile:  "nonexistent_profile",
 		StartsAt: now, EndsAt: now.Add(24 * time.Hour),
@@ -84,6 +87,7 @@ func TestAssignTrialProfile_InvalidProfile_Error(t *testing.T) {
 func TestAssignTrialProfile_EndsAtZero_Error(t *testing.T) {
 	svc, _, _ := newTrialService()
 	_, err := svc.AssignTrialProfile(context.Background(), port.AssignTrialProfileRequest{
+		Reason:   "partner evaluation",
 		TenantID: uuid.New(), PlanCode: "starter",
 		Profile: domain.TrialProfileFullPlan,
 		SetBy:   uuid.New(),
@@ -96,6 +100,7 @@ func TestAssignTrialProfile_EndsAtInPast_Error(t *testing.T) {
 	svc, _, _ := newTrialService()
 	now := time.Now().UTC()
 	_, err := svc.AssignTrialProfile(context.Background(), port.AssignTrialProfileRequest{
+		Reason:   "partner evaluation",
 		TenantID: uuid.New(), PlanCode: "starter",
 		Profile:  domain.TrialProfileFullPlan,
 		StartsAt: now.Add(-48 * time.Hour),
@@ -111,6 +116,7 @@ func TestAssignTrialProfile_UpsertError(t *testing.T) {
 	trials.upsertAssignErr = errStorage
 	now := time.Now().UTC()
 	_, err := svc.AssignTrialProfile(context.Background(), port.AssignTrialProfileRequest{
+		Reason:   "partner evaluation",
 		TenantID: uuid.New(), PlanCode: "starter",
 		Profile:  domain.TrialProfileFullPlan,
 		StartsAt: now, EndsAt: now.Add(24 * time.Hour),
@@ -129,6 +135,7 @@ func TestAssignTrialProfile_AllProfiles(t *testing.T) {
 		svc, _, _ := newTrialService()
 		now := time.Now().UTC()
 		a, err := svc.AssignTrialProfile(context.Background(), port.AssignTrialProfileRequest{
+			Reason:   "partner evaluation",
 			TenantID: uuid.New(), PlanCode: "starter", Profile: p,
 			StartsAt: now, EndsAt: now.Add(24 * time.Hour), SetBy: uuid.New(),
 		})
@@ -144,6 +151,7 @@ func TestGetTrialAssignment_Found(t *testing.T) {
 	tenantID := uuid.New()
 	now := time.Now().UTC()
 	_, _ = svc.AssignTrialProfile(context.Background(), port.AssignTrialProfileRequest{
+		Reason:   "partner evaluation",
 		TenantID: tenantID, PlanCode: "starter",
 		Profile:  domain.TrialProfileFullPlan,
 		StartsAt: now, EndsAt: now.Add(24 * time.Hour), SetBy: uuid.New(),
@@ -276,6 +284,7 @@ func TestPurgeTrialForTenant_RemovesAssignmentAndOverrides(t *testing.T) {
 
 	// Set assignment
 	_, _ = svc.AssignTrialProfile(context.Background(), port.AssignTrialProfileRequest{
+		Reason:   "partner evaluation",
 		TenantID: tenantID, PlanCode: "starter", Profile: domain.TrialProfileFullPlan,
 		StartsAt: now, EndsAt: now.Add(24 * time.Hour), SetBy: uuid.New(),
 	})

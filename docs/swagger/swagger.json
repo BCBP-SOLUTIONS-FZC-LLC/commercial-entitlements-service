@@ -1091,6 +1091,7 @@
                 "ends_at",
                 "plan_code",
                 "profile",
+                "reason",
                 "starts_at"
             ],
             "properties": {
@@ -1101,6 +1102,9 @@
                     "type": "string"
                 },
                 "profile": {
+                    "type": "string"
+                },
+                "reason": {
                     "type": "string"
                 },
                 "starts_at": {

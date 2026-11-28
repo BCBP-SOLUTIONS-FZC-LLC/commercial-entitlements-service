@@ -155,6 +155,8 @@ type AssignTrialProfileRequest struct {
 	StartsAt time.Time
 	EndsAt   time.Time
 	SetBy    uuid.UUID
+	// Reason is required (CD-6, LLD §5.4 ENT-O3) and recorded in the AL-5 entry.
+	Reason string
 }
 
 // SetTrialOverrideRequest creates or replaces a trial-scoped limit override.

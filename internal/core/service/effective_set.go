@@ -161,23 +161,33 @@ func (s *EffectiveSetService) recomputeCore(ctx context.Context, tenantID uuid.U
 	// Map subscription state → EntitlementState.
 	state := mapSubscriptionState(sub.State)
 
-	// --- Step 2: Trial-profile overrides ---
+	// --- Step 2: Trial-profile limits ---
+	// No tenant_trial_assignments row means the default Trial-Specific
+	// profile (CD-6, LLD §4.2), never the paid plan's limits (E-6).
 	var trialProfile *string
 	if state == domain.EntitlementStateTrial {
+		profile := domain.TrialProfileTrialSpecific
 		ta, err := s.trials.GetAssignment(ctx, tenantID)
 		switch {
 		case err == nil && ta != nil:
-			p := string(ta.Profile)
-			trialProfile = &p
-			// Apply trial-profile limit overrides.
-			if profileLimits, ok := plan.TrialProfiles[string(ta.Profile)]; ok {
-				applyTrialProfileLimits(limits, profileLimits)
-			}
-		case errors.Is(err, domain.ErrTrialAssignmentNotFound):
-			// No row means trial_specific default — no adjustments, trialProfile stays nil.
-		case err != nil:
+			profile = ta.Profile
+		case err == nil, errors.Is(err, domain.ErrTrialAssignmentNotFound):
+			// Default profile.
+		default:
 			// Unexpected repository error — fail the recompute.
 			return nil, fmt.Errorf("get trial assignment: %w", err)
+		}
+		p := string(profile)
+		trialProfile = &p
+		if base, ok := trialProfileBase(profile); ok {
+			if profileLimits, found := plan.TrialProfiles[string(base)]; found {
+				applyTrialProfileLimits(limits, profileLimits)
+			} else {
+				// Catalog published no entry: the trial falls back to the paid
+				// plan's limits (unlimited on Enterprise). Make it visible.
+				s.logger().Warn("recompute: catalog has no trial profile entry; using plan limits",
+					map[string]interface{}{"tenant_id": tenantID, "plan_code": sub.PlanCode, "profile": string(base)})
+			}
 		}
 	}
 
@@ -392,6 +402,12 @@ func effectiveSetUnchanged(es *domain.EffectiveSet, snap *domain.EntitlementSnap
 	if !stringSlicesEqual(es.FeatureFlags, snap.FeatureFlags) {
 		return false
 	}
+	// trial_profile is part of the ENT-I1 contract: a profile change with
+	// identical limits (e.g. trial_specific → custom, or the E-6 NULL →
+	// trial_specific backfill) must still write the snapshot.
+	if !optionalStringEqual(es.TrialProfile, snap.TrialProfile) {
+		return false
+	}
 	if len(es.Limits) != len(snap.Limits) {
 		return false
 	}
@@ -408,6 +424,14 @@ func effectiveSetUnchanged(es *domain.EffectiveSet, snap *domain.EntitlementSnap
 		}
 	}
 	return true
+}
+
+// optionalStringEqual reports whether two optional strings are both nil or hold the same value.
+func optionalStringEqual(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 // stringSlicesEqual reports whether two sorted string slices are identical.
@@ -547,6 +571,22 @@ func mapSubscriptionState(state string) domain.EntitlementState {
 		return domain.EntitlementStateProvisioning
 	default:
 		return domain.EntitlementStateSuspended
+	}
+}
+
+// trialProfileBase returns the Catalog trial_profiles entry a profile draws its
+// limits from (CD-51). full_plan uses the plan row directly (ok=false); custom
+// uses Trial-Specific as its base, with trial overrides layered on in step 3.
+func trialProfileBase(p domain.TrialProfile) (domain.TrialProfile, bool) {
+	switch p {
+	case domain.TrialProfileTrialSpecific, domain.TrialProfileCustom:
+		return domain.TrialProfileTrialSpecific, true
+	case domain.TrialProfileReducedPlan:
+		return domain.TrialProfileReducedPlan, true
+	case domain.TrialProfileFullPlan:
+		return "", false
+	default:
+		return "", false
 	}
 }
 

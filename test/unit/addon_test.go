@@ -888,10 +888,10 @@ func TestWithShortfallConfig_SetsConfig(t *testing.T) {
 	assert.NotEqual(t, uuid.Nil, d.ID)
 }
 
-// ── recordAddonAudit ───────────────────────────────────────────────────────
+// ── recordAudit ───────────────────────────────────────────────────────
 
 func TestRecordAddonAudit_NoRecorderInContext_NoOp(t *testing.T) {
-	// recordAddonAudit is called inside the transaction closure during AddAddon.
+	// recordAudit is called inside the transaction closure during AddAddon.
 	// When no AuditRecorder is in ctx (the default fakeTxRunner has none),
 	// the call must succeed silently — audit failures never block business writes.
 	svc, _, _, _, _ := newAddonService()
@@ -933,7 +933,7 @@ func TestRecordAddonAudit_RecorderInContext_CalledWithoutError(t *testing.T) {
 	assert.NotEqual(t, uuid.Nil, a.ID)
 }
 
-// ── recordAddonAudit: recorder returns error ──────────────────────────────
+// ── recordAudit: recorder returns error ──────────────────────────────
 
 type failAuditRecorder struct{}
 

@@ -50,6 +50,7 @@ func (h *TrialHandler) AssignProfile(c *gin.Context) {
 		StartsAt: body.StartsAt,
 		EndsAt:   body.EndsAt,
 		SetBy:    actorID,
+		Reason:   body.Reason,
 	})
 	if err != nil {
 		HandleError(c, err)

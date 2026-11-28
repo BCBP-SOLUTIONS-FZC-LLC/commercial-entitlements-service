@@ -7,7 +7,7 @@
 | Document type | Low-Level Design (LLD) |
 | Service | Entitlements Service (`commercial-entitlements`) |
 | Go module | `github.com/BCBP-SOLUTIONS-FZC-LLC/commercial-entitlements` |
-| Version | 1.23 |
+| Version | 1.24 |
 | Date | November 2026 |
 | Status | Draft for review |
 | Owner | Commercial Team |
@@ -20,6 +20,7 @@
 
 | Rev | Date | Change |
 |---|---|---|
+| 1.24 | 2026-11-28 | **Trial profile resolution and ENT-O3 audit (Entitlements reply to Commercial HLD v0.68, E-6 / E-8).** (1) **E-6:** `computeEffectiveSet` step 2 now treats a trial tenant with no `tenant_trial_assignments` row as `trial_specific` and applies the Catalog Trial-Specific values; previously such tenants (the default case) received the paid plan's limits, so Enterprise trials were unlimited. `custom` now uses the `trial_specific` entry as its base (Catalog publishes no `custom` entry); `full_plan` keeps the plan row. ENT-I1 returns `trial_profile: "trial_specific"` for default trial tenants. Matches §4.2 TTA and the §5.4 null-semantics table; no schema change. (2) **E-8:** ENT-O3 requires `reason` and writes AL-5 `config.trial_profile.set` in the assignment transaction; §5.4 ENT-O3 rewritten to the implemented request/response. (3) Operator trial routes corrected to `/operator/tenants/:id/entitlements/trial-profile` and `/entitlements/trial-overrides/:key` (§4.7, §5.2, §5.3, §5.4). (4) §4.0/§4.2 `tenant_trial_assignments` DDL aligned with migration `000001` (`plan_code`, `starts_at`, `ends_at`; no `reason` column, no `profile` default); §16 error catalogue: `trial_assignment_not_found` is ENT-O3 GET only. (5) `effectiveSetUnchanged` now also compares `trial_profile`, so a profile-only change writes a snapshot and emits `TenantEntitlementsChanged` (ENT-INV-6). Pending: Audit Log to add `config.trial_profile.set` to its taxonomy. |
 | 1.23 | 2026-11-27 | **Billing hand-off F-3 / F-4 (BL-OQ-20 W-5, W-6).** (0) **ENT-D16:** `total_tokens` is immutable; a fully refunded pack moves to the new status `refunded` (migration `000006`); removability and listings account for refunded quantities from the ledger (§4.2 QA-2, QA-6, QA-7, ENT-O5). (1) **F-3:** Billing add-on refunds are idempotent on `billing_ref` (Billing `refund_id`) through the new append-only ledger `quota_addon_refunds` (migration `000005`, §4.2, §4.4): `ApplyBillingRefund` claims the row (`ON CONFLICT DO NOTHING`) in the same transaction as the pack update, so a DLQ redrive, a visibility-timeout cycle past the `processed_events` prune, or a re-publish under a new envelope ID no longer removes tokens twice. A `refund_id` already recorded for another tenant, or for a different purchase of the same tenant, applies nothing, is counted in `commercial_entitlements_billing_ref_conflict_total{reason="refund_ref_other_tenant"|"refund_ref_other_purchase"}` and acked (§7.2, EVT-3). (2) **F-4:** ENT-D15 records the Commercial TL decision that `TenantEntitlementsChanged{cause: addon_change}` — including from drawdowns — is permitted under S-8 (§16.2). §7.1 `cause` enum aligned with `api/asyncapi.yaml` and the code; a unit test fails if the domain, the schema and this table drift. |
 | 1.22 | 2026-11-27 | **Billing ↔ Entitlements compatibility (Billing hand-off BL-OQ-28, items B-1 to B-8).** (1) **B-1:** every SQS consumer decodes Glue-framed messages (`events.GlueDecodeCodec` in `sqspipeline.NewConsumer`); previously a Glue-framed event was retried and dead-lettered (§7.2). (2) **B-2:** Billing reaches ENT-I1 by its mTLS principal (`cluster.local/ns/billing/sa/commercial-billing`, read from the last `X-Forwarded-Client-Cert` element; env `BILLING_CALLER_PRINCIPAL`) instead of `x-service-token`; `billingReadOnly` keyed on that principal; Istio rule now `GET /api/v1/internal/tenants/*` (§5.1, §5.2, §5.3, §10.2, §13.1). (3) **B-3:** snapshot upserts now refuse a snapshot computed from an older Core `record_version` (`source_record_version` guard), and `TenantStateChanged` recomputes when `cause` is a Billing subscription event (`TenantPlanChanged`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantPaymentPastDue`), when plan or status changed, or on `TrialReactivated` (§7.2). (4) **B-4:** consumed schemas are enforced per queue (`ValidatingCodec.ValidateConsumed`); a schema-invalid event is dead-lettered on first delivery. (5) **B-5:** Billing subscription payloads decoded into per-type structs; undecodable ones are dead-lettered, not acked. (6) **B-6:** AsyncAPI 1.6.0 lists all four Billing types on `billing-entitlements-q`. (7) **B-7:** this document aligned with the code (ENT-I1 callers and wire shape, §10.2 Billing row, §13.1). (8) **B-8:** a `billing_ref` held by another tenant no longer aborts the inbox transaction (`ON CONFLICT DO NOTHING`); counted in `commercial_entitlements_billing_ref_conflict_total` and alerted by `CommercialEntitlementsBillingRefConflict` (§11.3). (9) **E-4:** add-on balance kept on the trial snapshot after a conversion reversal — recorded as ENT-D14 (§16.2). |
 | 1.21 | 2026-11-27 | **IAM upstream compatibility gap closure.** (1) `iamclient/client.go` split into two base URLs: `IAM_CATALOG_BASE_URL` (iam-catalog-admin) and `IAM_ORG_BASE_URL` (iam-org-membership); API-key auth removed — both services use Istio mTLS in-mesh. (2) URL prefix corrected: `FetchPlan` → `{IAM_CATALOG_BASE_URL}/api/v1/internal/plans/:code`; `FetchTenantSubscription` → `{IAM_ORG_BASE_URL}/api/v1/internal/tenants/:id/plan-context`. (3) `FetchAllPlans` added to `port.IAMClient` — calls `GET /api/v1/internal/plans` (CAT-I2 bulk); used by `cmd/catalog-refresh` to bootstrap empty `plan_catalog_cache` on first deploy. (4) `domain.Plan` JSON tags added (`"code"`, `"llm_token_quota_monthly"`, etc.) — required because Go's JSON decoder does not strip underscores in case-insensitive matching, so snake_case catalog keys decoded silently to nil without explicit tags, breaking quota enforcement. (5) `port.TenantSubscription` JSON tags aligned to I-17 wire shape (`PlanCode→"plan"`, `State→"status"`); `FeatureFlags []string` added (`json:"feature_flags"`); dead `TrialProfile` field removed (commercial-entitlements is the system of record for trial profiles). (6) `mapSubscriptionState` extended: `past_due`/`cancelled` → `grace_period`; `trial_expired` → `suspended`. (7) `mergeFeatureFlags` added to `effective_set.go` — unions plan baseline flags with per-tenant O-4 delta from I-17 `feature_flags[]`; result sorted for stable `effectiveSetUnchanged` comparison (ENT-INV-6). (8) `InboundTenantEvent` trimmed to `{TenantID}` matching RP wire shape; `InboundMembershipEvent` gains `actor_id`; `InboundCatalogEvent` fields corrected (`plan_code`→`code`, added `change_type` and `feature_set`). (9) `TenantSuspended`, `TenantReactivated`, `TrialExpired` added to `tenant_consumer.go` Handle switch — previously silently acked, so snapshots were never updated on suspension/reactivation/trial-expiry. (10) `dedup.go` `knownEventTypes`: `TenantProvisioned` → `TenantIdentityProvisioned`; `TrialExpired`, `TrialReactivated`, `TenantConverted`, `TenantMembershipsPurged`, `TenantSubscriptionUpdated` added. §3.2 and §3.3.3 iamclient updated; §7.2 adds `TenantIdentityProvisioned` and `TenantSubscriptionUpdated` rows; §12 config: `IAM_CORE_BASE_URL` → `IAM_ORG_BASE_URL`, `IAM_CATALOG_API_KEY` removed, `IAM_CATALOG_TIMEOUT` added; §18.1 and §18.2 integration details updated; AsyncAPI bumped to v1.5.0. |
@@ -416,8 +417,10 @@ erDiagram
 
     TENANT_TRIAL_ASSIGNMENTS {
         uuid tenant_id PK "0–1 row per tenant; absent = trial_specific default"
-        trial_profile profile "ENUM: trial_specific|reduced_plan|full_plan|custom; default trial_specific"
-        text reason "non-empty; operator-supplied"
+        text plan_code
+        trial_profile profile "ENUM: trial_specific|reduced_plan|full_plan|custom"
+        timestamptz starts_at
+        timestamptz ends_at
         uuid set_by "operator principal UUID"
         bigint record_version "optimistic locking"
         timestamptz created_at
@@ -718,8 +721,10 @@ Operator-assigned trial profile per tenant. One row at most per tenant; absent =
 ```sql
 CREATE TABLE tenant_trial_assignments (
   tenant_id      uuid          NOT NULL PRIMARY KEY,
-  profile        trial_profile NOT NULL DEFAULT 'trial_specific',
-  reason         text          NOT NULL CHECK (reason <> ''),
+  plan_code      text          NOT NULL,
+  profile        trial_profile NOT NULL,
+  starts_at      timestamptz   NOT NULL,
+  ends_at        timestamptz   NOT NULL,
   set_by         uuid          NOT NULL,          -- operator principal UUID
   record_version bigint        NOT NULL DEFAULT 1 CHECK (record_version > 0),
   created_at     timestamptz   NOT NULL DEFAULT now(),
@@ -730,6 +735,8 @@ ALTER TABLE tenant_trial_assignments ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON tenant_trial_assignments
   USING (tenant_id = current_setting('app.tenant_id')::uuid);
 ```
+
+The ENT-O3 `reason` is not stored in this table; it is carried in the AL-5 `config.trial_profile.set` metadata (E-8).
 
 **Notes:**
 
@@ -1156,8 +1163,8 @@ The `limits` column in `entitlement_snapshots` and the `limits` field in every A
 |---|---|---|---|
 | `entitlement_overrides` | **This service** | `PUT`/`DELETE /api/v1/operator/…` only | No — operator-entered data |
 | `entitlement_override_history` | **This service** (append-only) | Written in the same tx as `entitlement_overrides` mutation | Partially (can be derived from overrides for current state; history is audit trail) |
-| `tenant_trial_assignments` | **This service** | `PUT /api/v1/operator/tenants/:id/trial-profile` only | No — operator-entered data |
-| `trial_entitlement_overrides` | **This service** (custom profile only) | `PUT`/`DELETE /api/v1/operator/tenants/:id/trial-overrides/:key` | No — operator-entered data |
+| `tenant_trial_assignments` | **This service** | `PUT /api/v1/operator/tenants/:id/entitlements/trial-profile` only | No — operator-entered data |
+| `trial_entitlement_overrides` | **This service** (custom profile only) | `PUT`/`DELETE /api/v1/operator/tenants/:id/entitlements/trial-overrides/:key` | No — operator-entered data |
 | `entitlement_snapshots` | **This service** (cache, not source of truth) | Re-compute on every event / override mutation | **Yes** — from all override tables + CAT-I2 (with `trial_profiles`) + I-17 |
 | `plan_catalog_cache` | Catalog / Admin Config Service (authoritative) | Replaced on `PlanCatalogChanged` and TTL backstop | **Yes** — from CAT-I2 |
 | `quota_addons` | **This service** | Written on `TenantQuotaAddOnChanged`; updated by drawdown, expiry, operator correction | No — business data (purchased packs) |
@@ -1191,9 +1198,9 @@ The `limits` column in `entitlement_snapshots` and the `limits` field in every A
 | `GET /api/v1/tenants/:id/entitlements` | `x-tenant-roles` contains `tenant_owner` or `tenant_admin`, AND `x-tenant-id == :id` |
 | `PUT /api/v1/operator/tenants/:id/entitlement-overrides/:key` | `x-tenant-roles` contains `platform_operator`; re-checked in handler |
 | `DELETE /api/v1/operator/tenants/:id/entitlement-overrides/:key` | Same |
-| `PUT /api/v1/operator/tenants/:id/trial-profile` | `x-tenant-roles` contains `platform_operator`; re-checked in handler |
-| `PUT /api/v1/operator/tenants/:id/trial-overrides/:key` | Same |
-| `DELETE /api/v1/operator/tenants/:id/trial-overrides/:key` | Same |
+| `PUT /api/v1/operator/tenants/:id/entitlements/trial-profile` | `x-tenant-roles` contains `platform_operator`; re-checked in handler |
+| `PUT /api/v1/operator/tenants/:id/entitlements/trial-overrides/:key` | Same |
+| `DELETE /api/v1/operator/tenants/:id/entitlements/trial-overrides/:key` | Same |
 | `POST /api/v1/internal/tenants/:id/quota-addons/drawdowns` | mTLS caller is `commercial-usage-metering` (namespace `commercial`, NetworkPolicy-enforced) |
 | `POST /api/v1/operator/tenants/:id/quota-addons` | `x-tenant-roles` contains `platform_operator`; re-checked in handler |
 
@@ -1227,8 +1234,8 @@ Reachable mesh-internally only. `x-tenant-roles` must contain `platform_operator
 |---|---|---|---|---|
 | ENT-O1 | `PUT /api/v1/operator/tenants/:id/entitlement-overrides/:key` | Platform operator | Set or update a subscription-scoped numeric override | invalidates |
 | ENT-O2 | `DELETE /api/v1/operator/tenants/:id/entitlement-overrides/:key` | Platform operator | Remove a subscription-scoped override | invalidates |
-| ENT-O3 | `PUT /api/v1/operator/tenants/:id/trial-profile` | Platform operator | Assign / change trial entitlement profile; `reason` required (CD-6, CD-51) | invalidates |
-| ENT-O4 | `PUT` / `DELETE /api/v1/operator/tenants/:id/trial-overrides/:key` | Platform operator | Set or remove a trial-scoped override (`custom` profile only) | invalidates |
+| ENT-O3 | `PUT /api/v1/operator/tenants/:id/entitlements/trial-profile` | Platform operator | Assign / change trial entitlement profile; `reason` required (CD-6, CD-51) | invalidates |
+| ENT-O4 | `PUT` / `DELETE /api/v1/operator/tenants/:id/entitlements/trial-overrides/:key` | Platform operator | Set or remove a trial-scoped override (`custom` profile only) | invalidates |
 | ENT-O5 | `POST /api/v1/operator/tenants/:id/quota-addons` | Platform operator | Manual add-on balance correction; `reason` required; audited (CD-55) | invalidates |
 | ENT-O6 | `GET /api/v1/operator/quota-addon-shortfalls` | Platform operator | List add-on drawdown shortfalls across tenants (ENT-D9) | — |
 | ENT-O7 | `PATCH /api/v1/operator/tenants/:id/quota-addon-shortfalls/:shortfall_id` | Platform operator | Mark a shortfall under review or resolve it; `reason` required; audited (ENT-D9) | — |
@@ -1457,9 +1464,9 @@ Post-commit: evict `ent:tenant:{id}` from Valkey.
 
 **AL-5 `entry_type`:** `config.entitlement_override.removed` (Audit LLD v0.29 taxonomy, CD-21).
 
-#### ENT-O3 — `PUT /api/v1/operator/tenants/:id/trial-profile` (CD-6 / CD-51)
+#### ENT-O3 — `PUT /api/v1/operator/tenants/:id/entitlements/trial-profile` (CD-6 / CD-51)
 
-Assign or change the trial entitlement profile for a trial tenant. Only meaningful when `tenants.status = 'trial'`; the call is accepted for non-trial tenants too (the assignment is stored), but takes effect only during a trial. At conversion the profile is ignored; the purchased plan applies.
+Assign or change the trial entitlement profile for a trial tenant. Only meaningful when `tenants.status = 'trial'`; the call is accepted for non-trial tenants too (the assignment is stored), but takes effect only during a trial. At conversion the profile is ignored; the purchased plan applies. A trial tenant with no assignment is on `trial_specific` (E-6).
 
 **Auth:** `platform_operator`, re-checked in handler.
 
@@ -1467,31 +1474,33 @@ Assign or change the trial entitlement profile for a trial tenant. Only meaningf
 
 ```json
 {
-  "profile":        "reduced_plan",
-  "reason":         "Strategic partner evaluation — Reduced limits for 30-day trial",
-  "record_version": 0
+  "plan_code": "pro",
+  "profile":   "reduced_plan",
+  "starts_at": "2026-12-01T00:00:00Z",
+  "ends_at":   "2026-12-31T00:00:00Z",
+  "reason":    "Strategic partner evaluation — Reduced limits for 30-day trial"
 }
 ```
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `plan_code` | string | Yes | Plan the trial is on |
 | `profile` | string | Yes | One of: `trial_specific`, `reduced_plan`, `full_plan`, `custom` |
-| `reason` | string | Yes | Non-empty; logged in history and the AL-5 audit entry |
-| `record_version` | integer | Yes | Use `0` for a first assignment; current version for updates |
+| `starts_at` | RFC 3339 | Yes | Trial start |
+| `ends_at` | RFC 3339 | Yes | Must be in the future (`400 trial_ends_at_in_past`) |
+| `reason` | string | Yes | Non-empty (`400` on bind, `reason_required` from the service); recorded in the AL-5 entry (E-8) |
 
-**Success response `200`:** the updated effective set (ENT-I1 shape).
+`record_version` is not sent: the service reads the current row and bumps it.
 
-**Side effects — all atomic in one transaction:**
-1. Upsert `tenant_trial_assignments` (bumps `record_version` via `touch_row` trigger).
-2. Insert into `pending_audit_entries`.
-3. Insert into `outbox_events` for `TenantEntitlementsChanged`.
-4. Upsert `entitlement_snapshots` with the recomputed effective set.
+**Success response `200`:** the stored assignment (`tenant_id`, `plan_code`, `profile`, `starts_at`, `ends_at`, `set_by`, `record_version`, …).
 
-Post-commit: evict `ent:tenant:{id}` from Valkey.
+**Side effects:**
+1. In one transaction: upsert `tenant_trial_assignments` and insert the AL-5 entry into `pending_audit_entries`.
+2. Then recompute (advisory — a failure is logged and the next event or the catalog refresh recomputes): upsert `entitlement_snapshots`, enqueue `TenantEntitlementsChanged` (`cause = trial_change`), rewrite `ent:tenant:{id}` with the new set and refresh the ENT-D13 quota ceiling, unless the set is unchanged (ENT-INV-6).
 
-**AL-5 `entry_type`:** `config.trial_profile.set` (Audit LLD v0.29 taxonomy, CD-21).
+**AL-5 `entry_type`:** `config.trial_profile.set` (CD-21). Actor `platform_operator`/`set_by`; target `tenant_trial_assignment`/tenant id; metadata `plan_code`, `profile`, `previous_profile` (on change), `starts_at`, `ends_at`, `reason`. **Dependency:** Audit Log's direct-write taxonomy does not yet list `config.trial_profile.set`; until it does, platform-audit classifies the 422 as version skew and holds the rows for requeue (nothing is lost).
 
-#### ENT-O4 — `PUT` / `DELETE /api/v1/operator/tenants/:id/trial-overrides/:key`
+#### ENT-O4 — `PUT` / `DELETE /api/v1/operator/tenants/:id/entitlements/trial-overrides/:key`
 
 Set or remove a trial-scoped numeric limit override. Only meaningful when the tenant's trial profile is `custom`. Ignored after conversion.
 
@@ -2663,7 +2672,7 @@ The `plan_trial_profiles` table exists in Catalog with 6 rows (3 plans × 2 prof
 | `workflow_template_limit` | 3 | 5 | 10 | 25 | 20 | 100 |
 | `tender_limit` (→ `concurrent_tender_limit`) | 5 | 10 | 25 | 125 | 50 | 500 |
 
-No column is left `NULL`, so no trial inherits an unlimited Enterprise value. **Rollout:** after approval an operator applies the six rows with Catalog `PATCH /api/v1/operator/plans/:code/trial-profiles/:profile`; Catalog emits `PlanCatalogChanged`, and `CatalogFanoutWorkflow` (§8.6) recomputes the trial tenants on each plan. No Entitlements code change. **Open Product points:** a trial crossing month-end receives two monthly quotas (quota resets on the 1st, UTC); token budgets to be validated with Finance against trial volume and model cost; on exhaustion a trial tenant cannot buy add-ons, so the product prompts conversion or Sales assigns `reduced_plan` or `full_plan`.
+No column is left `NULL`, so no trial inherits an unlimited Enterprise value. **Rollout:** after approval an operator applies the six rows with Catalog `PATCH /api/v1/operator/plans/:code/trial-profiles/:profile`; Catalog emits `PlanCatalogChanged`, and `CatalogFanoutWorkflow` (§8.6) recomputes the trial tenants on each plan. No further Entitlements code change; E-6 (rev 1.24) was required for default trial tenants (no assignment row) to receive the Trial-Specific values at all. **Open Product points:** a trial crossing month-end receives two monthly quotas (quota resets on the 1st, UTC); token budgets to be validated with Finance against trial volume and model cost; on exhaustion a trial tenant cannot buy add-ons, so the product prompts conversion or Sales assigns `reduced_plan` or `full_plan`.
 
 **Field name note:** the API field and column is `tender_limit`, not `concurrent_tender_limit` (CD-16b, Catalog `dto.go:77`).
 
@@ -2786,7 +2795,7 @@ All errors follow `gincommon.ErrorResponse`: `{"code": "<snake_case>", "message"
 | 403 | `operator_role_required` | ENT-O1/O2/O3/O4/O5 | `platform_operator` role missing |
 | 404 | `tenant_not_found` | ENT-I1/T1 | No snapshot and I-17 returns 404 |
 | 404 | `override_not_found` | ENT-O2/O4(DELETE) | No override exists for `(tenant_id, key)` |
-| 404 | `trial_assignment_not_found` | ENT-O3(if record_version > 0) | No trial assignment exists |
+| 404 | `trial_assignment_not_found` | ENT-O3 (GET) | No trial assignment exists |
 | 409 | `optimistic_lock_conflict` | ENT-O1/O3/O4 | `record_version` mismatch; body includes current version |
 | 409 | `concurrent_update` | ENT-O1/O2/O3/O4/O5 | Deadlock/serialisation failure after 3 retries |
 | 409 | `drawdown_already_recorded` | ENT-I3 | `(tenant_id, period_start)` already in `quota_addon_drawdowns` — idempotent, returns 200 |

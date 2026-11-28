@@ -169,7 +169,7 @@ func (s *AddonService) AddAddon(ctx context.Context, req port.AddAddonRequest) (
 		if err := s.addons.Insert(txCtx, a); err != nil {
 			return fmt.Errorf("insert addon: %w", err)
 		}
-		recordAddonAudit(txCtx, s.log, port.AuditEntry{
+		recordAudit(txCtx, s.log, port.AuditEntry{
 			TenantID:   &req.TenantID,
 			EntryType:  "billing.token_addon.granted",
 			Actor:      port.AuditActor{Type: "platform_operator", ID: req.GrantedBy.String()},
@@ -237,7 +237,7 @@ func (s *AddonService) RemoveAddon(ctx context.Context, req port.RemoveAddonRequ
 		if err := s.addons.Update(txCtx, a); err != nil {
 			return err
 		}
-		recordAddonAudit(txCtx, s.log, port.AuditEntry{
+		recordAudit(txCtx, s.log, port.AuditEntry{
 			TenantID:   &req.TenantID,
 			EntryType:  "billing.token_addon.revoked",
 			Actor:      port.AuditActor{Type: "platform_operator", ID: req.RemovedBy.String()},
@@ -555,7 +555,7 @@ func (s *AddonService) ExpireAddons(ctx context.Context) (int, error) {
 			if err := s.addons.Update(txCtx, a); err != nil {
 				return err
 			}
-			recordAddonAudit(txCtx, s.log, port.AuditEntry{
+			recordAudit(txCtx, s.log, port.AuditEntry{
 				TenantID:   &a.TenantID,
 				EntryType:  "billing.token_addon.expired",
 				Actor:      port.AuditActor{Type: "system", ID: "commercial-entitlements"},
@@ -814,21 +814,21 @@ func addonAuditKey(addonID uuid.UUID, recordVersion int64, updatedAt time.Time) 
 	return uuid.NewSHA1(uuid.NameSpaceDNS, []byte(seed)).String()
 }
 
-// recordAddonAudit writes an AL-5 audit entry inside the current transaction.
+// recordAudit writes an AL-5 audit entry inside the current transaction.
 // If no AuditRecorder is in ctx the call is a no-op — audit failures never
 // block the business write (AUDIT-CALLER-1).
-func recordAddonAudit(ctx context.Context, log port.Logger, entry port.AuditEntry) {
+func recordAudit(ctx context.Context, log port.Logger, entry port.AuditEntry) {
 	rec, ok := port.AuditRecorderFromContext(ctx)
 	if !ok {
 		if log != nil {
-			log.Warn("addon audit: recorder not in context, skipping",
+			log.Warn("audit: recorder not in context, skipping",
 				map[string]interface{}{"entry_type": entry.EntryType})
 		}
 		return
 	}
 	if err := rec.Record(ctx, entry); err != nil {
 		if log != nil {
-			log.Warn("addon audit: record failed",
+			log.Warn("audit: record failed",
 				map[string]interface{}{"entry_type": entry.EntryType, "error": err.Error()})
 		}
 	}

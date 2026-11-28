@@ -963,6 +963,7 @@ func newTrialBody(profile string) map[string]any {
 		"profile":   profile,
 		"starts_at": now.Format(time.RFC3339),
 		"ends_at":   now.Add(30 * 24 * time.Hour).Format(time.RFC3339),
+		"reason":    "partner evaluation",
 	}
 }
 
@@ -1002,7 +1003,7 @@ func TestAssignTrialProfile_Custom_UnlocksTEO_200(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
-func TestAssignTrialProfile_MissingReason_400(t *testing.T) {
+func TestAssignTrialProfile_EmptyBody_400(t *testing.T) {
 	tenantID := uuid.New()
 	h := NewTrialHandler(&fakeTrialSvc{})
 	c, w := newHandlerCtx(http.MethodPut, "/", tenantID, nil)
@@ -1079,7 +1080,20 @@ func TestAssignTrialProfile_EndsAtInPast_400(t *testing.T) {
 		"profile":   "trial_specific",
 		"starts_at": now.Add(-48 * time.Hour).Format(time.RFC3339),
 		"ends_at":   now.Add(-24 * time.Hour).Format(time.RFC3339),
+		"reason":    "partner evaluation",
 	}
+	c, w := newHandlerCtx(http.MethodPut, "/", tenantID, body)
+	withOperatorRole(c, tenantID, uuid.New().String())
+	h.AssignProfile(c)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestAssignTrialProfile_MissingReason_400(t *testing.T) {
+	tenantID := uuid.New()
+	svc := &fakeTrialSvc{}
+	h := NewTrialHandler(svc)
+	body := newTrialBody("reduced_plan")
+	delete(body, "reason")
 	c, w := newHandlerCtx(http.MethodPut, "/", tenantID, body)
 	withOperatorRole(c, tenantID, uuid.New().String())
 	h.AssignProfile(c)

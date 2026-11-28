@@ -274,6 +274,7 @@ type AssignTrialProfileBody struct {
 	Profile  string    `json:"profile" binding:"required"`
 	StartsAt time.Time `json:"starts_at" binding:"required"`
 	EndsAt   time.Time `json:"ends_at" binding:"required"`
+	Reason   string    `json:"reason" binding:"required"`
 }
 
 type TrialAssignmentResponse struct {

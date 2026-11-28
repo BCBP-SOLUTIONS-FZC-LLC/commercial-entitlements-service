@@ -1097,6 +1097,7 @@ const docTemplate = `{
                 "ends_at",
                 "plan_code",
                 "profile",
+                "reason",
                 "starts_at"
             ],
             "properties": {
@@ -1107,6 +1108,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "profile": {
+                    "type": "string"
+                },
+                "reason": {
                     "type": "string"
                 },
                 "starts_at": {
